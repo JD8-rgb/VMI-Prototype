@@ -1,0 +1,26 @@
+# Credentials — never commit these
+email_config.json
+.env
+
+# Streamlit local secrets
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Runtime data
+data.json
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor / local tooling
+.claude/
+.vscode/
+.idea/
