@@ -200,6 +200,10 @@ def parse_schedule_text(text):
             start_h = _parse_time(m.group(1))
             end_h   = _parse_time(m.group(2))
             if start_h is not None and end_h is not None:
+                if end_h <= start_h:          # overnight window (e.g. 22:00–06:00)
+                    end_h += 24
+                    notes.append(f"  {_DAY_ABBREV[weekday]}: overnight window detected — "
+                                 f"end adjusted to {end_h}h")
                 entries.append((weekday, start_h, end_h))
                 effective_days += 1
             else:
@@ -257,8 +261,12 @@ def parse_schedule_llm(text, api_key):
     raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw, flags=re.MULTILINE).strip()
     windows = _json.loads(raw)
     entries = [(int(w["weekday"]), int(w["start_hour"]), int(w["end_hour"])) for w in windows]
-    notes   = [f"  LLM parsed {len(entries)} window(s)"]
-    confidence = "high" if entries else "low"
+    distinct_days = len({e[0] for e in entries})   # unique weekday ints
+    confidence    = "high" if distinct_days >= 3 else "low"
+    notes = [
+        f"  LLM parsed {len(entries)} window(s) across {distinct_days} day(s) — "
+        f"confidence: {confidence}"
+    ]
     return entries, confidence, notes
 
 

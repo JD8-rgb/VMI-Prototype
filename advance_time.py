@@ -5,9 +5,15 @@ Advance the simulation clock by N run-hours, processing:
 """
 
 import json
+import os
 import sys
 from time_utils import parse_time_input, format_run_hour
 import email_hooks
+
+def _load_data():
+    path = "data.json" if os.path.exists("data.json") else "defaults.json"
+    with open(path) as f:
+        return json.load(f)
 
 if len(sys.argv) < 2:
     print("Usage: python advance_time.py <hours_or_target_datetime>")
@@ -16,8 +22,7 @@ if len(sys.argv) < 2:
     print('  python advance_time.py "2026-04-22 17:00"')
     sys.exit(1)
 
-with open("data.json", "r") as f:
-    data = json.load(f)
+data = _load_data()
 
 tanks = data["tanks"]
 rates = data["consumption_rates"]

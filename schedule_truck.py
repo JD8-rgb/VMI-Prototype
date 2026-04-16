@@ -6,8 +6,14 @@ arrival can be a run-hour (e.g. 168) or a datetime (e.g. "2026-04-21 08:00").
 """
 
 import json
+import os
 import sys
 from time_utils import parse_time_input, format_run_hour
+
+def _load_data():
+    path = "data.json" if os.path.exists("data.json") else "defaults.json"
+    with open(path) as f:
+        return json.load(f)
 
 if len(sys.argv) < 4:
     print('Usage: python schedule_truck.py <sap_order> <product> <arrival>')
@@ -20,8 +26,7 @@ if len(sys.argv) < 4:
 sap_order = sys.argv[1]
 product = sys.argv[2]
 
-with open("data.json", "r") as f:
-    data = json.load(f)
+data = _load_data()
 
 try:
     arrival = parse_time_input(data, sys.argv[3])

@@ -1,10 +1,15 @@
 import json
+import os
 from alerts import get_all_alerts
 from time_utils import format_run_hour
 import email_hooks
 
-with open("data.json", "r") as f:
-    data = json.load(f)
+def _load_data():
+    path = "data.json" if os.path.exists("data.json") else "defaults.json"
+    with open(path) as f:
+        return json.load(f)
+
+data = _load_data()
 
 tanks = data["tanks"]
 trucks = data["scheduled_trucks"]

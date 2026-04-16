@@ -382,9 +382,15 @@ def plan_for_product(data, product, target, week_start, week_end, extra_trucks):
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+def _load_data():
+    import os
+    path = "data.json" if os.path.exists("data.json") else "defaults.json"
+    with open(path) as f:
+        return json.load(f)
+
+
 def main():
-    with open("data.json", "r") as f:
-        data = json.load(f)
+    data = _load_data()
 
     week_start, week_end = get_target_week_bounds(data)
     week_run_hours = get_run_hours_in_window(data, week_start, week_end)

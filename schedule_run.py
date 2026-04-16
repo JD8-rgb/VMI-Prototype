@@ -6,8 +6,14 @@ start and end can be run-hours or datetimes ("YYYY-MM-DD HH:MM").
 """
 
 import json
+import os
 import sys
 from time_utils import parse_time_input, format_run_hour
+
+def _load_data():
+    path = "data.json" if os.path.exists("data.json") else "defaults.json"
+    with open(path) as f:
+        return json.load(f)
 
 if len(sys.argv) < 3:
     print('Usage: python schedule_run.py <start> <end> [label]')
@@ -17,8 +23,7 @@ if len(sys.argv) < 3:
     print('  python schedule_run.py "2026-04-21 06:00" "2026-04-21 22:00" "Day 4"')
     sys.exit(1)
 
-with open("data.json", "r") as f:
-    data = json.load(f)
+data = _load_data()
 
 try:
     start = parse_time_input(data, sys.argv[1])
