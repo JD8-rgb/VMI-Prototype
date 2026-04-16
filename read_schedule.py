@@ -20,7 +20,8 @@ Importable
 import json
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 from email_client import OutlookClient, load_config
 from email_hooks import send_friday_reminder_if_needed
@@ -348,13 +349,19 @@ def apply_schedule_to_data(data, entries, dry_run=False, now_dt=None):
 
 # ── Main fetch-and-apply function (importable) ────────────────────────────────
 
-def fetch_and_apply_schedule(data, dry_run=False, now_dt=None):
+def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc=None):
     """
     Read Anna's latest email, parse the schedule, and apply it.
 
     now_dt : optional datetime to use as "now" when computing the target week.
              Pass the simulation clock datetime so "next week" is relative to
              sim time rather than real wall-clock time.
+
+    session_start_utc : optional timezone-aware datetime (UTC). When provided,
+             only emails RECEIVED AT OR AFTER this wall-clock moment are
+             considered. This prevents a fresh session (or post-Reset state)
+             from silently applying a stale schedule email left over in the
+             inbox from a previous demo run.
 
     Returns
     -------
@@ -379,6 +386,34 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None):
     if not results:
         print(f"[schedule] No emails found from {anna}.")
         return "not_found"
+
+    # Filter out emails received BEFORE the current app session started.
+    # Without this, a fresh browser session (or post-Reset) can silently
+    # pick up a stale schedule email that was sent during a previous demo.
+    if session_start_utc is not None:
+        before = len(results)
+        kept = []
+        for m in results:
+            rcv_hdr = m.get("received", "")
+            try:
+                rcv_dt = parsedate_to_datetime(rcv_hdr) if rcv_hdr else None
+                if rcv_dt is not None and rcv_dt.tzinfo is None:
+                    rcv_dt = rcv_dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                rcv_dt = None
+            if rcv_dt is None:
+                # Unparseable date — skip to be safe (don't risk a stale apply)
+                continue
+            if rcv_dt >= session_start_utc:
+                kept.append(m)
+        dropped = before - len(kept)
+        if dropped:
+            print(f"[schedule] Ignored {dropped} email(s) received before "
+                  f"session start ({session_start_utc.isoformat()}).")
+        results = kept
+        if not results:
+            print("[schedule] No new schedule emails since this session started.")
+            return "not_found"
 
     # Skip the last-applied email so re-checking the inbox after a bulk
     # time advance doesn't re-use a schedule email that already belongs to

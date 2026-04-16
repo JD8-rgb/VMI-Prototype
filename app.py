@@ -116,14 +116,25 @@ if "parse_result"   not in st.session_state: st.session_state.parse_result   = N
 if "advance_log"    not in st.session_state: st.session_state.advance_log    = ""
 if "what_if_rate"   not in st.session_state: st.session_state.what_if_rate   = 583.3
 if "what_if_safety" not in st.session_state: st.session_state.what_if_safety = 10000.0
+# Wall-clock moment this Streamlit session started (UTC, timezone-aware).
+# Used to filter the inbox so fresh sessions don't pick up stale schedule
+# emails left over from previous demo runs.
+if "session_start_real_utc" not in st.session_state:
+    from datetime import timezone as _tz_utc
+    st.session_state.session_start_real_utc = datetime.now(_tz_utc.utc)
 
 data = st.session_state.data
 
 
 # ── Advance simulation ────────────────────────────────────────────────────────
 
-def _advance(data, hours):
-    """Advance data in-place by hours. Returns (log_str, email_events)."""
+def _advance(data, hours, session_start_utc=None):
+    """Advance data in-place by hours. Returns (log_str, email_events).
+
+    session_start_utc : wall-clock UTC datetime of when this Streamlit
+        session started. Used to filter stale schedule emails from earlier
+        demo runs so they don't get auto-applied.
+    """
     log   = []
     tanks = data["tanks"]
     rates = data["consumption_rates"]
@@ -265,7 +276,9 @@ def _advance(data, hours):
         _old_stdout = _sys.stdout
         _sys.stdout = captured
         try:
-            sched_result = _fetch_sched(data, now_dt=sim_now)
+            sched_result = _fetch_sched(
+                data, now_dt=sim_now, session_start_utc=session_start_utc
+            )
         finally:
             _sys.stdout = _old_stdout
         fetch_log = captured.getvalue().strip()
@@ -932,15 +945,22 @@ with cr:
     adv_hrs = adv_col.number_input("hrs", min_value=1, max_value=720, value=8, step=1,
                                     label_visibility="collapsed")
     if go_col.button("▶ Advance", type="primary", use_container_width=True):
-        log, evts = _advance(data, float(adv_hrs))
+        log, evts = _advance(
+            data, float(adv_hrs),
+            session_start_utc=st.session_state.session_start_real_utc,
+        )
         st.session_state.advance_log = log
         st.session_state.email_log.extend(evts)
         st.rerun()
     if rst_col.button("🔄 Reset", use_container_width=True):
+        from datetime import timezone as _tz_utc
         st.session_state.data                               = _defaults()
         st.session_state.data["run_schedule"]               = []
         st.session_state.data["schedule_received_for_week"] = None
         st.session_state.data["schedule_parse_issue"]       = None
+        # Reset the session-start timestamp so any emails already in the inbox
+        # are treated as "before the session" and ignored from now on.
+        st.session_state.session_start_real_utc             = datetime.now(_tz_utc.utc)
         st.session_state.planned_trucks = []
         st.session_state.plan_reasoning = []
         st.session_state.plan_log       = []
