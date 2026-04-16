@@ -335,9 +335,9 @@ def check_schedule_alerts(data):
         next_mon_display = next_mon[5:].replace("-", "/").lstrip("0")  # "04/27" → "4/27"
         if data.get("schedule_received_for_week") != next_mon:
             if sim_now.hour >= 15:
-                # 3 PM or later — escalated warning
+                # 3 PM or later — critical: missed the deadline
                 alerts.append(
-                    f"WARNING: No schedule received for week of {next_mon_display} by Friday 3 PM — "
+                    f"RED FLAG: No schedule received for week of {next_mon_display} by Friday 3 PM — "
                     f"reminder email sent to customer contact."
                 )
             else:
