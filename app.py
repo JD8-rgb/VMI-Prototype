@@ -576,13 +576,13 @@ with cl:
     row2 = st.columns(2)
     tank_names = list(data["tanks"].keys())
     tank_vals  = {}
-    for col, name in zip(row1, tank_names[:2]):
+    for col, name in zip(row1, [tank_names[0], tank_names[2]]):
         tank_vals[name] = col.number_input(
             name, min_value=0, max_value=35000,
             value=int(data["tanks"][name]["current_level_lbs"]), step=500,
             key=f"ti_{name}",
         )
-    for col, name in zip(row2, tank_names[2:]):
+    for col, name in zip(row2, [tank_names[1], tank_names[3]]):
         tank_vals[name] = col.number_input(
             name, min_value=0, max_value=35000,
             value=int(data["tanks"][name]["current_level_lbs"]), step=500,
@@ -606,7 +606,10 @@ with cr:
         st.session_state.email_log.extend(evts)
         st.rerun()
     if rst_col.button("🔄 Reset", use_container_width=True):
-        st.session_state.data           = _defaults()
+        st.session_state.data                               = _defaults()
+        st.session_state.data["run_schedule"]               = []
+        st.session_state.data["schedule_received_for_week"] = None
+        st.session_state.data["schedule_parse_issue"]       = None
         st.session_state.planned_trucks = []
         st.session_state.plan_reasoning = []
         st.session_state.plan_log       = []
