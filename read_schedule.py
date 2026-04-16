@@ -360,7 +360,11 @@ def parse_schedule_text(text):
             duration_h   = multiday[0][2] - multiday[0][1]
             days_covered = max(1, (duration_h + 23) // 24)
             effective_days += days_covered
-            day2_num = (day1 + duration_h // 24) % 7
+            # End day is derived from the END hour (relative to day1's
+            # midnight), NOT from duration — a window that ends earlier
+            # in the day than it started (e.g. Mon 06:00 → Thu 04:00)
+            # spans one more calendar day than (duration_h // 24) counts.
+            day2_num = (day1 + multiday[0][2] // 24) % 7
             notes.append(
                 f"  Multi-day window: {_DAY_ABBREV[day1]} {multiday[0][1]:02d}:00 "
                 f"→ {_DAY_ABBREV[day2_num]} {multiday[0][2] % 24:02d}:00 "
