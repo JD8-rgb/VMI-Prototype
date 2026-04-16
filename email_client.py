@@ -19,7 +19,23 @@ CONFIG_PATH = "email_config.json"
 
 
 def load_config():
-    """Load email_config.json and return as dict. Returns {} with a warning if missing."""
+    """
+    Load email config and return as dict.
+
+    Priority:
+      1. st.secrets["email"] section  — used on Streamlit Cloud (and locally if present)
+      2. email_config.json            — local fallback
+      3. Empty dict (email disabled)  — graceful no-op if neither exists
+    """
+    # 1. Try Streamlit secrets (works both on Cloud and locally)
+    try:
+        import streamlit as st
+        if "email" in st.secrets:
+            return dict(st.secrets["email"])
+    except Exception:
+        pass
+
+    # 2. Fall back to local JSON file
     try:
         with open(CONFIG_PATH) as f:
             return json.load(f)
