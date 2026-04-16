@@ -59,10 +59,10 @@ def _get_anthropic_key():
     return cfg.get("anthropic_api_key", "") if cfg else ""
 
 COLORS = {
-    "U-Tank1": "#1f77b4",
-    "U-Tank2": "#f28e2b",
-    "M-Tank1": "#2ca02c",
-    "M-Tank2": "#e377c2",
+    "U-Tank1": "#1E3A8A",   # navy
+    "U-Tank2": "#60A5FA",   # light blue
+    "M-Tank1": "#0F766E",   # deep teal
+    "M-Tank2": "#5EEAD4",   # light teal
 }
 
 # Header links
@@ -412,9 +412,10 @@ def _chart(hist, product, safety=None):
     tick_text = [_short_label(hist["datetimes"][i]) for i in tick_idxs]
 
     fig = go.Figure()
+    # Run windows — subtle warm tint so they read as "active" without competing
     for w in hist["run_windows"]:
         fig.add_vrect(x0=w["start_hour"], x1=w["end_hour"],
-                      fillcolor="rgba(150,150,255,0.12)", line_width=0)
+                      fillcolor="rgba(0,199,169,0.07)", line_width=0)
     for name in tnks:
         fig.add_trace(go.Scatter(
             x=x_vals, y=hist["tanks"][name], name=name,
@@ -422,36 +423,92 @@ def _chart(hist, product, safety=None):
             customdata=hist["datetimes"],
             hovertemplate=f"<b>{name}</b><br>%{{customdata}}<br>%{{y:,.0f}} lbs<extra></extra>",
         ))
-    fig.add_hline(y=safety, line_dash="dot", line_color="red",
-                  annotation_text="Safety Stock", annotation_position="bottom right")
+    # Safety stock — softer rose, smaller annotation
+    fig.add_hline(
+        y=safety, line_dash="dot", line_color="#F43F5E", line_width=1.2,
+        annotation_text="Safety stock", annotation_position="bottom right",
+        annotation_font=dict(size=10, color="#9F1239", family="Inter"),
+    )
     for ev in hist["truck_events"]:
         if ev["product"] == product:
             fig.add_vline(
                 x=ev["run_hour"],
-                line_dash="dash", line_color="darkorange", line_width=1.5,
+                line_dash="dash", line_color="#F59E0B", line_width=1.2,
                 annotation_text=f"{ev['sap']} +{ev['qty'] // 1000}k",
-                annotation_position="top left", annotation_font_size=10,
+                annotation_position="top left",
+                annotation_font=dict(size=10, color="#92400E", family="Inter"),
             )
     fig.update_layout(
-        title=dict(text=product, font_size=14), height=280,
+        title=dict(
+            text=product,
+            font=dict(size=14, family="Inter", color="#1E2A45"),
+            x=0.01, xanchor="left",
+        ),
+        height=280,
         margin=dict(l=5, r=5, t=34, b=44),
-        yaxis=dict(range=[0, 37000], tickformat=",", title="lbs"),
-        xaxis=dict(tickmode="array", tickvals=tick_vals, ticktext=tick_text, tickangle=-30),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        font=dict(family="Inter", color="#1E2A45", size=11),
+        yaxis=dict(
+            range=[0, 37000], tickformat=",", title="lbs",
+            gridcolor="#E2E8F0", gridwidth=1, zeroline=False,
+            title_font=dict(size=11, color="#64748B"),
+            tickfont=dict(size=10, color="#64748B"),
+        ),
+        xaxis=dict(
+            tickmode="array", tickvals=tick_vals, ticktext=tick_text, tickangle=-30,
+            showgrid=False, zeroline=False,
+            tickfont=dict(size=10, color="#64748B"),
+        ),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+            font=dict(size=10, family="Inter", color="#1E2A45"),
+            bgcolor="rgba(0,0,0,0)",
+        ),
         plot_bgcolor="white", paper_bgcolor="white",
+        hoverlabel=dict(font_family="Inter", font_size=11, bgcolor="#FFFFFF",
+                        bordercolor="#E2E8F0"),
     )
     return fig
 
 
 def _tank_info(col, name, info):
-    pct  = info["current_level_lbs"] / info["max_capacity_lbs"]
-    icon = "🔴" if pct < 0.2 else ("🟠" if pct < 0.5 else "🟢")
-    badge = "**DRAW**" if info["status"] == "draw" else "standby"
-    col.markdown(
-        f"{icon} **{name}**  \n"
-        f"{info['current_level_lbs']:,.0f} / {info['max_capacity_lbs']:,} lbs "
-        f"({pct*100:.0f}%) — {badge}"
-    )
+    pct      = info["current_level_lbs"] / info["max_capacity_lbs"]
+    pct_clip = max(0.0, min(1.0, pct))
+    if pct < 0.2:
+        bar_color, dot_color = "#F43F5E", "#F43F5E"   # critical → red
+    elif pct < 0.5:
+        bar_color, dot_color = "#F59E0B", "#F59E0B"   # low → amber
+    else:
+        bar_color, dot_color = "#00C7A9", "#22C55E"   # healthy → teal/green
+    is_draw = info["status"] == "draw"
+    badge_bg = "#0F1629" if is_draw else "#F1F5F9"
+    badge_fg = "#FFFFFF" if is_draw else "#64748B"
+    badge_lbl = "DRAW" if is_draw else "STANDBY"
+    col.markdown(f"""
+    <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:8px;
+                padding:0.55rem 0.75rem;margin-bottom:0.4rem;
+                font-family:'Inter',sans-serif;">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+            <div style="display:flex;align-items:center;gap:0.4rem;">
+                <span style="display:inline-block;width:8px;height:8px;border-radius:50%;
+                             background:{dot_color};"></span>
+                <span style="font-weight:600;color:#0F1629;font-size:0.88rem;">{name}</span>
+            </div>
+            <span style="background:{badge_bg};color:{badge_fg};font-size:0.62rem;
+                         font-weight:600;letter-spacing:0.06em;padding:2px 7px;
+                         border-radius:4px;">{badge_lbl}</span>
+        </div>
+        <div style="margin-top:0.35rem;color:#64748B;font-size:0.78rem;">
+            <span style="color:#0F1629;font-weight:600;">{info['current_level_lbs']:,.0f}</span>
+            &nbsp;/&nbsp; {info['max_capacity_lbs']:,} lbs
+            &nbsp;·&nbsp; {pct*100:.0f}%
+        </div>
+        <div style="margin-top:0.3rem;height:5px;background:#F1F5F9;border-radius:3px;
+                    overflow:hidden;">
+            <div style="height:100%;width:{pct_clip*100:.1f}%;background:{bar_color};
+                        border-radius:3px;"></div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 # ── Natural-language truck parser ─────────────────────────────────────────────
@@ -544,7 +601,13 @@ section.main > div {
 /* ── Headings ── */
 h1 { color: #0F1629 !important; font-weight: 700 !important; letter-spacing: -0.5px; }
 h2 { color: #0F1629 !important; font-weight: 600 !important; }
-h3 { color: #1E2A45 !important; font-weight: 600 !important; }
+h3 {
+    color: #1E2A45 !important;
+    font-weight: 600 !important;
+    border-left: 3px solid #00C7A9;
+    padding-left: 0.55rem;
+    margin-top: 0.2rem !important;
+}
 
 /* ── Sidebar ── */
 section[data-testid="stSidebar"] {
@@ -665,21 +728,21 @@ div[data-testid="stAlert"][kind="success"] {
 div[data-testid="stAlert"][kind="warning"] {
     background-color: #FFFBEB !important;
     border-left: 4px solid #F59E0B !important;
-    color: #78350F !important;
+    color: #92400E !important;
 }
 
 /* ── Error boxes ── */
 div[data-testid="stAlert"][kind="error"] {
     background-color: #FFF1F2 !important;
     border-left: 4px solid #F43F5E !important;
-    color: #881337 !important;
+    color: #9F1239 !important;
 }
 
 /* ── Info boxes ── */
 div[data-testid="stAlert"][kind="info"] {
     background-color: #F0F9FF !important;
     border-left: 4px solid #00C7A9 !important;
-    color: #0C4A6E !important;
+    color: #155E75 !important;
 }
 
 /* ── Caption / helper text ── */
@@ -719,16 +782,75 @@ code {
     padding: 1rem 1.25rem;
     margin-bottom: 0.75rem;
 }
+
+/* ── Small uppercase section label (used for inline sub-section headers) ── */
+.vmi-label {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #64748B;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 0.35rem;
+    margin-top: 0.1rem;
+}
+
+/* ── Sim time pill ── */
+.vmi-simtime {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-left: 3px solid #00C7A9;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.85rem;
+    color: #0F1629;
+    margin-bottom: 0.4rem;
+}
+.vmi-simtime .lbl {
+    font-size: 0.66rem;
+    font-weight: 600;
+    color: #64748B;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+.vmi-simtime .val {
+    font-family: 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+    font-weight: 600;
+    color: #0F1629;
+}
 </style>
 """, unsafe_allow_html=True)
 
-# Header row — big centered Product Sheet button (hero), small Codebase link at right
-_tc_left, _tc_center, _tc_right = st.columns([2, 3, 2])
-with _tc_center:
+# Header — title row with Codebase tucked top-right, then centered Product Sheet CTA below
+_h_left, _h_right = st.columns([6, 1])
+with _h_left:
+    st.markdown("""
+    <div style="padding:0.25rem 0 0;">
+        <div style="font-size:1.6rem;font-weight:700;color:#0F1629;
+                    font-family:'Inter',sans-serif;letter-spacing:-0.5px;
+                    line-height:1.1;">
+            🏭 &nbsp;VMI Automation
+        </div>
+        <div style="margin-top:0.2rem;font-size:0.85rem;color:#64748B;
+                    font-family:'Inter',sans-serif;">
+            Vendor-Managed Inventory — tank simulation, auto-planning, schedule parsing, alert emails
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+with _h_right:
+    st.link_button("💻 Codebase", GITHUB_URL, use_container_width=True)
+
+# Centered Product Sheet button (~18% page width = 2.5× the previous 1/14)
+_ps_l, _ps_c, _ps_r = st.columns([4, 2, 4])
+with _ps_c:
     _pdf_bytes = _load_product_sheet()
     if _pdf_bytes:
         st.download_button(
-            "📄  Product Sheet",
+            "📄 Product Sheet",
             data=_pdf_bytes,
             file_name="VMI_Automation.pdf",
             mime="application/pdf",
@@ -737,26 +859,16 @@ with _tc_center:
         )
     else:
         st.button(
-            "📄  Product Sheet",
+            "📄 Product Sheet",
             disabled=True,
             use_container_width=True,
             help="Run `python build_product_sheet.py` to generate.",
         )
-with _tc_right:
-    st.link_button("💻 Codebase", GITHUB_URL)
 
-st.markdown("""
-<div style="padding:0.25rem 0 0.75rem 0;border-bottom:2px solid #E2E8F0;margin-bottom:1rem;">
-    <span style="font-size:1.75rem;font-weight:700;color:#0F1629;
-                 font-family:'Inter',sans-serif;letter-spacing:-0.5px;">
-        🏭 &nbsp;VMI Automation
-    </span>
-    <span style="display:block;margin-top:0.15rem;font-size:0.85rem;color:#64748B;
-                 font-family:'Inter',sans-serif;">
-        Vendor-Managed Inventory — tank simulation, auto-planning, schedule parsing, alert emails
-    </span>
-</div>
-""", unsafe_allow_html=True)
+st.markdown(
+    '<div style="border-bottom:1px solid #E2E8F0;margin:0.6rem 0 1rem 0;"></div>',
+    unsafe_allow_html=True,
+)
 
 with st.expander("ℹ️ Workflow guide"):
     st.markdown(f"""
@@ -784,7 +896,7 @@ with st.expander("ℹ️ Workflow guide"):
 cl, cr = st.columns([3, 2])
 
 with cl:
-    st.markdown("**Tank Levels (lbs)**")
+    st.markdown('<div class="vmi-label">Tank Levels (lbs)</div>', unsafe_allow_html=True)
     row1 = st.columns(2)
     row2 = st.columns(2)
     tank_names = list(data["tanks"].keys())
@@ -801,7 +913,7 @@ with cl:
             value=int(data["tanks"][name]["current_level_lbs"]), step=500,
             key=f"ti_{name}",
         )
-    if st.button("Apply Tank Levels"):
+    if st.button("Apply Tank Levels", use_container_width=True):
         for name, val in tank_vals.items():
             data["tanks"][name]["current_level_lbs"] = float(val)
         st.success("Updated.")
@@ -809,7 +921,13 @@ with cl:
 
 with cr:
     now_label = format_run_hour(data, data["current_run_hour"])
-    st.markdown(f"**Sim time: `{now_label}`**")
+    st.markdown(
+        f'<div class="vmi-simtime">'
+        f'<span class="lbl">Sim time</span>'
+        f'<span class="val">{now_label}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
     adv_col, go_col, rst_col = st.columns([2, 1, 1])
     adv_hrs = adv_col.number_input("hrs", min_value=1, max_value=720, value=8, step=1,
                                     label_visibility="collapsed")
@@ -868,15 +986,15 @@ else:
         text   = a.replace("RED FLAG: ", "").replace("YELLOW FLAG: ", "").replace("WARNING: ", "")
         bg     = "#FFF1F2" if is_red else "#FFFBEB"
         border = "#F43F5E" if is_red else "#F59E0B"
-        lcolor = "#881337" if is_red else "#78350F"
+        lcolor = "#9F1239" if is_red else "#92400E"
         bcolor = "#FECDD3" if is_red else "#FDE68A"
         st.markdown(f"""
         <div style="background:{bg};border:1px solid {bcolor};border-left:4px solid {border};
                     border-radius:8px;padding:0.65rem 1rem;margin-bottom:0.5rem;
                     font-family:'Inter',sans-serif;">
-            <span style="font-size:0.72rem;font-weight:700;color:{border};
-                         letter-spacing:0.08em;text-transform:uppercase;">{label}</span>
-            <div style="color:{lcolor};font-size:0.9rem;margin-top:0.2rem;">{text}</div>
+            <span style="font-size:0.72rem;font-weight:600;color:{border};
+                         letter-spacing:0.04em;text-transform:uppercase;">{label}</span>
+            <div style="color:{lcolor};font-size:0.9rem;font-weight:400;margin-top:0.2rem;">{text}</div>
         </div>""", unsafe_allow_html=True)
 
 st.divider()
@@ -935,8 +1053,24 @@ with sp_col:
 
     if st.session_state.parse_result:
         entries, confidence, notes = st.session_state.parse_result
-        badge = "🟢 HIGH" if confidence == "high" else "🔴 LOW"
-        st.markdown(f"**{badge} confidence** — {len(entries)} window(s)")
+        if confidence == "high":
+            pill_bg, pill_fg, pill_label = "#DCFCE7", "#166534", "HIGH CONFIDENCE"
+        else:
+            pill_bg, pill_fg, pill_label = "#FFE4E6", "#9F1239", "LOW CONFIDENCE"
+        st.markdown(
+            f"""
+            <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.4rem;
+                        font-family:'Inter',sans-serif;">
+                <span style="background:{pill_bg};color:{pill_fg};font-size:0.7rem;
+                             font-weight:600;letter-spacing:0.05em;padding:3px 9px;
+                             border-radius:999px;">{pill_label}</span>
+                <span style="color:#64748B;font-size:0.85rem;">
+                    {len(entries)} window(s) parsed
+                </span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         if entries:
             DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
             rows = []
@@ -1252,37 +1386,57 @@ with st.expander(
     else:
         for entry in reversed(st.session_state.email_log):
             etype = entry.get("type", "Email")
-            # Color by type — Alert type string is dynamic ("Alert (N new)")
+            # Tag color by type, themed to the new palette
             if etype.startswith("Alert"):
-                tag_color = "#d62728"
+                tag_color = "#F43F5E"   # rose
             else:
                 tag_color = {
-                    "Schedule Reminder": "#f0a500",
-                    "Schedule Applied":  "#2ca02c",
-                    "CS Load Entry":     "#1f77b4",
-                    "Test Email":        "#7f7f7f",
-                }.get(etype, "#888")
+                    "Schedule Reminder": "#F59E0B",   # amber
+                    "Schedule Applied":  "#22C55E",   # green
+                    "CS Load Entry":     "#1E3A8A",   # navy
+                    "Test Email":        "#64748B",   # slate
+                }.get(etype, "#64748B")
             # Status badge
             status = entry.get("status", "")
             if status == "sent":
-                status_html = ' <span style="color:#2ca02c;font-size:0.75em;font-weight:600;">✓ sent</span>'
+                status_html = (
+                    ' <span style="color:#15803D;font-size:0.72em;font-weight:600;'
+                    'background:#DCFCE7;padding:1px 6px;border-radius:999px;">✓ sent</span>'
+                )
             elif status and "not sent" in status:
-                status_html = ' <span style="color:#aaa;font-size:0.75em;">⚠ not sent</span>'
+                status_html = (
+                    ' <span style="color:#92400E;font-size:0.72em;font-weight:600;'
+                    'background:#FEF3C7;padding:1px 6px;border-radius:999px;">⚠ not sent</span>'
+                )
             else:
-                status_html = ' <span style="color:#888;font-size:0.75em;">• logged</span>'
+                status_html = (
+                    ' <span style="color:#475569;font-size:0.72em;font-weight:600;'
+                    'background:#F1F5F9;padding:1px 6px;border-radius:999px;">• logged</span>'
+                )
             st.markdown(
-                f'<span style="background:{tag_color};color:#fff;padding:1px 7px;'
-                f'border-radius:3px;font-size:0.75em;font-weight:600;">'
-                f'{etype}</span> &nbsp;'
-                f'<strong>{entry.get("subject","")}</strong>{status_html}<br>'
-                f'<span style="font-size:0.82em;color:#888;">To: {entry.get("to","")} &nbsp;|&nbsp; '
-                f'Sim time: {entry.get("sim_time","")}</span>',
+                f'''
+                <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:8px;
+                            padding:0.6rem 0.85rem;margin-bottom:0.5rem;
+                            font-family:'Inter',sans-serif;">
+                    <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+                        <span style="background:{tag_color};color:#fff;padding:2px 8px;
+                                     border-radius:4px;font-size:0.7em;font-weight:600;
+                                     letter-spacing:0.04em;">{etype}</span>
+                        <strong style="color:#0F1629;font-size:0.92rem;">{entry.get("subject","")}</strong>
+                        {status_html}
+                    </div>
+                    <div style="margin-top:0.3rem;font-size:0.78rem;color:#64748B;">
+                        <span style="color:#475569;">To:</span> {entry.get("to","")}
+                        &nbsp;·&nbsp;
+                        <span style="color:#475569;">Sim time:</span> {entry.get("sim_time","")}
+                    </div>
+                </div>
+                ''',
                 unsafe_allow_html=True,
             )
             if entry.get("body"):
                 with st.expander("Show body", expanded=False):
                     st.text(entry["body"][:600] + ("…" if len(entry.get("body","")) > 600 else ""))
-            st.divider()
 
 # ── PDF Preview ───────────────────────────────────────────────────────────────
 
@@ -1291,7 +1445,8 @@ if st.session_state.pdf_bytes:
     b64 = base64.b64encode(st.session_state.pdf_bytes).decode()
     st.components.v1.html(
         f'<iframe src="data:application/pdf;base64,{b64}" '
-        f'width="100%" height="480px" style="border:1px solid #ddd; border-radius:4px;"></iframe>',
+        f'width="100%" height="480px" '
+        f'style="border:1px solid #E2E8F0; border-radius:8px;"></iframe>',
         height=500,
     )
     st.download_button("⬇️ Download PDF", data=st.session_state.pdf_bytes,
