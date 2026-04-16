@@ -4,31 +4,31 @@
   "tanks": {
     "U-Tank1": {
       "product": "Product U",
-      "current_level_lbs": 34000,
+      "current_level_lbs": 0,
       "max_capacity_lbs": 35000,
       "heel_lbs": 1000,
-      "status": "draw"
+      "status": "standby"
     },
     "U-Tank2": {
       "product": "Product U",
-      "current_level_lbs": 35000,
-      "max_capacity_lbs": 35000,
-      "heel_lbs": 1000,
-      "status": "standby"
-    },
-    "M-Tank1": {
-      "product": "Product M",
-      "current_level_lbs": 33000,
+      "current_level_lbs": 20000,
       "max_capacity_lbs": 35000,
       "heel_lbs": 1000,
       "status": "draw"
     },
-    "M-Tank2": {
+    "M-Tank1": {
       "product": "Product M",
-      "current_level_lbs": 35000,
+      "current_level_lbs": 0,
       "max_capacity_lbs": 35000,
       "heel_lbs": 1000,
       "status": "standby"
+    },
+    "M-Tank2": {
+      "product": "Product M",
+      "current_level_lbs": 26000,
+      "max_capacity_lbs": 35000,
+      "heel_lbs": 1000,
+      "status": "draw"
     }
   },
   "consumption_rates": {
