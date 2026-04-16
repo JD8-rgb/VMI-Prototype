@@ -28,7 +28,10 @@ from plan_orders import (
     TARGET_LOW_LBS, TARGET_HIGH_LBS,
     TARGET_LOW_RUN_HOURS, TARGET_HIGH_RUN_HOURS,
 )
-from read_schedule import parse_schedule_text, parse_schedule, apply_schedule_to_data
+from read_schedule import (
+    parse_schedule_text, parse_schedule, apply_schedule_to_data,
+    check_anthropic_api,
+)
 from pdf_generator import build_load_entry_pdf
 from projection import compute_level_history
 from time_utils import run_hour_to_dt, dt_to_run_hour, format_run_hour
@@ -1057,13 +1060,22 @@ with sp_col:
         ),
         height=150, key="sched_text", label_visibility="collapsed",
     )
-    parse_btn, apply_btn_ph = st.columns(2)
+    parse_btn, test_api_btn = st.columns(2)
     if parse_btn.button("🔍 Parse", use_container_width=True):
         if sched_text.strip():
             entries, confidence, notes = parse_schedule(sched_text, api_key=_get_anthropic_key())
             st.session_state.parse_result = (entries, confidence, notes)
         else:
             st.warning("Paste a schedule first.")
+    if test_api_btn.button("🧪 Test API", use_container_width=True,
+                           help="Send a minimal request to the Anthropic API to "
+                                "confirm the key works and the service is reachable."):
+        with st.spinner("Pinging Anthropic API…"):
+            ok, msg = check_anthropic_api(_get_anthropic_key())
+        if ok:
+            st.success(msg)
+        else:
+            st.error(msg)
 
     st.caption(
         "**Formats:** `Mon 6am-10pm` · `Mon 0600-2200` · `Mon 06:00-22:00`  \n"
@@ -1105,6 +1117,20 @@ with sp_col:
                     "Hrs": f"{total_h:.0f}",
                 })
             st.dataframe(rows, use_container_width=True, hide_index=True)
+
+        # Show parse notes — critical when confidence is low so the user knows
+        # WHY (e.g. "LLM parse failed — API key rejected" or "Thu: day found
+        # but no time range detected"). Also helpful on high confidence as a
+        # sanity-check trail ("LLM parsed 1 window covering ~4 calendar days").
+        if notes:
+            with st.expander(
+                "Parse details" + (" — review why confidence is low"
+                                   if confidence != "high" else ""),
+                expanded=(confidence != "high"),
+            ):
+                for n in notes:
+                    st.markdown(f"- {n.strip()}")
+
         btn_lbl = "✅ Apply to Schedule" if confidence == "high" else "⚠️ Apply Anyway"
         if st.button(btn_lbl, use_container_width=True):
             sim_now = run_hour_to_dt(data, data["current_run_hour"])
