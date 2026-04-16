@@ -824,12 +824,23 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
     # NOT filter by sender address — the demo account (vmiprototype@gmail.com)
     # is both the sender of real schedule emails AND the recipient of alert
     # emails, so a sender-address check would drop legitimate schedules.
-    # Every alert body the system emits starts with one of these fixed strings:
-    _VMI_SUBJECT_PREFIXES = ("VMI:", "VMI ALERT", "VMI RED FLAG")
+    #
+    # Every subject/body below is emitted by something in email_hooks.py:
+    #   VMI Alert / VMI ALERT / RED FLAG:     → send_alert_emails_if_new
+    #   Load Entry — Week of … / Please find… → send_cs_load_entry
+    #   Schedule request / Can you please…    → send_friday_reminder_if_needed
+    #   VMI: Could not read schedule / The VMI system… → read_schedule alert
+    _VMI_SUBJECT_PREFIXES = (
+        "VMI:", "VMI ALERT", "VMI RED FLAG",
+        "Load Entry",
+        "Schedule request",
+    )
     _VMI_BODY_SIGNATURES  = (
         "VMI ALERT",
         "The VMI system received an email",
         "RED FLAG:",
+        "Please find the attached load entry",
+        "Can you please share next week's run schedule",
     )
     before_self = len(results)
     filtered = []
@@ -860,14 +871,22 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
     # would otherwise parse to 0 windows and trigger a spurious
     # "unreadable schedule" alert that gets emailed back into the inbox
     # and creates a feedback loop.
-    _HAS_DAY_RE  = re.compile(_DAY_PATTERN, re.IGNORECASE)
-    _HAS_TIME_RE = re.compile(_TIME_TOKEN, re.IGNORECASE)
+    #
+    # Before checking for time tokens, we strip out ISO date patterns
+    # like "2026-04-20" — otherwise the four-digit year matches
+    # _TIME_TOKEN's \d{4} (military time) and load-entry emails like
+    # "Please find the attached load entry for the week of 2026-04-20"
+    # would slip through as if they contained a schedule.
+    _HAS_DAY_RE   = re.compile(_DAY_PATTERN, re.IGNORECASE)
+    _HAS_TIME_RE  = re.compile(_TIME_TOKEN, re.IGNORECASE)
+    _ISO_DATE_RE  = re.compile(r'\b\d{4}-\d{2}-\d{2}\b')
     before_shape = len(results)
     shape_kept = []
     for m in results:
         body = m.get("body", "") or ""
-        has_day  = bool(_HAS_DAY_RE.search(body))
-        has_time = bool(_HAS_TIME_RE.search(body))
+        body_no_dates = _ISO_DATE_RE.sub("", body)
+        has_day  = bool(_HAS_DAY_RE.search(body_no_dates))
+        has_time = bool(_HAS_TIME_RE.search(body_no_dates))
         if has_day or has_time:
             shape_kept.append(m)
         else:
