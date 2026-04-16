@@ -31,16 +31,28 @@ DATA_PATH = "data.json"
 DRY_RUN   = "--dry-run" in sys.argv
 
 # ── Day name lookup ───────────────────────────────────────────────────────────
+# Include plural forms ("Mondays") and common short forms. The regex parser
+# does a literal word-boundary search against these keys, so longer keys must
+# come first — see _DAY_PATTERN below.
 _DAY_MAP = {
-    "monday": 0,    "mon": 0,
-    "tuesday": 1,   "tue": 1,   "tues": 1,
-    "wednesday": 2, "wed": 2,
-    "thursday": 3,  "thu": 3,   "thur": 3,  "thurs": 3,
-    "friday": 4,    "fri": 4,
-    "saturday": 5,  "sat": 5,
-    "sunday": 6,    "sun": 6,
+    "mondays": 0,   "monday": 0,    "mon": 0,
+    "tuesdays": 1,  "tuesday": 1,   "tues": 1,  "tue": 1,
+    "wednesdays": 2,"wednesday": 2, "weds": 2,  "wed": 2,
+    "thursdays": 3, "thursday": 3,  "thurs": 3, "thur": 3,  "thu": 3,
+    "fridays": 4,   "friday": 4,    "fri": 4,
+    "saturdays": 5, "saturday": 5,  "sat": 5,
+    "sundays": 6,   "sunday": 6,    "sun": 6,
 }
 _DAY_ABBREV = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+
+# Day-matching regex: longest keys first so "monday" matches before "mon",
+# "mondays" before "monday". Word-bounded.
+_DAY_KEYS_SORTED = sorted(_DAY_MAP.keys(), key=len, reverse=True)
+_DAY_PATTERN = r"\b(" + "|".join(_DAY_KEYS_SORTED) + r")\b"
+
+# Filler words that may appear between a day name and a time (e.g. "Saturday
+# at 4AM", "Sun on 0600"). Non-capturing, optional group; absorbed and ignored.
+_FILLER = r"(?:\s+(?:at|on|from|starting))?"
 
 # ── Time parser ───────────────────────────────────────────────────────────────
 
@@ -94,24 +106,29 @@ def _try_multiday_range(seg):
       "run monday 0600 to friday 0400"
       "monday 6am to friday 4am"
       "monday 06:00 through friday 04:00"
+      "Monday 0600 to Saturday at 4AM"       ← filler word "at"
+      "Starting wed 0800 to Sun on 0600"     ← filler word "on"
 
     Returns a list with one (start_weekday, start_h, end_h) entry where
     end_h may be > 24 (hours from start of start_weekday).
     Returns [] if pattern not found or days are the same.
     """
-    _TIME = r'(\d{4}|\d{1,2}:\d{2}|\d{1,2}\s*(?:am|pm))'
+    # Match 0600 | 06:00 | 06:00am | 6am — the optional meridiem on HH:MM is
+    # critical so "2:00am" consumes all three tokens, not just "2:00".
+    _TIME = r'(\d{4}|\d{1,2}:\d{2}(?:\s*(?:am|pm))?|\d{1,2}\s*(?:am|pm))'
+    # Day names are anchored to _DAY_PATTERN so we only match real days
+    # (not "going" or "starting" as false day1 candidates).
     pattern = (
-        r'(?:run|from)?\s*'
-        r'(\w+)\s+' + _TIME + r'\s*'
-        r'(?:to|through|until|-|–|thru)\s*'
-        r'(\w+)\s+' + _TIME
+        _DAY_PATTERN + _FILLER + r'\s+' + _TIME + r'\s*'
+        r'(?:to|through|until|thru|[-–—])\s*'
+        + _DAY_PATTERN + _FILLER + r'\s+' + _TIME
     )
-    m = re.search(pattern, seg)
+    m = re.search(pattern, seg, flags=re.IGNORECASE)
     if not m:
         return []
 
     day1_str, time1_str, day2_str, time2_str = (
-        m.group(1), m.group(2), m.group(3), m.group(4)
+        m.group(1).lower(), m.group(2), m.group(3).lower(), m.group(4)
     )
     day1 = _DAY_MAP.get(day1_str)
     day2 = _DAY_MAP.get(day2_str)
@@ -133,7 +150,89 @@ def _try_multiday_range(seg):
     return [(day1, start_h, start_h + duration)]
 
 
+# ── Email-cruft preprocessor ──────────────────────────────────────────────────
+
+# Greeting lines at the very start: "Hi team,", "Hello,", "Hey —", etc.
+_GREETING_LINE = re.compile(
+    r'^\s*(?:hi|hello|hey|dear|good\s+(?:morning|afternoon|evening))'
+    r'\b[^\n]*\n',
+    re.IGNORECASE,
+)
+# Sign-off blocks at the very end: "Thanks,\nAnna" / "Regards," / "-- \nAnna"
+# Also matches "Sent from my iPhone" footer.
+_SIGNOFF_BLOCK = re.compile(
+    r'(?:\n|^)\s*(?:thanks|thank\s+you|regards|best|cheers|sincerely|'
+    r'sent\s+from\s+my\s+|--\s*$)'
+    r'[^\n]*(?:\n[^\n]*){0,3}\s*$',
+    re.IGNORECASE,
+)
+# Quoted-reply lines: starts with ">"
+_QUOTED_LINE = re.compile(r'^\s*>.*$', re.MULTILINE)
+
+
+def _clean_email_text(text):
+    """
+    Strip greetings, sign-offs, and quoted-reply lines so both parsers see
+    just the meaningful body. Fail-safe: if stripping leaves nothing, return
+    the original text unchanged.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return text
+    t = _QUOTED_LINE.sub('', text)
+    t = _GREETING_LINE.sub('', t, count=1)
+    t = _SIGNOFF_BLOCK.sub('', t)
+    t = re.sub(r'\n{3,}', '\n\n', t).strip()
+    return t if t else text
+
+
 # ── Schedule text parser ──────────────────────────────────────────────────────
+
+def _split_segments(text):
+    """Split on commas, semicolons, newlines, sentence terminators, and the
+    literal word 'and'. Sentence terminators use lookarounds so they don't
+    break `06.00`-style digit-period-digit time tokens."""
+    # Drop sentence terminators between non-digits, keep `.` inside times intact.
+    t = re.sub(r'(?<!\d)[.!](?!\d)', '\n', text)
+    # Split on newlines, commas, semicolons, and the word 'and' between tokens.
+    pieces = re.split(r'[,;\n]+|\s+and\s+', t)
+    return pieces
+
+
+def _single_day_window(seg, weekday, day_span, time_pat):
+    """
+    Extract a single (weekday, start_h, end_h) window from `seg` near the
+    given day_span (match span of the day word). Returns tuple or None.
+    Off-marker check is proximity-bounded: only cancels if the marker is
+    within ~15 chars of the day name (so prose like "demand pick up" or
+    "coming down" doesn't accidentally cancel a day).
+    """
+    # Window of the segment to examine for off-marker / times
+    d_start, d_end = day_span
+    near_start = max(0, d_start - 4)
+    near_end   = min(len(seg), d_end + 30)
+    near       = seg[near_start:near_end]
+
+    if re.search(r"\b(off|no run|shutdown|n/a|none)\b", near):
+        return ("off", weekday)
+    # "down" is prose-ambiguous — require it right after the day word
+    if re.search(r"\b" + re.escape(seg[d_start:d_end]) + r"\s+(down)\b", seg):
+        return ("off", weekday)
+
+    # Find a time range in the rest of the segment (from day_end onward)
+    tail = seg[d_end:]
+    # Strip filler words "at"/"on" right after the day so time_pat can match
+    tail = re.sub(r"^\s+(?:at|on)\s+", " ", tail)
+    m = re.search(time_pat, tail)
+    if not m:
+        return None
+    start_h = _parse_time(m.group(1))
+    end_h   = _parse_time(m.group(2))
+    if start_h is None or end_h is None:
+        return None
+    if end_h <= start_h:   # overnight window (22:00-06:00)
+        end_h += 24
+    return ("window", weekday, start_h, end_h)
+
 
 def parse_schedule_text(text):
     """
@@ -143,19 +242,23 @@ def parse_schedule_text(text):
     Returns
     -------
     entries    : list of (weekday_int, start_hour_int, end_hour_int)
-    confidence : "high" if >= 3 days parsed, else "low"
+    confidence : "high" if >= 3 calendar days covered, else "low"
     notes      : list of warning strings for partially-unreadable lines
     """
     entries        = []
     notes          = []
     effective_days = 0   # counts logical calendar days for confidence
 
-    # Split on commas, semicolons, and newlines
-    segments = re.split(r"[,;\n]+", text)
+    # Clean greetings / sign-offs / quoted replies before segmentation, so
+    # prose like "Hi team,\n ... \nThanks, Anna" doesn't pollute segments.
+    cleaned = _clean_email_text(text)
+    segments = _split_segments(cleaned)
 
-    # Regex that matches any time token: 0600, 06:00, 6am, 6:00am, 22, etc.
+    # Regex that matches any time token: 0600, 06:00, 6am, 6:00am, 22:00, etc.
+    # (Plain 1-2 digit numbers are not accepted to avoid matching stray
+    # numbers in prose.)
     _T = r'(\d{4}|\d{1,2}:\d{2}(?:\s*(?:am|pm))?|\d{1,2}\s*(?:am|pm))'
-    time_pat = _T + r'\s*(?:[-–]|to|until|through)\s*' + _T
+    time_pat = _T + r'\s*(?:[-–—]|to|until|through|thru)\s*' + _T
 
     for raw in segments:
         seg = raw.strip().lower()
@@ -167,8 +270,8 @@ def parse_schedule_text(text):
         if multiday:
             entries.extend(multiday)
             day1    = multiday[0][0]
-            duration_h  = multiday[0][2] - multiday[0][1]
-            days_covered = max(1, (duration_h + 23) // 24)   # round up
+            duration_h   = multiday[0][2] - multiday[0][1]
+            days_covered = max(1, (duration_h + 23) // 24)
             effective_days += days_covered
             day2_num = (day1 + duration_h // 24) % 7
             notes.append(
@@ -178,39 +281,32 @@ def parse_schedule_text(text):
             )
             continue
 
-        # ── Single-day parsing ────────────────────────────────────────────────
-        # Skip lines that contain no day name
-        day_match = None
-        for day_word, day_int in _DAY_MAP.items():
-            if re.search(r"\b" + day_word + r"\b", seg):
-                day_match = (day_word, day_int)
-                break
-        if day_match is None:
+        # ── Find EVERY day name in this segment (not just the first), so
+        #    segments like "Mon 6am-10pm and Tue 6am-10pm" emit both days.
+        day_hits = [(m.start(), m.end(), _DAY_MAP[m.group(1).lower()])
+                    for m in re.finditer(_DAY_PATTERN, seg, flags=re.IGNORECASE)]
+        if not day_hits:
             continue
+        # De-duplicate weekdays keeping the first occurrence's span
+        seen = set()
+        unique_hits = []
+        for s, e, wd in day_hits:
+            if wd in seen:
+                continue
+            seen.add(wd)
+            unique_hits.append((s, e, wd))
 
-        day_word, weekday = day_match
-
-        # "off", "no run", "shutdown", "down", "n/a" — skip this day
-        if re.search(r"\b(off|no run|shutdown|down|n/a|none)\b", seg):
-            notes.append(f"  {_DAY_ABBREV[weekday]}: marked as off/no run")
-            continue
-
-        # Extract times: two time-like tokens separated by - / to / until / –
-        m = re.search(time_pat, seg)
-        if m:
-            start_h = _parse_time(m.group(1))
-            end_h   = _parse_time(m.group(2))
-            if start_h is not None and end_h is not None:
-                if end_h <= start_h:          # overnight window (e.g. 22:00–06:00)
-                    end_h += 24
-                    notes.append(f"  {_DAY_ABBREV[weekday]}: overnight window detected — "
-                                 f"end adjusted to {end_h}h")
-                entries.append((weekday, start_h, end_h))
-                effective_days += 1
-            else:
-                notes.append(f"  {_DAY_ABBREV[weekday]}: found times but could not parse ('{m.group(0)}')")
-        else:
-            notes.append(f"  {_DAY_ABBREV[weekday]}: day found but no time range detected in: '{raw.strip()}'")
+        for d_start, d_end, weekday in unique_hits:
+            result = _single_day_window(seg, weekday, (d_start, d_end), time_pat)
+            if result is None:
+                notes.append(f"  {_DAY_ABBREV[weekday]}: day found but no time range detected")
+                continue
+            if result[0] == "off":
+                notes.append(f"  {_DAY_ABBREV[weekday]}: marked as off/no run")
+                continue
+            _, wd, start_h, end_h = result
+            entries.append((wd, start_h, end_h))
+            effective_days += 1
 
     confidence = "high" if effective_days >= 3 else "low"
     return entries, confidence, notes
@@ -268,6 +364,14 @@ def parse_schedule_llm(text, api_key):
 
     prompt = (
         "Parse this production run schedule into JSON run windows.\n\n"
+        "IMPORTANT: The input may be a complete email containing greetings,\n"
+        "sign-offs, quoted replies ('> ...'), and other prose. Extract ONLY\n"
+        "the production run schedule and ignore everything else. If no run\n"
+        "schedule is present, return [].\n\n"
+        "Filler words like 'at', 'on', 'from', 'starting' may appear between\n"
+        "a day and a time (e.g. 'Saturday at 4AM', 'Sun on 0600') — ignore\n"
+        "them. Plural day names ('Mondays', 'Tuesdays') mean the same as\n"
+        "singular.\n\n"
         "Return a JSON array. Each item has:\n"
         "  weekday    : int 0–6 (Monday=0 … Sunday=6)\n"
         "  start_hour : int 0–23 (hour of day the window starts)\n"
@@ -280,7 +384,10 @@ def parse_schedule_llm(text, api_key):
         "  'mon 0600-tues 1600 Wed 0600-1600 Thurs 0600-Fri 0400'\n"
         "      → [{\"weekday\":0,\"start_hour\":6,\"end_hour\":34},\n"
         "         {\"weekday\":2,\"start_hour\":6,\"end_hour\":16},\n"
-        "         {\"weekday\":3,\"start_hour\":6,\"end_hour\":46}]\n\n"
+        "         {\"weekday\":3,\"start_hour\":6,\"end_hour\":46}]\n"
+        "  'Hi team, we are going to Monday 0600 to Saturday at 4AM. Thanks'\n"
+        "      → [{\"weekday\":0,\"start_hour\":6,\"end_hour\":124}]\n"
+        "        (Mon 06:00 → Sat 04:00 = 118h; end_hour = 6 + 118 = 124)\n\n"
         "Omit days marked off / down / no run / shutdown.\n"
         "Return ONLY valid JSON — no explanation, no markdown fences.\n\n"
         f"Schedule text:\n{text}"
