@@ -562,7 +562,7 @@ with st.expander("ℹ️ Workflow guide"):
 7. **CS load-entry email** — committed trucks generate a PDF emailed to CS, also shown at the bottom of this page.
 
 **Key rules:**
-- Truck deliveries must be ≥ 48 h in the future and fall within a Mon–Fri 06:00–14:00 run window.
+- Truck deliveries are snapped to **06:00, 08:00, or 14:00** (Mon–Fri, inside a run window, ≥ 48 h ahead). No two trucks may arrive in the same slot. Overfill is never allowed — the planner skips a slot rather than overfill.
 - Apply next week's schedule *before* the week starts (Thursday or Friday is ideal).
 - Reorder target scales from **{TARGET_LOW_LBS:,} lbs** (light week, {TARGET_LOW_RUN_HOURS} run hrs)
   to **{TARGET_HIGH_LBS:,} lbs** (heavy week, {TARGET_HIGH_RUN_HOURS} run hrs).
