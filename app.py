@@ -1385,8 +1385,8 @@ with st.expander("📋 Alert Rules Reference"):
 | **Plant State Mismatch** | Plant is running when the schedule says it's down, or down when the schedule says it's running | **> {PLANT_STATE_MISMATCH_HOURS} hours** off-schedule (reads live telemetry in production) |
 | **Lead-Time Warning** | On-hand usable + scheduled inbound < demand for the next **{LEAD_TIME_HOURS} scheduled run hours** | — |
 | **Late Truck** | A scheduled truck has not arrived | **> {LATE_TRUCK_HOURS} hours** past scheduled arrival |
-| **Reminder Sent** | Friday 11 AM sim time reached with no schedule on file for next week | Shows from 11 AM until schedule is received or the 3 PM warning replaces it |
-| **No Schedule** | Friday 3 PM sim time reached with no schedule on file for next week | Replaces the 11 AM alert; fires until `schedule_received_for_week` is set |
+| **Reminder Sent** (yellow) | Friday 11 AM sim time reached with no schedule on file for next week | Shows from 11 AM until schedule is received or the 3 PM alert replaces it |
+| **No Schedule** (red) | Friday 3 PM sim time reached with no schedule on file for next week | Replaces the 11 AM alert; fires until `schedule_received_for_week` is set |
 | **Low Confidence Parse** | A schedule email was found but fewer than 3 days could be parsed | Clears automatically when a high-confidence schedule is applied |
 
 **Reorder target** scales with run activity:
