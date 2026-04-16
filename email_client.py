@@ -188,18 +188,53 @@ class OutlookClient:
         return results
 
 
+def _html_to_text(html: str) -> str:
+    """Strip HTML markup, returning readable plain text."""
+    import re
+    # Replace block-level elements with newlines so words don't run together
+    html = re.sub(r'<(?:br|p|div|tr|li|h[1-6])[^>]*>', '\n', html, flags=re.IGNORECASE)
+    # Remove all remaining tags
+    text = re.sub(r'<[^>]+>', ' ', html)
+    # Decode the most common HTML entities
+    for entity, char in [
+        ('&amp;', '&'), ('&lt;', '<'), ('&gt;', '>'),
+        ('&nbsp;', ' '), ('&#39;', "'"), ('&quot;', '"'),
+    ]:
+        text = text.replace(entity, char)
+    # Normalise whitespace
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
 def _extract_body(msg):
-    """Pull the plain-text body out of an email.message.Message object."""
+    """Pull the plain-text body out of an email.message.Message object.
+
+    Prefers text/plain. Falls back to HTML stripping if the email has no
+    plain-text part (common with Outlook / corporate senders).
+    """
     if msg.is_multipart():
+        # First pass: prefer text/plain
         for part in msg.walk():
             if part.get_content_type() == "text/plain":
                 try:
                     return part.get_payload(decode=True).decode("utf-8", errors="replace")
                 except Exception:
                     return ""
+        # Second pass: strip HTML as a fallback
+        for part in msg.walk():
+            if part.get_content_type() == "text/html":
+                try:
+                    html = part.get_payload(decode=True).decode("utf-8", errors="replace")
+                    return _html_to_text(html)
+                except Exception:
+                    return ""
         return ""
     else:
         try:
-            return msg.get_payload(decode=True).decode("utf-8", errors="replace")
+            raw = msg.get_payload(decode=True).decode("utf-8", errors="replace")
+            if msg.get_content_type() == "text/html":
+                return _html_to_text(raw)
+            return raw
         except Exception:
             return ""

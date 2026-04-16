@@ -709,8 +709,10 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
 
     client = OutlookClient(config)
     # anna_email="" means "accept from any sender" — useful for demos where
-    # the schedule may be sent from different addresses.
-    results = client.search_inbox(sender=anna or None, top=5)
+    # the schedule may be sent from different addresses. Use a wider window
+    # (top=10) when there is no sender filter so the schedule email isn't
+    # missed if other inbox activity has arrived more recently.
+    results = client.search_inbox(sender=anna or None, top=10 if not anna else 5)
 
     if not results:
         who = anna if anna else "anyone"
