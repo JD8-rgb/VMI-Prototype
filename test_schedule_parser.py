@@ -827,6 +827,30 @@ def main():
         _summarize("Regex parser", regex_results, regex_mode=True)
         _failure_modes([r for r in regex_results if r.case.regex_expected])
 
+    # ── Must-pass combined check (always run, no API required) ─────────────
+    # The production parser (parse_schedule) is regex-first. These 14 curated
+    # cases MUST pass via regex alone, regardless of LLM availability.
+    # We always run the full 14-case set even when --sample is active.
+    if not args.llm_only:
+        print("\nRunning must-pass combined check (regex-first, no API needed)...")
+        all_must = curated_must_pass()
+        mp_combined = [run_combined(c, "") for c in all_must]
+        mp_pass_count = sum(1 for r in mp_combined if r.passed)
+        mp_ok = (mp_pass_count == len(mp_combined))
+        print(f"  Curated must-pass set (combined/regex): "
+              f"{mp_pass_count}/{len(mp_combined)} "
+              f"[{'PASS' if mp_ok else 'FAIL'}]")
+        if not mp_ok:
+            for r in mp_combined:
+                if not r.passed:
+                    snippet = r.case.input[:60].replace("\n", "\\n")
+                    print(f"    FAIL {r.case.label}: {snippet!r}")
+                    print(f"         got:      {_normalize(r.entries)}  "
+                          f"confidence={r.confidence}")
+                    print(f"         expected: {_normalize(r.case.expected)}")
+    else:
+        mp_ok = True   # LLM-only mode: skip combined must-pass gate
+
     # ── LLM sweep ──────────────────────────────────────────────────────────
     llm_results: List[CaseResult] = []
     combined_results: List[CaseResult] = []
@@ -850,11 +874,12 @@ def main():
         _summarize("LLM parser", llm_results)
         _failure_modes(llm_results)
 
-        # Must-pass set
+        # LLM must-pass — informational only; production gate is combined above.
         must = [r for r in llm_results if r.case.must_pass]
-        mp_passed = sum(1 for r in must if r.passed)
-        print(f"\n  Curated must-pass set: {mp_passed}/{len(must)} "
-              f"[{'PASS' if mp_passed == len(must) else 'FAIL'}]")
+        if must:
+            lmp_passed = sum(1 for r in must if r.passed)
+            print(f"\n  LLM must-pass set (informational): {lmp_passed}/{len(must)} "
+                  f"[{'PASS' if lmp_passed == len(must) else 'FAIL'}]")
 
         # Combined parser sweep (skipped for sample mode to save budget).
         # Uses the same concurrency as the LLM sweep since it also hits the API.
@@ -891,10 +916,11 @@ def main():
         p = sum(1 for r in counted if r.passed)
         if p < 0.99 * len(counted):
             overall_ok = False
+    if not mp_ok:
+        # Combined/regex must-pass gate — always required when not --llm-only
+        overall_ok = False
     if llm_results:
-        must = [r for r in llm_results if r.case.must_pass]
-        if any(not r.passed for r in must):
-            overall_ok = False
+        # LLM overall pass rate (must-pass no longer gates exit — use combined)
         if sum(1 for r in llm_results if r.passed) < 0.99 * len(llm_results):
             overall_ok = False
 
