@@ -521,6 +521,207 @@ def _next_sap(data):
 # PAGE
 # ═════════════════════════════════════════════════════════════════════════════
 
+st.markdown("""
+<style>
+/* ── Google Font ── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* ── Base ── */
+html, body, [class*="css"] {
+    font-family: 'Inter', sans-serif;
+}
+
+/* ── App background ── */
+.stApp {
+    background-color: #F7F9FC;
+}
+
+/* ── Main content area ── */
+section.main > div {
+    padding-top: 1.2rem;
+}
+
+/* ── Headings ── */
+h1 { color: #0F1629 !important; font-weight: 700 !important; letter-spacing: -0.5px; }
+h2 { color: #0F1629 !important; font-weight: 600 !important; }
+h3 { color: #1E2A45 !important; font-weight: 600 !important; }
+
+/* ── Sidebar ── */
+section[data-testid="stSidebar"] {
+    background-color: #FFFFFF;
+    border-right: 1px solid #E2E8F0;
+}
+
+/* ── Primary buttons → teal ── */
+button[kind="primary"], .stDownloadButton > button[kind="primary"] {
+    background-color: #00C7A9 !important;
+    border: none !important;
+    color: #0F1629 !important;
+    font-weight: 600 !important;
+    font-family: 'Inter', sans-serif !important;
+    border-radius: 6px !important;
+    letter-spacing: 0.01em;
+}
+button[kind="primary"]:hover, .stDownloadButton > button[kind="primary"]:hover {
+    background-color: #00B09A !important;
+    box-shadow: 0 2px 8px rgba(0,199,169,0.35) !important;
+}
+
+/* ── Secondary / default buttons ── */
+button[kind="secondary"] {
+    background-color: #FFFFFF !important;
+    border: 1.5px solid #CBD5E1 !important;
+    color: #1E2A45 !important;
+    font-weight: 500 !important;
+    font-family: 'Inter', sans-serif !important;
+    border-radius: 6px !important;
+}
+button[kind="secondary"]:hover {
+    border-color: #00C7A9 !important;
+    color: #00C7A9 !important;
+}
+
+/* ── Link buttons ── */
+a[data-testid="stLinkButton"] > button {
+    background-color: #FFFFFF !important;
+    border: 1.5px solid #CBD5E1 !important;
+    color: #1E2A45 !important;
+    font-weight: 500 !important;
+    font-family: 'Inter', sans-serif !important;
+    border-radius: 6px !important;
+}
+a[data-testid="stLinkButton"] > button:hover {
+    border-color: #00C7A9 !important;
+    color: #00C7A9 !important;
+}
+
+/* ── Expanders ── */
+details {
+    background-color: #FFFFFF;
+    border: 1px solid #E2E8F0 !important;
+    border-radius: 8px !important;
+    margin-bottom: 0.6rem;
+}
+details > summary {
+    font-weight: 600;
+    color: #1E2A45;
+    padding: 0.6rem 0.8rem;
+}
+
+/* ── Inputs and selects ── */
+input[type="number"], input[type="text"], textarea, .stSelectbox > div {
+    border-radius: 6px !important;
+    font-family: 'Inter', sans-serif !important;
+}
+
+/* ── Dataframes / tables ── */
+.stDataFrame {
+    border-radius: 8px !important;
+    overflow: hidden;
+    border: 1px solid #E2E8F0 !important;
+}
+.stDataFrame thead tr th {
+    background-color: #F1F5F9 !important;
+    color: #0F1629 !important;
+    font-weight: 600 !important;
+    font-size: 0.82rem !important;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+/* ── Metrics ── */
+[data-testid="stMetric"] {
+    background-color: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+}
+[data-testid="stMetric"] label {
+    color: #64748B !important;
+    font-size: 0.78rem !important;
+    font-weight: 600 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    color: #0F1629 !important;
+    font-weight: 700 !important;
+}
+
+/* ── Alert / info boxes ── */
+div[data-testid="stAlert"] {
+    border-radius: 8px !important;
+    font-family: 'Inter', sans-serif !important;
+}
+
+/* ── Success boxes ── */
+div[data-testid="stAlert"][kind="success"] {
+    background-color: #F0FDF4 !important;
+    border-left: 4px solid #22C55E !important;
+    color: #14532D !important;
+}
+
+/* ── Warning boxes ── */
+div[data-testid="stAlert"][kind="warning"] {
+    background-color: #FFFBEB !important;
+    border-left: 4px solid #F59E0B !important;
+    color: #78350F !important;
+}
+
+/* ── Error boxes ── */
+div[data-testid="stAlert"][kind="error"] {
+    background-color: #FFF1F2 !important;
+    border-left: 4px solid #F43F5E !important;
+    color: #881337 !important;
+}
+
+/* ── Info boxes ── */
+div[data-testid="stAlert"][kind="info"] {
+    background-color: #F0F9FF !important;
+    border-left: 4px solid #00C7A9 !important;
+    color: #0C4A6E !important;
+}
+
+/* ── Caption / helper text ── */
+.stCaption, small {
+    color: #64748B !important;
+    font-size: 0.82rem !important;
+}
+
+/* ── Horizontal rule ── */
+hr {
+    border: none;
+    border-top: 1px solid #E2E8F0;
+    margin: 1rem 0;
+}
+
+/* ── Code blocks ── */
+code {
+    background-color: #F1F5F9 !important;
+    color: #0F1629 !important;
+    border-radius: 4px !important;
+    font-size: 0.85em !important;
+    padding: 0.1em 0.35em !important;
+}
+
+/* ── Divider between major sections ── */
+.section-divider {
+    border: none;
+    border-top: 2px solid #E2E8F0;
+    margin: 1.5rem 0 1rem 0;
+}
+
+/* ── Subtle card container ── */
+.vmi-card {
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 0.75rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # Header row — big centered Product Sheet button (hero), small Codebase link at right
 _tc_left, _tc_center, _tc_right = st.columns([2, 3, 2])
 with _tc_center:
@@ -544,8 +745,18 @@ with _tc_center:
 with _tc_right:
     st.link_button("💻 Codebase", GITHUB_URL)
 
-st.title("🏭 VMI Automation")
-st.caption("Vendor-Managed Inventory — tank simulation, auto-planning, schedule parsing, alert emails")
+st.markdown("""
+<div style="padding:0.25rem 0 0.75rem 0;border-bottom:2px solid #E2E8F0;margin-bottom:1rem;">
+    <span style="font-size:1.75rem;font-weight:700;color:#0F1629;
+                 font-family:'Inter',sans-serif;letter-spacing:-0.5px;">
+        🏭 &nbsp;VMI Automation
+    </span>
+    <span style="display:block;margin-top:0.15rem;font-size:0.85rem;color:#64748B;
+                 font-family:'Inter',sans-serif;">
+        Vendor-Managed Inventory — tank simulation, auto-planning, schedule parsing, alert emails
+    </span>
+</div>
+""", unsafe_allow_html=True)
 
 with st.expander("ℹ️ Workflow guide"):
     st.markdown(f"""
@@ -644,13 +855,29 @@ alerts = get_all_alerts(data)
 n_alerts = len(alerts)
 st.subheader(f"🚨 Alerts {'(' + str(n_alerts) + ' active)' if n_alerts else ''}")
 if not alerts:
-    st.success("✅ All clear — no active alerts.")
+    st.markdown("""
+    <div style="background:#F0FDF4;border-left:4px solid #22C55E;border-radius:8px;
+                padding:0.75rem 1rem;color:#14532D;font-family:'Inter',sans-serif;
+                font-size:0.92rem;font-weight:500;">
+        ✅ &nbsp; All clear — no active alerts.
+    </div>""", unsafe_allow_html=True)
 else:
     for a in alerts:
-        if a.startswith("RED FLAG"):
-            st.error(a)
-        else:
-            st.warning(a)
+        is_red = a.startswith("RED FLAG")
+        label  = "🔴 &nbsp; CRITICAL" if is_red else "🟡 &nbsp; WARNING"
+        text   = a.replace("RED FLAG: ", "").replace("YELLOW FLAG: ", "").replace("WARNING: ", "")
+        bg     = "#FFF1F2" if is_red else "#FFFBEB"
+        border = "#F43F5E" if is_red else "#F59E0B"
+        lcolor = "#881337" if is_red else "#78350F"
+        bcolor = "#FECDD3" if is_red else "#FDE68A"
+        st.markdown(f"""
+        <div style="background:{bg};border:1px solid {bcolor};border-left:4px solid {border};
+                    border-radius:8px;padding:0.65rem 1rem;margin-bottom:0.5rem;
+                    font-family:'Inter',sans-serif;">
+            <span style="font-size:0.72rem;font-weight:700;color:{border};
+                         letter-spacing:0.08em;text-transform:uppercase;">{label}</span>
+            <div style="color:{lcolor};font-size:0.9rem;margin-top:0.2rem;">{text}</div>
+        </div>""", unsafe_allow_html=True)
 
 st.divider()
 
