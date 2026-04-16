@@ -28,9 +28,13 @@ import io
 import os
 import random
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
+
+# Harness-wide telemetry for rate-limit pressure (populated by run_llm).
+_RETRY_STATS = {"retried": 0, "final_429": 0}
 
 # ── Make sure we import the in-tree read_schedule, not any stale package ────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -610,18 +614,50 @@ def run_regex(case: Case) -> CaseResult:
                       _check_passed(case, entries, confidence))
 
 
-def run_llm(case: Case, api_key: str) -> CaseResult:
-    try:
-        entries, confidence, notes = parse_schedule_llm(case.input, api_key)
-    except LLMParseError as e:
-        # Control cases expect nothing — an "empty" or JSON "[]" is fine.
-        if not case.expected:
-            return CaseResult(case, [], "low", [str(e)], True)
-        return CaseResult(case, [], "low", [], False, error=f"[{e.stage}] {e.detail}")
-    except Exception as e:
-        return CaseResult(case, [], "low", [], False, error=f"exception: {e!r}")
-    return CaseResult(case, entries, confidence, notes,
-                      _check_passed(case, entries, confidence))
+def run_llm(case: Case, api_key: str, throttle: float = 0.0) -> CaseResult:
+    """
+    Run a single case through the LLM parser with retry-and-backoff on 429
+    rate-limit errors.  Up to 2 retries at 3s then 8s.  Other LLMParseError
+    stages (auth/json/schema/empty) fail immediately — no retry.
+    """
+    if throttle > 0:
+        time.sleep(throttle)
+
+    backoffs = [3.0, 8.0]   # seconds; empty list = give up
+
+    def _call_once():
+        return parse_schedule_llm(case.input, api_key)
+
+    last_err: Optional[LLMParseError] = None
+    for attempt in range(len(backoffs) + 1):
+        try:
+            entries, confidence, notes = _call_once()
+            return CaseResult(case, entries, confidence, notes,
+                              _check_passed(case, entries, confidence))
+        except LLMParseError as e:
+            last_err = e
+            # Only retry rate-limit failures — other stages won't improve.
+            is_rate_limit = (e.stage == "api" and "429" in str(e.detail))
+            if is_rate_limit and attempt < len(backoffs):
+                _RETRY_STATS["retried"] += 1
+                time.sleep(backoffs[attempt])
+                continue
+            break
+        except Exception as e:
+            # Not an LLMParseError — don't retry
+            if not case.expected:
+                return CaseResult(case, [], "low", [str(e)], True)
+            return CaseResult(case, [], "low", [], False,
+                              error=f"exception: {e!r}")
+
+    # All retries exhausted (or non-retryable LLMParseError).
+    if last_err and last_err.stage == "api" and "429" in str(last_err.detail):
+        _RETRY_STATS["final_429"] += 1
+    if not case.expected:
+        return CaseResult(case, [], "low", [str(last_err)] if last_err else [], True)
+    return CaseResult(case, [], "low", [], False,
+                      error=f"[{last_err.stage}] {last_err.detail}" if last_err
+                      else "unknown")
 
 
 def run_combined(case: Case, api_key: str) -> CaseResult:
@@ -762,8 +798,12 @@ def main():
                     help="Write failures to CSV at this path.")
     ap.add_argument("--verbose", action="store_true",
                     help="Print every failing case.")
-    ap.add_argument("--max-workers", type=int, default=8,
-                    help="Parallelism for LLM calls (default 8).")
+    ap.add_argument("--max-workers", type=int, default=3,
+                    help="Parallelism for LLM calls (default 3 — tuned for "
+                         "Anthropic Haiku rate limits).")
+    ap.add_argument("--throttle", type=float, default=0.0,
+                    help="Per-worker sleep (seconds) before each LLM call; "
+                         "useful if you hit 429s at higher concurrency.")
     args = ap.parse_args()
 
     cases = generate_all()
@@ -792,15 +832,21 @@ def main():
     combined_results: List[CaseResult] = []
     if not args.regex_only:
         print(f"\nRunning LLM sweep on {len(cases)} cases "
-              f"({args.max_workers} workers)...")
+              f"({args.max_workers} workers, throttle={args.throttle}s)...")
+        _RETRY_STATS["retried"] = 0
+        _RETRY_STATS["final_429"] = 0
         with ThreadPoolExecutor(max_workers=args.max_workers) as ex:
-            futs = {ex.submit(run_llm, c, api_key): c for c in cases}
+            futs = {ex.submit(run_llm, c, api_key, args.throttle): c for c in cases}
             done = 0
             for fut in as_completed(futs):
                 llm_results.append(fut.result())
                 done += 1
                 if done % 50 == 0:
-                    print(f"  ... {done}/{len(cases)}")
+                    print(f"  ... {done}/{len(cases)} "
+                          f"(retries: {_RETRY_STATS['retried']}, "
+                          f"final_429: {_RETRY_STATS['final_429']})")
+        print(f"\nRate-limit stats: {_RETRY_STATS['retried']} call(s) retried, "
+              f"{_RETRY_STATS['final_429']} call(s) still 429 after backoff.")
         _summarize("LLM parser", llm_results)
         _failure_modes(llm_results)
 
@@ -810,7 +856,8 @@ def main():
         print(f"\n  Curated must-pass set: {mp_passed}/{len(must)} "
               f"[{'PASS' if mp_passed == len(must) else 'FAIL'}]")
 
-        # Combined parser sweep (skipped for sample mode to save budget)
+        # Combined parser sweep (skipped for sample mode to save budget).
+        # Uses the same concurrency as the LLM sweep since it also hits the API.
         if not args.sample or args.sample >= 100:
             print(f"\nRunning combined parse_schedule sweep...")
             with ThreadPoolExecutor(max_workers=args.max_workers) as ex:

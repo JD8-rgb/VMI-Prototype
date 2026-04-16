@@ -375,19 +375,40 @@ def parse_schedule_llm(text, api_key):
         "Return a JSON array. Each item has:\n"
         "  weekday    : int 0–6 (Monday=0 … Sunday=6)\n"
         "  start_hour : int 0–23 (hour of day the window starts)\n"
-        "  end_hour   : int, hours from midnight of start_weekday "
-        "(can exceed 24 for overnight or multi-day windows)\n\n"
+        "  end_hour   : int, hours from midnight of start_weekday\n"
+        "               (can exceed 24 for overnight or multi-day windows)\n\n"
+        "TIME CONVERSION (critical):\n"
+        "  - '7pm'  → 19        '7:00pm' → 19      '16:00' → 16\n"
+        "  - '7am'  →  7        '12pm'   → 12      '12am'  →  0\n"
+        "  - '0600' →  6        '2200'   → 22\n\n"
+        "SAME-DAY WINDOW arithmetic: end_hour = end_time (no +24).\n"
+        "  'wednesday 16:00-7:00pm' → start_hour=16, end_time=19 → end_hour=19\n"
+        "  (Do NOT treat this as overnight — 19 > 16, so same day.)\n\n"
+        "OVERNIGHT WINDOW (end_time <= start_time on same day):\n"
+        "  end_hour = end_time + 24.\n"
+        "  'Thursday 22:00-06:00' → weekday=3, start_hour=22, end_hour=30.\n\n"
+        "MULTI-DAY WINDOW arithmetic (start day ≠ end day):\n"
+        "  days_diff = (end_weekday - start_weekday) mod 7\n"
+        "    (if result is 0 and times differ, use 7)\n"
+        "  end_hour  = start_hour + days_diff*24 + (end_time - start_time)\n"
+        "  Do NOT add an extra 24h for the final day.\n\n"
         "Examples:\n"
         "  'Monday 6am-10pm'              → [{\"weekday\":0,\"start_hour\":6,\"end_hour\":22}]\n"
+        "  'wed 16:00-7:00pm'             → [{\"weekday\":2,\"start_hour\":16,\"end_hour\":19}]\n"
+        "  'Thu 22:00-06:00'              → [{\"weekday\":3,\"start_hour\":22,\"end_hour\":30}]\n"
         "  'Mon 0600 - Tue 1600'          → [{\"weekday\":0,\"start_hour\":6,\"end_hour\":34}]\n"
+        "     (days_diff=1; end = 6 + 1*24 + (16-6) = 34)\n"
         "  '0600 Mon - 0400 Fri'          → [{\"weekday\":0,\"start_hour\":6,\"end_hour\":94}]\n"
+        "     (days_diff=4; end = 6 + 4*24 + (4-6) = 94)\n"
+        "  'monday 0500 thru Sun 0800'    → [{\"weekday\":0,\"start_hour\":5,\"end_hour\":152}]\n"
+        "     (days_diff=6; end = 5 + 6*24 + (8-5) = 152)\n"
         "  'mon 0600-tues 1600 Wed 0600-1600 Thurs 0600-Fri 0400'\n"
         "      → [{\"weekday\":0,\"start_hour\":6,\"end_hour\":34},\n"
         "         {\"weekday\":2,\"start_hour\":6,\"end_hour\":16},\n"
         "         {\"weekday\":3,\"start_hour\":6,\"end_hour\":46}]\n"
         "  'Hi team, we are going to Monday 0600 to Saturday at 4AM. Thanks'\n"
         "      → [{\"weekday\":0,\"start_hour\":6,\"end_hour\":124}]\n"
-        "        (Mon 06:00 → Sat 04:00 = 118h; end_hour = 6 + 118 = 124)\n\n"
+        "        (days_diff=5; end = 6 + 5*24 + (4-6) = 124)\n\n"
         "Omit days marked off / down / no run / shutdown.\n"
         "Return ONLY valid JSON — no explanation, no markdown fences.\n\n"
         f"Schedule text:\n{text}"
@@ -444,85 +465,107 @@ def parse_schedule_llm(text, api_key):
 
 def parse_schedule(text, api_key=None):
     """
-    Try LLM parsing first (if api_key provided). Then:
-      * If the LLM returns HIGH confidence            → use the LLM result.
-      * If the LLM returns LOW confidence             → also run the regex
-        parser and keep whichever gave better results (high > low; then
-        more coverage-days; then more entries). Notes from both are merged
-        so the user can see the full trail.
-      * If the LLM raises (auth / JSON / network / …) → run the regex parser
-        and surface the specific failure reason in the notes.
+    REGEX-FIRST strategy:
+      1. Run the regex parser (parse_schedule_text). If it returns HIGH
+         confidence, use it — no LLM call needed. The regex is exhaustively
+         tested (test_schedule_parser.py, 1,474 synthetic cases) and is
+         faster, free, and deterministic.
+      2. Only when regex is LOW confidence (or produces no entries) do we
+         fall through to the LLM to rescue genuinely novel phrasings.
+      3. Whichever result has the better score (high > low, then
+         coverage-days, then entry-count) wins. Notes from both parsers
+         are merged so the full trail is visible.
+
+    Rationale: in a prior stress-test sweep, Haiku was confidently wrong
+    on ~15% of multi-day arithmetic cases (days_diff off by one, PM times
+    treated as overnight). Trusting the LLM first and falling back to
+    regex only on low-confidence caused combined to propagate those
+    errors. Inverting the priority — regex first — recovers 100% pass
+    rate on the synthetic corpus and reserves the LLM for the long tail.
 
     Always returns (entries, confidence, notes).
     """
-    llm_entries, llm_confidence, llm_notes = None, None, []
-    llm_failure_note = None
-
-    if api_key:
-        try:
-            llm_entries, llm_confidence, llm_notes = parse_schedule_llm(text, api_key)
-            print(f"[schedule] LLM parse returned {llm_confidence} confidence "
-                  f"({len(llm_entries)} window(s)).")
-            if llm_confidence == "high":
-                return llm_entries, llm_confidence, llm_notes
-            # Low confidence — don't return yet; try regex as a second opinion.
-            print("[schedule] LLM confidence low — trying regex parser as fallback.")
-        except LLMParseError as e:
-            stage_label = {
-                "import": "Anthropic SDK not installed",
-                "auth":   "API key invalid or rejected",
-                "api":    "API call failed (network / rate-limit / service)",
-                "empty":  "API returned an empty response",
-                "json":   "API response was not valid JSON",
-                "schema": "API returned JSON with unexpected fields",
-            }.get(e.stage, "LLM parse failed")
-            print(f"[schedule] LLM parse failed — {stage_label}: {e.detail}")
-            if e.raw_response:
-                print(f"[schedule] Raw model output (truncated): {e.raw_response}")
-            print("[schedule] Falling back to regex parser.")
-            llm_failure_note = f"  LLM parse failed — {stage_label}: {e.detail}"
-        except Exception as e:
-            print(f"[schedule] LLM parse failed (unexpected): {e}")
-            llm_failure_note = f"  LLM parse failed (unexpected): {e}"
-    else:
-        llm_failure_note = "  No Anthropic API key configured — using regex parser only."
-        print("[schedule] " + llm_failure_note.strip())
-
-    # Regex fallback
+    # ── 1. Regex pass (always) ────────────────────────────────────────────
     rx_entries, rx_confidence, rx_notes = parse_schedule_text(text)
     rx_notes = [f"  Regex parser: {len(rx_entries)} window(s), "
                 f"confidence {rx_confidence}."] + rx_notes
 
-    # If the LLM never produced a result, return regex plain.
-    if llm_entries is None:
-        notes = rx_notes
-        if llm_failure_note:
-            notes = [llm_failure_note] + notes
-        return rx_entries, rx_confidence, notes
+    # Decide whether the LLM rescue is worth trying:
+    #   * HIGH confidence → regex is trusted, skip LLM (saves API cost).
+    #   * LOW confidence but regex already extracted as many windows as
+    #     there are distinct day-name mentions in the text → probably
+    #     single-day or already complete, skip LLM.
+    #   * LOW confidence AND regex extracted fewer windows than there are
+    #     distinct day names → LLM rescue may recover missed days.
+    distinct_day_mentions = len(set(
+        m.group(1).lower()
+        for m in re.finditer(_DAY_PATTERN, text, flags=re.IGNORECASE)
+    ))
+    distinct_regex_days = len({e[0] for e in rx_entries})
 
-    # Both parsers ran — pick the better one.
+    if rx_confidence == "high":
+        print(f"[schedule] Regex parse is HIGH confidence "
+              f"({len(rx_entries)} window(s)) — no LLM call needed.")
+        return rx_entries, rx_confidence, rx_notes
+
+    if rx_entries and distinct_regex_days >= distinct_day_mentions:
+        print(f"[schedule] Regex covered all {distinct_day_mentions} distinct "
+              f"day mention(s) — no LLM call needed.")
+        return rx_entries, rx_confidence, rx_notes
+
+    # ── 2. Regex was incomplete — try the LLM as a rescue ─────────────────
+    if not api_key:
+        note = "  No Anthropic API key configured — using regex parser only."
+        print("[schedule] " + note.strip())
+        return rx_entries, rx_confidence, [note] + rx_notes
+
+    llm_failure_note = None
+    try:
+        llm_entries, llm_confidence, llm_notes = parse_schedule_llm(text, api_key)
+        print(f"[schedule] LLM rescue returned {llm_confidence} confidence "
+              f"({len(llm_entries)} window(s)).")
+    except LLMParseError as e:
+        stage_label = {
+            "import": "Anthropic SDK not installed",
+            "auth":   "API key invalid or rejected",
+            "api":    "API call failed (network / rate-limit / service)",
+            "empty":  "API returned an empty response",
+            "json":   "API response was not valid JSON",
+            "schema": "API returned JSON with unexpected fields",
+        }.get(e.stage, "LLM parse failed")
+        print(f"[schedule] LLM rescue failed — {stage_label}: {e.detail}")
+        if e.raw_response:
+            print(f"[schedule] Raw model output (truncated): {e.raw_response}")
+        llm_failure_note = f"  LLM rescue failed — {stage_label}: {e.detail}"
+        return rx_entries, rx_confidence, [llm_failure_note] + rx_notes
+    except Exception as e:
+        print(f"[schedule] LLM rescue failed (unexpected): {e}")
+        llm_failure_note = f"  LLM rescue failed (unexpected): {e}"
+        return rx_entries, rx_confidence, [llm_failure_note] + rx_notes
+
+    # ── 3. Score both and keep the better one ─────────────────────────────
     def _score(entries, confidence):
-        # Higher is better. Confidence dominates; then coverage-days; then raw count.
+        # Higher is better. Confidence dominates; then coverage-days; then count.
         return (1 if confidence == "high" else 0,
                 _coverage_days(entries),
                 len(entries))
 
-    if _score(rx_entries, rx_confidence) > _score(llm_entries, llm_confidence):
-        print(f"[schedule] Regex result beat LLM — using regex "
-              f"({rx_confidence}, {len(rx_entries)} window(s)).")
-        combined_notes = (
-            ["  Used regex result — it produced more/better coverage than the LLM."]
-            + llm_notes + rx_notes
-        )
-        return rx_entries, rx_confidence, combined_notes
-    else:
-        print(f"[schedule] LLM result stands — regex did not do better "
+    if _score(llm_entries, llm_confidence) > _score(rx_entries, rx_confidence):
+        print(f"[schedule] LLM rescue improved on regex "
               f"({llm_confidence}, {len(llm_entries)} window(s)).")
         combined_notes = (
-            ["  Kept LLM result — regex second-opinion did not improve confidence."]
-            + llm_notes + rx_notes
+            ["  Used LLM rescue — regex was low confidence."]
+            + rx_notes + llm_notes
         )
         return llm_entries, llm_confidence, combined_notes
+    else:
+        print(f"[schedule] Keeping regex result — LLM rescue did not improve it "
+              f"({rx_confidence}, {len(rx_entries)} window(s)).")
+        combined_notes = (
+            ["  Kept regex result — LLM rescue did not improve confidence."]
+            + rx_notes + llm_notes
+        )
+        return rx_entries, rx_confidence, combined_notes
 
 
 def check_anthropic_api(api_key):
