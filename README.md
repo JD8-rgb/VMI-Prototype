@@ -2,6 +2,8 @@
 
 > Autonomous tank monitoring, schedule parsing, and order placement for vendor-managed inventory.
 
+![VMI Automation screenshot](assets/screenshot.png)
+
 ## Why it matters
 
 The supply chain team spends significant time every week managing one specific customer with a poor VMI profile: late Friday schedule emails, week-to-week volatility, frequent unplanned downtime, relatively small tanks, and shelf-life limits. This account has already absorbed real cost from returned trucks that wouldn't fit and aged-material returns — and real risk from multiple near run-outs.
