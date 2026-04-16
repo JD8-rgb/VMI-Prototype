@@ -218,6 +218,29 @@ def parse_schedule_text(text):
 
 # ── LLM schedule parser ───────────────────────────────────────────────────────
 
+class LLMParseError(Exception):
+    """Raised by parse_schedule_llm with a specific failure stage tag."""
+    def __init__(self, stage, detail, raw_response=None):
+        self.stage = stage            # "import" | "auth" | "api" | "empty" | "json" | "schema"
+        self.detail = detail          # human-readable error text
+        self.raw_response = raw_response  # raw model output if we got that far
+        super().__init__(f"[{stage}] {detail}")
+
+
+def _coverage_days(entries):
+    """
+    How many *calendar days* are covered across all windows. A single
+    continuous window like Mon 06:00 → Fri 04:00 (end_hour = 94) covers
+    ~4 days, so it should count as high-confidence even though only one
+    weekday is listed.
+    """
+    total = 0
+    for _, start_h, end_h in entries:
+        duration = max(0, end_h - start_h)
+        total += max(1, (duration + 23) // 24)   # round up, min 1 per window
+    return total
+
+
 def parse_schedule_llm(text, api_key):
     """
     Use Claude to parse schedule text into run windows.
@@ -228,11 +251,21 @@ def parse_schedule_llm(text, api_key):
         (entries, confidence, notes)
     where entries = list of (weekday_int, start_hour_int, end_hour_int).
     end_hour_int may exceed 24 for overnight / multi-day windows.
-    """
-    import anthropic as _anthropic
-    import json as _json
 
-    client = _anthropic.Anthropic(api_key=api_key)
+    Raises LLMParseError with a `stage` tag if anything goes wrong so the
+    caller can surface a specific reason (auth / network / JSON / schema).
+    """
+    import json as _json
+    try:
+        import anthropic as _anthropic
+    except ImportError as e:
+        raise LLMParseError("import", f"anthropic package not installed: {e}")
+
+    try:
+        client = _anthropic.Anthropic(api_key=api_key)
+    except Exception as e:
+        raise LLMParseError("auth", f"could not create Anthropic client: {e}")
+
     prompt = (
         "Parse this production run schedule into JSON run windows.\n\n"
         "Return a JSON array. Each item has:\n"
@@ -252,36 +285,180 @@ def parse_schedule_llm(text, api_key):
         "Return ONLY valid JSON — no explanation, no markdown fences.\n\n"
         f"Schedule text:\n{text}"
     )
-    msg = client.messages.create(
-        model="claude-haiku-4-5",
-        max_tokens=512,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = msg.content[0].text.strip()
+
+    try:
+        msg = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=512,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except _anthropic.AuthenticationError as e:
+        raise LLMParseError("auth", f"API key rejected: {e}")
+    except _anthropic.APIConnectionError as e:
+        raise LLMParseError("api", f"network/connection error: {e}")
+    except _anthropic.RateLimitError as e:
+        raise LLMParseError("api", f"rate-limited: {e}")
+    except _anthropic.APIStatusError as e:
+        raise LLMParseError("api", f"API {e.status_code}: {e}")
+    except Exception as e:
+        raise LLMParseError("api", f"unexpected API error ({type(e).__name__}): {e}")
+
+    raw = msg.content[0].text.strip() if msg.content else ""
+    if not raw:
+        raise LLMParseError("empty", "model returned no text content")
+
     # Strip markdown code fences if model adds them
-    raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw, flags=re.MULTILINE).strip()
-    windows = _json.loads(raw)
-    entries = [(int(w["weekday"]), int(w["start_hour"]), int(w["end_hour"])) for w in windows]
-    distinct_days = len({e[0] for e in entries})   # unique weekday ints
-    confidence    = "high" if distinct_days >= 3 else "low"
+    cleaned = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw, flags=re.MULTILINE).strip()
+
+    try:
+        windows = _json.loads(cleaned)
+    except Exception as e:
+        raise LLMParseError("json", f"response was not valid JSON: {e}",
+                            raw_response=raw[:400])
+
+    try:
+        entries = [(int(w["weekday"]), int(w["start_hour"]), int(w["end_hour"]))
+                   for w in windows]
+    except Exception as e:
+        raise LLMParseError("schema", f"unexpected JSON shape: {e}",
+                            raw_response=raw[:400])
+
+    # Confidence: count calendar-days covered across all windows (so a single
+    # continuous Mon → Fri range counts as multiple days, not just one).
+    days_covered  = _coverage_days(entries)
+    distinct_days = len({e[0] for e in entries})
+    confidence    = "high" if days_covered >= 3 else "low"
     notes = [
-        f"  LLM parsed {len(entries)} window(s) across {distinct_days} day(s) — "
-        f"confidence: {confidence}"
+        f"  LLM parsed {len(entries)} window(s) starting on {distinct_days} day(s), "
+        f"covering ~{days_covered} calendar day(s) — confidence: {confidence}"
     ]
     return entries, confidence, notes
 
 
 def parse_schedule(text, api_key=None):
     """
-    Try LLM parsing first (if api_key provided), fall back to regex.
+    Try LLM parsing first (if api_key provided). Then:
+      * If the LLM returns HIGH confidence            → use the LLM result.
+      * If the LLM returns LOW confidence             → also run the regex
+        parser and keep whichever gave better results (high > low; then
+        more coverage-days; then more entries). Notes from both are merged
+        so the user can see the full trail.
+      * If the LLM raises (auth / JSON / network / …) → run the regex parser
+        and surface the specific failure reason in the notes.
+
     Always returns (entries, confidence, notes).
     """
+    llm_entries, llm_confidence, llm_notes = None, None, []
+    llm_failure_note = None
+
     if api_key:
         try:
-            return parse_schedule_llm(text, api_key)
+            llm_entries, llm_confidence, llm_notes = parse_schedule_llm(text, api_key)
+            print(f"[schedule] LLM parse returned {llm_confidence} confidence "
+                  f"({len(llm_entries)} window(s)).")
+            if llm_confidence == "high":
+                return llm_entries, llm_confidence, llm_notes
+            # Low confidence — don't return yet; try regex as a second opinion.
+            print("[schedule] LLM confidence low — trying regex parser as fallback.")
+        except LLMParseError as e:
+            stage_label = {
+                "import": "Anthropic SDK not installed",
+                "auth":   "API key invalid or rejected",
+                "api":    "API call failed (network / rate-limit / service)",
+                "empty":  "API returned an empty response",
+                "json":   "API response was not valid JSON",
+                "schema": "API returned JSON with unexpected fields",
+            }.get(e.stage, "LLM parse failed")
+            print(f"[schedule] LLM parse failed — {stage_label}: {e.detail}")
+            if e.raw_response:
+                print(f"[schedule] Raw model output (truncated): {e.raw_response}")
+            print("[schedule] Falling back to regex parser.")
+            llm_failure_note = f"  LLM parse failed — {stage_label}: {e.detail}"
         except Exception as e:
-            print(f"[schedule] LLM parse failed — using regex fallback: {e}")
-    return parse_schedule_text(text)
+            print(f"[schedule] LLM parse failed (unexpected): {e}")
+            llm_failure_note = f"  LLM parse failed (unexpected): {e}"
+    else:
+        llm_failure_note = "  No Anthropic API key configured — using regex parser only."
+        print("[schedule] " + llm_failure_note.strip())
+
+    # Regex fallback
+    rx_entries, rx_confidence, rx_notes = parse_schedule_text(text)
+    rx_notes = [f"  Regex parser: {len(rx_entries)} window(s), "
+                f"confidence {rx_confidence}."] + rx_notes
+
+    # If the LLM never produced a result, return regex plain.
+    if llm_entries is None:
+        notes = rx_notes
+        if llm_failure_note:
+            notes = [llm_failure_note] + notes
+        return rx_entries, rx_confidence, notes
+
+    # Both parsers ran — pick the better one.
+    def _score(entries, confidence):
+        # Higher is better. Confidence dominates; then coverage-days; then raw count.
+        return (1 if confidence == "high" else 0,
+                _coverage_days(entries),
+                len(entries))
+
+    if _score(rx_entries, rx_confidence) > _score(llm_entries, llm_confidence):
+        print(f"[schedule] Regex result beat LLM — using regex "
+              f"({rx_confidence}, {len(rx_entries)} window(s)).")
+        combined_notes = (
+            ["  Used regex result — it produced more/better coverage than the LLM."]
+            + llm_notes + rx_notes
+        )
+        return rx_entries, rx_confidence, combined_notes
+    else:
+        print(f"[schedule] LLM result stands — regex did not do better "
+              f"({llm_confidence}, {len(llm_entries)} window(s)).")
+        combined_notes = (
+            ["  Kept LLM result — regex second-opinion did not improve confidence."]
+            + llm_notes + rx_notes
+        )
+        return llm_entries, llm_confidence, combined_notes
+
+
+def check_anthropic_api(api_key):
+    """
+    Diagnostic: verify the Anthropic API is reachable with the given key.
+
+    Returns (ok, message) where:
+      ok=True  → API is reachable and the key works
+      ok=False → message explains exactly why (missing key / auth / network / etc.)
+
+    Performs a minimal 1-token call so it costs ~nothing but exercises the
+    full auth + network path.
+    """
+    if not api_key:
+        return False, ("No API key configured. Set ANTHROPIC_API_KEY in your "
+                       "environment, Streamlit secrets, or email_config.json "
+                       "(anthropic_api_key field).")
+    try:
+        import anthropic as _anthropic
+    except ImportError as e:
+        return False, f"anthropic package not installed: {e}"
+
+    try:
+        client = _anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=5,
+            messages=[{"role": "user", "content": "Reply with the single word: ok"}],
+        )
+        reply = msg.content[0].text.strip() if msg.content else "(empty)"
+        masked = api_key[:7] + "…" + api_key[-4:] if len(api_key) > 12 else "***"
+        return True, (f"Anthropic API reachable. Key {masked} accepted by "
+                      f"claude-haiku-4-5. Test reply: '{reply}'.")
+    except _anthropic.AuthenticationError as e:
+        return False, f"API key rejected (authentication failed): {e}"
+    except _anthropic.APIConnectionError as e:
+        return False, f"Network/connection error — check internet access: {e}"
+    except _anthropic.RateLimitError as e:
+        return False, f"Rate-limited by Anthropic: {e}"
+    except _anthropic.APIStatusError as e:
+        return False, f"API returned status {e.status_code}: {e}"
+    except Exception as e:
+        return False, f"Unexpected error ({type(e).__name__}): {e}"
 
 
 # ── Apply schedule to data ────────────────────────────────────────────────────
