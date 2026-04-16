@@ -9,6 +9,9 @@ Requires: reportlab  (pip install reportlab)
 
 from datetime import datetime, timedelta
 from io import BytesIO
+from zoneinfo import ZoneInfo
+
+_APP_TZ = ZoneInfo("America/New_York")
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
@@ -64,7 +67,7 @@ def build_load_entry_pdf(trucks, data):
     else:
         week_monday = "N/A"
 
-    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    generated_at = datetime.now(_APP_TZ).strftime("%Y-%m-%d %H:%M")
 
     story.append(Paragraph(f"<b>CS Load Entry \u2014 Week of {week_monday}</b>", styles["Title"]))
     story.append(Spacer(1, 0.1 * inch))

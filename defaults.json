@@ -49,11 +49,6 @@
     { "start_hour":  30.0, "end_hour":  46.0, "label": "Tue" },
     { "start_hour":  54.0, "end_hour":  70.0, "label": "Wed" },
     { "start_hour":  78.0, "end_hour":  94.0, "label": "Thu" },
-    { "start_hour": 102.0, "end_hour": 118.0, "label": "Fri" },
-    { "start_hour": 174.0, "end_hour": 190.0, "label": "Mon" },
-    { "start_hour": 198.0, "end_hour": 214.0, "label": "Tue" },
-    { "start_hour": 222.0, "end_hour": 238.0, "label": "Wed" },
-    { "start_hour": 246.0, "end_hour": 262.0, "label": "Thu" },
-    { "start_hour": 270.0, "end_hour": 286.0, "label": "Fri" }
+    { "start_hour": 102.0, "end_hour": 118.0, "label": "Fri" }
   ]
 }

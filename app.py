@@ -11,6 +11,7 @@ import json
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 import plotly.graph_objects as go
@@ -35,6 +36,7 @@ from email_client import OutlookClient, load_config
 
 DEFAULTS_PATH = Path("defaults.json")
 CONFIG_PATH   = Path("email_config.json")
+APP_TIMEZONE  = "America/New_York"   # used for sim-clock anchor and display
 
 
 def _get_anthropic_key():
@@ -93,8 +95,8 @@ def _defaults():
     """
     with open(DEFAULTS_PATH) as f:
         tmpl = json.load(f)
-    now      = datetime.now()
-    # Most recent Monday midnight
+    now      = datetime.now(ZoneInfo(APP_TIMEZONE)).replace(tzinfo=None)
+    # Most recent Monday midnight (Eastern)
     anchor   = (now - timedelta(days=now.weekday())).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
@@ -549,8 +551,8 @@ with st.expander("ℹ️ Workflow guide"):
     st.markdown(f"""
 **Typical demo flow:**
 
-1. **Set tank levels** (top-left) to match current inventory, then click *Apply Tank Levels*.
-2. **Roll forward to Thursday or Friday** using *Advance Clock*. This simulates time passing with consumption during scheduled run windows.
+1. **Roll forward to Thursday or Friday** using *Advance Clock*. This simulates time passing with consumption during scheduled run windows.
+2. **Set tank levels** (top-left) to a realistic mid-week inventory, then click *Apply Tank Levels*.
 3. **Enter next week's run schedule** — two ways:
    - **Email (realistic):** Send the schedule to **vmiprototype@gmail.com**, then **advance at least 1 hour** — the system checks the inbox, parses the windows with AI, applies the schedule, and places orders automatically. No other steps needed.
    - **Schedule Parser (manual/testing):** Paste the schedule text, click *Parse* → *Apply to Schedule*, then use *Plan Next Week* to place orders.
