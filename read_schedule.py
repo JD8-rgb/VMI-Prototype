@@ -413,14 +413,36 @@ def _join_range_lines(text):
 
 
 # Day-list separators that should be normalized so the segment splitter
-# doesn't strand individual days. Handles "Monday, Tuesday & Wednesday",
-# "Mon and Tue and Wed", "Mon/Tue/Wed", etc. — where the list shares a
-# single trailing time window. Without this, "Monday, Tuesday - 6am-4pm"
+# doesn't strand individual days. Handles ANY reasonable way a list of
+# days sharing one trailing time window might be written in plain English
+# or Outlook-ese — comma, Oxford comma, semicolon, "and", "&", slash,
+# backslash, pipe, plus. Without this, "Monday, Tuesday - 6am-4pm"
 # splits into ["Monday", "Tuesday - 6am-4pm"] and Monday gets no time.
+#
+# The FULL supported inter-day separator set, with examples:
+#   "Mon, Tue, Wed"            — comma
+#   "Mon, Tue, and Wed"        — comma + Oxford-"and"
+#   "Mon; Tue; Wed"            — semicolon (would otherwise be split)
+#   "Mon and Tue and Wed"      — space-"and"
+#   "Mon & Tue & Wed"          — ampersand
+#   "Mon/Tue/Wed"              — forward slash
+#   "Mon\\Tue\\Wed"            — backslash
+#   "Mon|Tue|Wed"              — pipe
+#   "Mon+Tue+Wed"              — plus
+# Mixed separators also work because the regex runs iteratively:
+#   "Mon, Tue & Wed"           → "Mon & Tue & Wed"
+#   "Mon, Tue, and Wed"        → "Mon & Tue & Wed"
 _DAY_NOCAP = r"(?:" + "|".join(_DAY_KEYS_SORTED) + r")"
 _DAY_LIST_SEP = re.compile(
     r'\b(' + _DAY_NOCAP + r')'
-    r'\s*(?:,|\s+and\s+|&|/|\+)\s*'
+    r'(?:'
+        # Comma or semicolon, with optional trailing "and"/"&" for Oxford style
+        r'\s*[,;]\s*(?:(?:and|&)\s+)?'
+        # Bare "and" or "&" with required surrounding whitespace
+        r'|\s+(?:and|&)\s+'
+        # Single-char punct separators: & / \ | +  (one or more)
+        r'|\s*[&/\\|+]+\s*'
+    r')'
     r'(?=' + _DAY_NOCAP + r'\b)',
     re.IGNORECASE,
 )
