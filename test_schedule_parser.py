@@ -549,6 +549,28 @@ def curated_must_pass() -> List[Case]:
              "Hi, nothing new to report. Thanks, Anna",
              expected=[],
              must_pass=True),
+        # Time-first ordering — the parser must accept both DAY TIME and TIME DAY forms.
+        Case("must_15_time_first_continuous", "continuous_range",
+             "1400 Monday to 0800 Wedneday\n1300 Thursday to 0400 Saturday",
+             expected=[(0, 14, 56), (3, 13, 52)],
+             must_pass=True),
+        Case("must_16_time_first_day_range", "multi_day_list",
+             "6AM-10PM Mon-Fri",
+             expected=[(0, 6, 22), (1, 6, 22), (2, 6, 22), (3, 6, 22), (4, 6, 22)],
+             must_pass=True),
+        Case("must_17_time_first_linejoin", "multi_day_list",
+             "6AM-10PM\nMonday-Friday",
+             expected=[(0, 6, 22), (1, 6, 22), (2, 6, 22), (3, 6, 22), (4, 6, 22)],
+             must_pass=True),
+        # Common misspellings seen in real mail — should not need the LLM.
+        Case("must_18_wednesday_misspelled", "single_day_simple",
+             "Wedneday 6am-10pm",
+             expected=[(2, 6, 22)],
+             must_pass=True),
+        Case("must_19_saturday_misspelled", "single_day_simple",
+             "Saterday 0800-1700",
+             expected=[(5, 8, 17)],
+             must_pass=True),
     ]
 
 

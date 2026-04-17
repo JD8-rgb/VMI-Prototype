@@ -37,11 +37,24 @@ DRY_RUN   = "--dry-run" in sys.argv
 _DAY_MAP = {
     "mondays": 0,   "monday": 0,    "mon": 0,
     "tuesdays": 1,  "tuesday": 1,   "tues": 1,  "tue": 1,
+    # Tuesday misspellings seen in real mail
+    "tuseday": 1,   "tusday": 1,
     "wednesdays": 2,"wednesday": 2, "weds": 2,  "wed": 2,
+    # Wednesday is the most commonly misspelled day
+    "wedneday": 2,  "wednsday": 2,  "wenesday": 2,
+    "wendsday": 2,  "wensday": 2,
     "thursdays": 3, "thursday": 3,  "thurs": 3, "thur": 3,  "thu": 3,
+    # Thursday misspellings
+    "thusday": 3,   "thurday": 3,   "thursay": 3, "tursday": 3,
     "fridays": 4,   "friday": 4,    "fri": 4,
+    # Friday misspellings
+    "friady": 4,    "firday": 4,
     "saturdays": 5, "saturday": 5,  "sat": 5,
+    # Saturday misspellings
+    "saterday": 5,  "satuday": 5,   "staurday": 5,
     "sundays": 6,   "sunday": 6,    "sun": 6,
+    # Sunday misspelling
+    "sundey": 6,
 }
 _DAY_ABBREV = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
 
@@ -103,10 +116,12 @@ def _parse_time(token):
 def _try_day_range_with_time(seg):
     """
     Detect a "day range + single time window" schedule like:
-      "Monday - Friday 6AM-10PM"
+      "Monday - Friday 6AM-10PM"       (day-first)
       "Mon-Fri 0600-2200"
       "Monday through Friday 6am to 10pm"
-      "Mon thru Wed 22:00-06:00"   (overnight window applied to each day)
+      "Mon thru Wed 22:00-06:00"       (overnight window applied to each day)
+      "6AM-10PM Mon-Fri"               (time-first)
+      "0600-2200 Monday to Friday"
 
     Unlike _try_multiday_range (which is ONE continuous window across
     days), this pattern means "apply the SAME daily window to every day
@@ -117,18 +132,34 @@ def _try_day_range_with_time(seg):
     _TIME = r'(\d{4}|\d{1,2}:\d{2}(?:\s*(?:am|pm))?|\d{1,2}\s*(?:am|pm))'
     _SEP  = r'\s*(?:to|through|until|thru|[-–—])\s*'
 
-    pattern = (
+    # Pass 1 — day-first:  DAY sep DAY  TIME sep TIME
+    pattern_day_first = (
         _DAY_PATTERN + _SEP + _DAY_PATTERN + r'\s+' + _TIME
         + _SEP + _TIME
     )
-    m = re.search(pattern, seg, flags=re.IGNORECASE)
-    if not m:
-        return []
+    m = re.search(pattern_day_first, seg, flags=re.IGNORECASE)
+    day1_str = day2_str = start_str = end_str = None
+    if m:
+        day1_str, day2_str, start_str, end_str = (
+            m.group(1), m.group(2), m.group(3), m.group(4)
+        )
+    else:
+        # Pass 2 — time-first:  TIME sep TIME  DAY sep DAY
+        pattern_time_first = (
+            _TIME + _SEP + _TIME + r'\s+'
+            + _DAY_PATTERN + _SEP + _DAY_PATTERN
+        )
+        m = re.search(pattern_time_first, seg, flags=re.IGNORECASE)
+        if not m:
+            return []
+        start_str, end_str, day1_str, day2_str = (
+            m.group(1), m.group(2), m.group(3), m.group(4)
+        )
 
-    day1 = _DAY_MAP.get(m.group(1).lower())
-    day2 = _DAY_MAP.get(m.group(2).lower())
-    start_h = _parse_time(m.group(3))
-    end_h   = _parse_time(m.group(4))
+    day1 = _DAY_MAP.get(day1_str.lower())
+    day2 = _DAY_MAP.get(day2_str.lower())
+    start_h = _parse_time(start_str)
+    end_h   = _parse_time(end_str)
     if day1 is None or day2 is None or start_h is None or end_h is None:
         return []
     if end_h <= start_h:          # overnight window (e.g. 22:00-06:00)
@@ -141,11 +172,13 @@ def _try_day_range_with_time(seg):
 def _try_multiday_range(seg):
     """
     Detect a continuous multi-day run window like:
-      "run monday 0600 to friday 0400"
+      "run monday 0600 to friday 0400"              (day-first)
       "monday 6am to friday 4am"
       "monday 06:00 through friday 04:00"
-      "Monday 0600 to Saturday at 4AM"       ← filler word "at"
-      "Starting wed 0800 to Sun on 0600"     ← filler word "on"
+      "Monday 0600 to Saturday at 4AM"              ← filler word "at"
+      "Starting wed 0800 to Sun on 0600"            ← filler word "on"
+      "1400 Monday to 0800 Wednesday"               (time-first)
+      "0600 Mon through 0400 Fri"
 
     Returns a list with one (start_weekday, start_h, end_h) entry where
     end_h may be > 24 (hours from start of start_weekday).
@@ -154,22 +187,39 @@ def _try_multiday_range(seg):
     # Match 0600 | 06:00 | 06:00am | 6am — the optional meridiem on HH:MM is
     # critical so "2:00am" consumes all three tokens, not just "2:00".
     _TIME = r'(\d{4}|\d{1,2}:\d{2}(?:\s*(?:am|pm))?|\d{1,2}\s*(?:am|pm))'
+    _SEP  = r'\s*(?:to|through|until|thru|[-–—])\s*'
     # Day names are anchored to _DAY_PATTERN so we only match real days
     # (not "going" or "starting" as false day1 candidates).
-    pattern = (
-        _DAY_PATTERN + _FILLER + r'\s+' + _TIME + r'\s*'
-        r'(?:to|through|until|thru|[-–—])\s*'
+
+    # Pass 1 — day-first:  DAY [filler] TIME  sep  DAY [filler] TIME
+    pattern_day_first = (
+        _DAY_PATTERN + _FILLER + r'\s+' + _TIME
+        + _SEP
         + _DAY_PATTERN + _FILLER + r'\s+' + _TIME
     )
-    m = re.search(pattern, seg, flags=re.IGNORECASE)
-    if not m:
-        return []
+    m = re.search(pattern_day_first, seg, flags=re.IGNORECASE)
+    day1_str = time1_str = day2_str = time2_str = None
+    if m:
+        day1_str, time1_str, day2_str, time2_str = (
+            m.group(1), m.group(2), m.group(3), m.group(4)
+        )
+    else:
+        # Pass 2 — time-first:  TIME DAY  sep  TIME DAY
+        pattern_time_first = (
+            _TIME + r'\s+' + _DAY_PATTERN
+            + _SEP
+            + _TIME + r'\s+' + _DAY_PATTERN
+        )
+        m = re.search(pattern_time_first, seg, flags=re.IGNORECASE)
+        if not m:
+            return []
+        # Note the group order is (time1, day1, time2, day2)
+        time1_str, day1_str, time2_str, day2_str = (
+            m.group(1), m.group(2), m.group(3), m.group(4)
+        )
 
-    day1_str, time1_str, day2_str, time2_str = (
-        m.group(1).lower(), m.group(2), m.group(3).lower(), m.group(4)
-    )
-    day1 = _DAY_MAP.get(day1_str)
-    day2 = _DAY_MAP.get(day2_str)
+    day1 = _DAY_MAP.get(day1_str.lower())
+    day2 = _DAY_MAP.get(day2_str.lower())
     if day1 is None or day2 is None or day1 == day2:
         return []
 
@@ -235,10 +285,10 @@ def _clean_email_text(text):
     return u if u else text
 
 
-# Pattern: a day-range on one line followed by a time-range on the next.
-# Example email bodies where this shows up:
-#     Monday - Friday
-#     6AM-10PM
+# Pattern: a day-range on one line followed by a time-range on the next
+# (or vice-versa). Example email bodies where this shows up:
+#     Monday - Friday      OR       6AM-10PM
+#     6AM-10PM                      Monday - Friday
 # We merge the two lines with a space so the segment splitter keeps them
 # together and _try_day_range_with_time can match.
 _RANGE_SEP_CHARS = r'(?:[-–—]|to|through|until|thru)'
@@ -249,18 +299,27 @@ _DAY_RANGE_THEN_TIME = re.compile(
     + _TIME_TOKEN + r'\s*' + _RANGE_SEP_CHARS + r'\s*' + _TIME_TOKEN + r')',
     re.IGNORECASE,
 )
+_TIME_RANGE_THEN_DAY = re.compile(
+    r'(?P<trange>' + _TIME_TOKEN + r'\s*' + _RANGE_SEP_CHARS + r'\s*'
+    + _TIME_TOKEN + r')\s*\n+\s*(?P<drange>'
+    + _DAY_PATTERN + r'\s*' + _RANGE_SEP_CHARS + r'\s*' + _DAY_PATTERN + r')',
+    re.IGNORECASE,
+)
 
 
 def _join_range_lines(text):
-    """Merge a day-range line with a following time-range line so the
-    segment splitter doesn't strand either half.
+    """Merge a day-range line with a following time-range line (or a
+    time-range line with a following day-range line) so the segment
+    splitter doesn't strand either half.
 
     Named groups avoid a trap where _DAY_PATTERN's internal capture shifts
     the numbered-backreference indices.
     """
     if not isinstance(text, str):
         return text
-    return _DAY_RANGE_THEN_TIME.sub(r'\g<drange> \g<trange>', text)
+    text = _DAY_RANGE_THEN_TIME.sub(r'\g<drange> \g<trange>', text)
+    text = _TIME_RANGE_THEN_DAY.sub(r'\g<trange> \g<drange>', text)
+    return text
 
 
 # ── Schedule text parser ──────────────────────────────────────────────────────
@@ -302,7 +361,14 @@ def _single_day_window(seg, weekday, day_span, time_pat):
     tail = re.sub(r"^\s+(?:at|on)\s+", " ", tail)
     m = re.search(time_pat, tail)
     if not m:
-        return None
+        # Time-first fallback — e.g. "0600-2200 Mon" or "6am-10pm on Monday".
+        # Look BEFORE the day word for a time range. Tail is tried first so
+        # day-first behaviour is preserved; only if the tail has nothing do
+        # we scan the head.
+        head = seg[:d_start]
+        m = re.search(time_pat, head)
+        if not m:
+            return None
     start_h = _parse_time(m.group(1))
     end_h   = _parse_time(m.group(2))
     if start_h is None or end_h is None:
