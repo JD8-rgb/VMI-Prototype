@@ -843,14 +843,17 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
         print("[schedule] No recent schedule emails within the 24h window.")
         return "not_found"
 
-    # Skip the last-applied email so re-checking the inbox after a bulk
-    # time advance doesn't re-use a schedule email that already belongs to
-    # a previous week.
-    last_id = data.get("schedule_email_id")
-    if last_id:
-        results = [m for m in results if m["id"] != last_id]
+    # Skip emails we've already processed — either successfully applied OR
+    # already alerted on as unreadable.  Without this the same bad email
+    # keeps triggering the "low_confidence" alert on every clock advance.
+    last_applied_id = data.get("schedule_email_id")
+    last_alert_id   = data.get("schedule_unreadable_alert_id")
+    ignore_ids = {i for i in (last_applied_id, last_alert_id) if i}
+    if ignore_ids:
+        results = [m for m in results if m["id"] not in ignore_ids]
     if not results:
-        print(f"[schedule] No new emails since last schedule application (id={last_id}).")
+        print(f"[schedule] No new emails since last applied/alerted "
+              f"(ids={sorted(ignore_ids)}).")
         return "not_found"
 
     # Try the most recent email first; if low confidence, try older ones.
