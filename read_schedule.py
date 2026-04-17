@@ -806,6 +806,82 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
         print(f"[schedule] No emails found from {who}.")
         return "not_found"
 
+    # Exclude emails the VMI system itself sent — alerts, red-flag
+    # notifications, etc.  Without this the alert email we generate on a
+    # parse failure gets read back in on the next clock advance, fails to
+    # parse (because it's an alert, not a schedule), generates ANOTHER
+    # alert, and so on in an infinite loop.  The dedup on
+    # `schedule_unreadable_alert_id` can't catch this because each new
+    # alert has a new message id.
+    own_address = (config.get("email_address") or "").lower()
+    _VMI_SUBJECT_PREFIXES = ("VMI:", "VMI ALERT", "VMI RED FLAG")
+    # Body-start signatures for mails the VMI system itself generates —
+    # covers the case where the sender/subject check slips (e.g. Gmail
+    # rewrites the From header on self-sent mail, or the subject is
+    # something bland like "Re: ...").  These strings appear verbatim at
+    # the very top of every alert body we emit.
+    _VMI_BODY_SIGNATURES = (
+        "VMI ALERT",
+        "The VMI system received an email",
+        "RED FLAG:",
+    )
+    print(f"[schedule] self-send filter: own_address={own_address!r}")
+    before_self = len(results)
+    filtered = []
+    for m in results:
+        sender_addr = (m.get("sender", "") or "").lower()
+        subj        = (m.get("subject", "") or "").strip()
+        body_head   = ((m.get("body", "") or "").lstrip())[:64]
+        drop_reason = None
+        if own_address and own_address in sender_addr:
+            drop_reason = f"sender contains own address ({sender_addr!r})"
+        elif subj.upper().startswith(tuple(p.upper() for p in _VMI_SUBJECT_PREFIXES)):
+            drop_reason = f"subject prefix ({subj!r})"
+        elif any(body_head.startswith(sig) for sig in _VMI_BODY_SIGNATURES):
+            drop_reason = f"body signature ({body_head!r})"
+        if drop_reason:
+            print(f"[schedule]   drop: {drop_reason}")
+            continue
+        filtered.append(m)
+    dropped_self = before_self - len(filtered)
+    if dropped_self:
+        print(f"[schedule] Ignored {dropped_self} VMI-system-generated email(s).")
+    else:
+        print(f"[schedule] Self-send filter dropped 0 of {before_self} — "
+              f"senders={[m.get('sender','?') for m in results]}")
+    results = filtered
+    if not results:
+        print("[schedule] No candidate schedule emails after filtering self-sent.")
+        return "not_found"
+
+    # Pre-filter: only emails that LOOK like schedule emails — i.e. that
+    # contain at least one day name OR one time pattern in the body —
+    # reach the parser.  This silently skips things like "Can you please
+    # share next week's run schedule?" requests from colleagues, which
+    # would otherwise parse to 0 windows and trigger a spurious
+    # "unreadable schedule" alert that gets emailed back into the inbox
+    # and creates a feedback loop.
+    _HAS_DAY_RE  = re.compile(_DAY_PATTERN, re.IGNORECASE)
+    _HAS_TIME_RE = re.compile(_TIME_TOKEN, re.IGNORECASE)
+    before_shape = len(results)
+    shape_kept = []
+    for m in results:
+        body = m.get("body", "") or ""
+        has_day  = bool(_HAS_DAY_RE.search(body))
+        has_time = bool(_HAS_TIME_RE.search(body))
+        if has_day or has_time:
+            shape_kept.append(m)
+        else:
+            print(f"[schedule]   skip (no day or time tokens): "
+                  f"subject={m.get('subject','')!r}")
+    dropped_shape = before_shape - len(shape_kept)
+    if dropped_shape:
+        print(f"[schedule] Skipped {dropped_shape} email(s) that look non-schedule.")
+    results = shape_kept
+    if not results:
+        print("[schedule] No schedule-shaped emails in inbox — nothing to do.")
+        return "not_found"
+
     # Filter out truly stale emails.  The original filter used the Streamlit
     # session_start timestamp, but that turned out to be too strict for
     # demos: an operator who composes the schedule email and THEN opens the
@@ -846,9 +922,15 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
     # Skip emails we've already processed — either successfully applied OR
     # already alerted on as unreadable.  Without this the same bad email
     # keeps triggering the "low_confidence" alert on every clock advance.
+    # `schedule_alerted_ids` is a SET of every id we've alerted on, so
+    # multiple non-schedule emails in the inbox don't cycle through each
+    # other on repeated advances.
     last_applied_id = data.get("schedule_email_id")
-    last_alert_id   = data.get("schedule_unreadable_alert_id")
-    ignore_ids = {i for i in (last_applied_id, last_alert_id) if i}
+    last_alert_id   = data.get("schedule_unreadable_alert_id")  # legacy single-id
+    alerted_ids     = set(data.get("schedule_alerted_ids", []) or [])
+    if last_alert_id:
+        alerted_ids.add(last_alert_id)
+    ignore_ids = {i for i in (last_applied_id,) if i} | alerted_ids
     if ignore_ids:
         results = [m for m in results if m["id"] not in ignore_ids]
     if not results:
@@ -930,16 +1012,23 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
         )
 
         # Dedup: don't resend the same alert on every clock advance.
+        # Track ALL alerted ids in a set so multiple unreadable emails in
+        # the inbox don't cycle through each other on repeated advances.
         preview_id = preview_msg["id"] if preview_msg else None
-        last_alert_id = data.get("schedule_unreadable_alert_id")
-        if dist and preview_id and preview_id != last_alert_id:
+        alerted_set = set(data.get("schedule_alerted_ids", []) or [])
+        legacy_id   = data.get("schedule_unreadable_alert_id")
+        if legacy_id:
+            alerted_set.add(legacy_id)
+        if dist and preview_id and preview_id not in alerted_set:
             try:
                 client.send_mail([dist], subject, body)
                 print(f"[schedule] Unreadable-email alert sent to {dist}.")
-                data["schedule_unreadable_alert_id"] = preview_id
+                alerted_set.add(preview_id)
+                data["schedule_alerted_ids"] = sorted(alerted_set)
+                data["schedule_unreadable_alert_id"] = preview_id  # keep legacy field in sync
             except Exception as e:
                 print(f"[schedule] WARN: could not send alert — {e}")
-        elif dist and preview_id == last_alert_id:
+        elif dist and preview_id in alerted_set:
             print(f"[schedule] Alert already sent for this email — suppressing duplicate.")
         return "low_confidence"
 
