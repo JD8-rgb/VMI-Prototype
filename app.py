@@ -1072,7 +1072,13 @@ with sp_col:
     parse_btn, test_api_btn = st.columns(2)
     if parse_btn.button("🔍 Parse", use_container_width=True):
         if sched_text.strip():
-            entries, confidence, notes = parse_schedule(sched_text, api_key=_get_anthropic_key())
+            # Anchor date-token resolution (e.g. "4/20" → "Sat") to the sim
+            # clock so the tester honours simulation time rather than wall
+            # clock, matching `apply_schedule_to_data` below.
+            sim_now = run_hour_to_dt(data, data["current_run_hour"])
+            entries, confidence, notes = parse_schedule(
+                sched_text, api_key=_get_anthropic_key(), now_dt=sim_now
+            )
             st.session_state.parse_result = (entries, confidence, notes)
         else:
             st.warning("Paste a schedule first.")
