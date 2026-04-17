@@ -293,6 +293,52 @@ def _strip_quoted_history(text):
     return text[:hits[1].start()].rstrip()
 
 
+# Email-header lines (RFC 2822 style): "From: ...", "Sent: ...", "To: ...",
+# "Cc: ...", "Subject: ...". When Outlook forwards inline the original
+# headers into the body, their values leak into the parser — e.g.
+# "Sent: Friday, April 17" registers "Friday" as a day mention. Strip a
+# contiguous block of such lines at the top of the message (and after any
+# quoted-history cut point).
+_HEADER_PREFIX = re.compile(
+    r'^\s*(?:from|sent|to|cc|bcc|subject|date|importance|reply-to)\s*:',
+    re.IGNORECASE,
+)
+
+
+def _strip_header_block(text):
+    """Remove a contiguous block of inlined email headers at the top of
+    the text. Stops at the first non-blank, non-header line (that's where
+    the real body starts). Idempotent: emails without a header block pass
+    through unchanged.
+
+    We only strip the TOP block — header-looking lines deep in the body
+    (e.g. a user quoting a header in prose) are left alone."""
+    if not isinstance(text, str) or not text.strip():
+        return text
+    lines = text.split('\n')
+    i = 0
+    # Skip leading blanks.
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    start_body = i
+    saw_header = False
+    # Consume contiguous header lines (allowing blank lines INSIDE the
+    # block — Outlook sometimes inserts a blank between Cc: and Subject:).
+    while i < len(lines):
+        if _HEADER_PREFIX.match(lines[i]):
+            saw_header = True
+            i += 1
+            continue
+        if not lines[i].strip() and saw_header:
+            i += 1
+            continue
+        break
+    if not saw_header:
+        # Nothing looked like a header — don't touch the text.
+        return text
+    return '\n'.join(lines[i:])
+
+
 def _clean_email_text(text):
     """
     Strip forwarded history, greetings, sign-offs, and quoted-reply lines so
@@ -308,6 +354,11 @@ def _clean_email_text(text):
     # Truncate stacked reply chains FIRST so downstream strips only see the
     # topmost message + one quoted block.
     text = _strip_quoted_history(text)
+    # Strip any inlined email header block (From:/Sent:/To:/Cc:/Subject:/
+    # Date:) at the top — those are metadata, not schedule, and their
+    # values (e.g. "Sent: Friday, April 17") otherwise leak day-name
+    # false-positives into the parser.
+    text = _strip_header_block(text)
     t = _QUOTED_LINE.sub('', text)
     t = _GREETING_LINE.sub('', t, count=1)
     t = _SIGNOFF_BLOCK.sub('', t)
@@ -317,7 +368,8 @@ def _clean_email_text(text):
     # Entire body was quoted — unquote per line and re-clean rather than
     # returning the '> '-prefixed original.
     unquoted = re.sub(r'(?m)^\s*>\s?', '', text)
-    u = _GREETING_LINE.sub('', unquoted, count=1)
+    u = _strip_header_block(unquoted)
+    u = _GREETING_LINE.sub('', u, count=1)
     u = _SIGNOFF_BLOCK.sub('', u)
     u = re.sub(r'\n{3,}', '\n\n', u).strip()
     return u if u else text
@@ -357,6 +409,47 @@ def _join_range_lines(text):
         return text
     text = _DAY_RANGE_THEN_TIME.sub(r'\g<drange> \g<trange>', text)
     text = _TIME_RANGE_THEN_DAY.sub(r'\g<trange> \g<drange>', text)
+    return text
+
+
+# Day-list separators that should be normalized so the segment splitter
+# doesn't strand individual days. Handles "Monday, Tuesday & Wednesday",
+# "Mon and Tue and Wed", "Mon/Tue/Wed", etc. — where the list shares a
+# single trailing time window. Without this, "Monday, Tuesday - 6am-4pm"
+# splits into ["Monday", "Tuesday - 6am-4pm"] and Monday gets no time.
+_DAY_NOCAP = r"(?:" + "|".join(_DAY_KEYS_SORTED) + r")"
+_DAY_LIST_SEP = re.compile(
+    r'\b(' + _DAY_NOCAP + r')'
+    r'\s*(?:,|\s+and\s+|&|/|\+)\s*'
+    r'(?=' + _DAY_NOCAP + r'\b)',
+    re.IGNORECASE,
+)
+
+
+def _join_day_list(text):
+    """Normalize inter-day separators in a day list to " & " so the
+    downstream segment splitter (which breaks on ',' ';' '\\n' ' and ')
+    doesn't separate days from their shared trailing time window.
+
+    Example:
+        "Monday, Tuesday & Wednesday - 6am-4pm"
+           → "Monday & Tuesday & Wednesday - 6am-4pm"   (one segment)
+        "Mon and Tue and Wed 6am-4pm"
+           → "Mon & Tue & Wed 6am-4pm"                  (one segment)
+
+    Applied iteratively because one pass can leave chains that fold
+    together on a second pass (e.g. after a list is joined, adjacent
+    lists may now be separated only by " & ").
+    """
+    if not isinstance(text, str):
+        return text
+    prev = None
+    # Bound iterations defensively; in practice one or two passes suffice.
+    for _ in range(5):
+        if prev == text:
+            break
+        prev = text
+        text = _DAY_LIST_SEP.sub(r'\1 & ', text)
     return text
 
 
@@ -437,6 +530,11 @@ def parse_schedule_text(text):
     # Merge "Monday-Friday\n6AM-10PM" style split-across-lines ranges before
     # the segment splitter sees them on separate lines.
     cleaned = _join_range_lines(cleaned)
+    # Normalize "Monday, Tuesday & Wednesday - 6am-4pm" so the comma doesn't
+    # strand Monday in a time-less segment. The segment splitter breaks on
+    # ','/' and '/';', but not on '&', so rewriting inter-day separators to
+    # '&' keeps the list with its shared time window.
+    cleaned = _join_day_list(cleaned)
     segments = _split_segments(cleaned)
 
     # Regex that matches any time token: 0600, 06:00, 6am, 6:00am, 22:00, etc.
@@ -752,25 +850,49 @@ def parse_schedule(text, api_key=None):
     rx_notes = [f"  Regex parser: {len(rx_entries)} window(s), "
                 f"confidence {rx_confidence}."] + rx_notes
 
-    # Decide whether the LLM rescue is worth trying:
-    #   * HIGH confidence → regex is trusted, skip LLM (saves API cost).
-    #   * LOW confidence but regex already extracted as many windows as
-    #     there are distinct day-name mentions in the text → probably
-    #     single-day or already complete, skip LLM.
-    #   * LOW confidence AND regex extracted fewer windows than there are
-    #     distinct day names → LLM rescue may recover missed days.
+    # Decide whether the LLM rescue is worth trying. Rules:
+    #   * HIGH confidence AND every distinct day mentioned in the (cleaned)
+    #     body is represented in the parsed entries → regex is trusted,
+    #     skip LLM (the common case, saves API cost).
+    #   * HIGH confidence BUT some mentioned days are missing from the
+    #     extracted entries → call LLM as a cross-check. This catches the
+    #     "parser silently dropped Monday from a comma-list" failure mode
+    #     that was previously hidden by the other 3 days clearing the
+    #     effective_days >= 3 bar.
+    #   * LOW confidence but regex already extracted as many unique days
+    #     as are mentioned → probably single-day or already complete,
+    #     skip LLM.
+    #   * LOW confidence AND regex extracted fewer unique days than are
+    #     mentioned → LLM rescue may recover missed days.
+    #
+    # Day-mention counting happens on the CLEANED text (after header /
+    # greeting / quoted-history strip) so that "Sent: Friday, April 17"
+    # doesn't falsely register Friday and force a pointless LLM call on
+    # an otherwise-clean forward.
+    try:
+        cleaned_for_count = _clean_email_text(text)
+    except Exception:
+        cleaned_for_count = text
     distinct_day_mentions = len(set(
         m.group(1).lower()
-        for m in re.finditer(_DAY_PATTERN, text, flags=re.IGNORECASE)
+        for m in re.finditer(_DAY_PATTERN, cleaned_for_count, flags=re.IGNORECASE)
     ))
     distinct_regex_days = len({e[0] for e in rx_entries})
 
-    if rx_confidence == "high":
+    if rx_confidence == "high" and distinct_regex_days >= distinct_day_mentions:
         print(f"[schedule] Regex parse is HIGH confidence "
-              f"({len(rx_entries)} window(s)) — no LLM call needed.")
+              f"({len(rx_entries)} window(s), covered all "
+              f"{distinct_day_mentions} mentioned day(s)) — no LLM call needed.")
         return rx_entries, rx_confidence, rx_notes
 
-    if rx_entries and distinct_regex_days >= distinct_day_mentions:
+    if rx_confidence == "high":
+        # HIGH but missed a day — cross-check with LLM. Fall through to
+        # the LLM block below, which will score and pick the better result.
+        print(f"[schedule] Regex is HIGH confidence but only covered "
+              f"{distinct_regex_days}/{distinct_day_mentions} mentioned day(s) — "
+              f"running LLM cross-check to recover missed days.")
+
+    elif rx_entries and distinct_regex_days >= distinct_day_mentions:
         print(f"[schedule] Regex covered all {distinct_day_mentions} distinct "
               f"day mention(s) — no LLM call needed.")
         return rx_entries, rx_confidence, rx_notes
