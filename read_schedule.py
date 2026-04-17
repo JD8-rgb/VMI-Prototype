@@ -806,6 +806,15 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
         print(f"[schedule] No emails found from {who}.")
         return "not_found"
 
+    # Inbox summary — lets us see immediately whether the schedule email
+    # is actually being fetched by IMAP and what its body looks like.
+    print(f"[schedule] search_inbox returned {len(results)} email(s):")
+    for m in results:
+        body_snip = ((m.get("body", "") or "").replace("\r", "").replace("\n", " ⏎ "))[:80]
+        print(f"[schedule]   - from={m.get('sender','?')[:40]!r} "
+              f"subj={m.get('subject','')[:40]!r} "
+              f"body[:80]={body_snip!r}")
+
     # Exclude system-generated emails (alerts, red-flag notifications, etc.)
     # by body-start signature and subject prefix ONLY.  We intentionally do
     # NOT filter by sender address — the demo account (vmiprototype@gmail.com)
@@ -858,8 +867,10 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
         if has_day or has_time:
             shape_kept.append(m)
         else:
+            body_snip = body.replace("\r", "").replace("\n", " ⏎ ")[:100]
             print(f"[schedule]   skip (no day or time tokens): "
-                  f"subject={m.get('subject','')!r}")
+                  f"subject={m.get('subject','')!r} "
+                  f"body[:100]={body_snip!r}")
     dropped_shape = before_shape - len(shape_kept)
     if dropped_shape:
         print(f"[schedule] Skipped {dropped_shape} email(s) that look non-schedule.")
