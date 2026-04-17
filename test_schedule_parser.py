@@ -609,6 +609,49 @@ def curated_must_pass() -> List[Case]:
              "Mon 0600-2200, Mon 0600-2200, Tue 0600-2200, Wed 0600-1400",
              expected=[(0, 6, 22), (1, 6, 22), (2, 6, 14)],
              must_pass=True),
+        # Comma+ampersand day list sharing a single time window. The comma
+        # must NOT strand the first day in its own segment. (Regression:
+        # April 2026 real-mail bug where Monday was silently dropped from
+        # "Monday, Tuesday & Wednesday - 6am-4pm".)
+        Case("must_24_comma_amp_day_list", "multi_day_list",
+             "Monday, Tuesday & Wednesday - 6am-4pm",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16)],
+             must_pass=True),
+        # Full real-mail reproducer: Outlook forward (headers leaked into
+        # body) + comma-&-list for Mon/Tue/Wed + multiday Thu→Fri.
+        Case("must_25_outlook_headers_plus_daylist", "quoted_reply",
+             "From: Kimberly Hawks <KHawks@FunderAmerica.com>\n"
+             "Sent: Friday, April 17, 2026 11:12 AM\n"
+             "To: Davidson, Jonathan <jonathan.davidson@hexion.com>\n"
+             "Cc: Achter, Brian <brian.achter@hexion.com>\n"
+             "Subject: FW: [External]Re: Run Schedule\n\n"
+             "Good morning.\n\n"
+             "Current plan:\n\n"
+             "Monday, Tuesday & Wednesday - 6am-4pm\n\n"
+             "Thursday 6am until Friday 4am.\n",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 28)],
+             must_pass=True),
+        # "and"-separated day list sharing a single time window.
+        Case("must_26_and_day_list", "multi_day_list",
+             "Mon and Tue and Wed 6am-4pm",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16)],
+             must_pass=True),
+        # Slash-separated day list.
+        Case("must_27_slash_day_list", "multi_day_list",
+             "Mon/Tue/Wed/Thu 0600-1600",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16)],
+             must_pass=True),
+        # Outlook header block alone must NOT register as a parseable
+        # schedule (only header metadata — Friday in "Sent: Friday" is not
+        # a real day mention).
+        Case("must_28_outlook_headers_only", "unparseable_control",
+             "From: Kimberly Hawks <KHawks@FunderAmerica.com>\n"
+             "Sent: Friday, April 17, 2026 11:12 AM\n"
+             "To: Davidson, Jonathan\n"
+             "Subject: FW: Run Schedule\n\n"
+             "Good morning — nothing to report this week.",
+             expected=[],
+             must_pass=True),
     ]
 
 
