@@ -211,8 +211,12 @@ _QUOTED_LINE = re.compile(r'^\s*>.*$', re.MULTILINE)
 def _clean_email_text(text):
     """
     Strip greetings, sign-offs, and quoted-reply lines so both parsers see
-    just the meaningful body. Fail-safe: if stripping leaves nothing, return
-    the original text unchanged.
+    just the meaningful body. Fail-safe: if stripping quoted lines leaves
+    nothing, fall back to stripping just the '> ' prefix from each line
+    instead — this handles reply emails where the ENTIRE body is quoted
+    (reply-with-quoted-original where the sender added no new text).
+    Returning the raw text in that case would leave '> ' markers in the
+    way of every downstream regex.
     """
     if not isinstance(text, str) or not text.strip():
         return text
@@ -220,7 +224,15 @@ def _clean_email_text(text):
     t = _GREETING_LINE.sub('', t, count=1)
     t = _SIGNOFF_BLOCK.sub('', t)
     t = re.sub(r'\n{3,}', '\n\n', t).strip()
-    return t if t else text
+    if t:
+        return t
+    # Entire body was quoted — unquote per line and re-clean rather than
+    # returning the '> '-prefixed original.
+    unquoted = re.sub(r'(?m)^\s*>\s?', '', text)
+    u = _GREETING_LINE.sub('', unquoted, count=1)
+    u = _SIGNOFF_BLOCK.sub('', u)
+    u = re.sub(r'\n{3,}', '\n\n', u).strip()
+    return u if u else text
 
 
 # Pattern: a day-range on one line followed by a time-range on the next.
