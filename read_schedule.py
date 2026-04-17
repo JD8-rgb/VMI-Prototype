@@ -30,6 +30,12 @@ import time_utils
 DATA_PATH = "data.json"
 DRY_RUN   = "--dry-run" in sys.argv
 
+# Physical plant max runtime per week: Mon 06:00 → Sat 04:00 continuous = 118h.
+# Used as a post-parse sanity cap: any schedule totaling more than this (or
+# any single window longer than this) is physically impossible and almost
+# always signals quoted-history leakage from a forwarded reply chain.
+PLANT_MAX_HOURS = 118
+
 # ── Day name lookup ───────────────────────────────────────────────────────────
 # Include plural forms ("Mondays") and common short forms. The regex parser
 # does a literal word-boundary search against these keys, so longer keys must
@@ -257,19 +263,51 @@ _SIGNOFF_BLOCK = re.compile(
 # Quoted-reply lines: starts with ">"
 _QUOTED_LINE = re.compile(r'^\s*>.*$', re.MULTILINE)
 
+# Forwarded / replied quoted-history separators. Each marks the start of a
+# BLOCK of quoted text; stacked reply chains have one per reply. We truncate
+# at the SECOND such separator so the topmost forwarder note + the single
+# most-recent quoted block survive. Fewer than 2 → no truncation. Prevents
+# the "weeks of stacked history parsed as one week" failure where every
+# quoted reply's schedule gets summed into the current week.
+_FORWARD_SEPARATORS = re.compile(
+    r'(?m)^\s*(?:'
+    r'from:\s*.+\n\s*(?:sent|date):\s*.+'    # Outlook From:/Sent: header pair
+    r'|-{3,}\s*original\s+message\s*-{3,}'   # Outlook "-----Original Message-----"
+    r'|_{20,}\s*$'                           # Outlook underscore divider
+    r'|on\s+.{3,80}\bwrote:\s*$'             # Gmail "On <date>, <name> wrote:"
+    r')',
+    re.IGNORECASE,
+)
+
+
+def _strip_quoted_history(text):
+    """Cut at the second forward/reply separator so only the topmost message
+    + single most-recent quoted block survive. Kills the 'weeks of history'
+    problem where every stacked quoted reply is parsed as if it applies to
+    the current week."""
+    if not isinstance(text, str) or not text.strip():
+        return text
+    hits = list(_FORWARD_SEPARATORS.finditer(text))
+    if len(hits) < 2:
+        return text
+    return text[:hits[1].start()].rstrip()
+
 
 def _clean_email_text(text):
     """
-    Strip greetings, sign-offs, and quoted-reply lines so both parsers see
-    just the meaningful body. Fail-safe: if stripping quoted lines leaves
-    nothing, fall back to stripping just the '> ' prefix from each line
-    instead — this handles reply emails where the ENTIRE body is quoted
-    (reply-with-quoted-original where the sender added no new text).
-    Returning the raw text in that case would leave '> ' markers in the
-    way of every downstream regex.
+    Strip forwarded history, greetings, sign-offs, and quoted-reply lines so
+    both parsers see just the meaningful body. Fail-safe: if stripping quoted
+    lines leaves nothing, fall back to stripping just the '> ' prefix from
+    each line instead — this handles reply emails where the ENTIRE body is
+    quoted (reply-with-quoted-original where the sender added no new text).
+    Returning the raw text in that case would leave '> ' markers in the way
+    of every downstream regex.
     """
     if not isinstance(text, str) or not text.strip():
         return text
+    # Truncate stacked reply chains FIRST so downstream strips only see the
+    # topmost message + one quoted block.
+    text = _strip_quoted_history(text)
     t = _QUOTED_LINE.sub('', text)
     t = _GREETING_LINE.sub('', t, count=1)
     t = _SIGNOFF_BLOCK.sub('', t)
@@ -477,7 +515,62 @@ def parse_schedule_text(text):
             entries.append((wd, start_h, end_h))
             effective_days += 1
 
-    confidence = "high" if effective_days >= 3 else "low"
+    # ── Dedup: same (weekday, start_h, end_h) emitted by multiple branches
+    #    or multiple segments is always noise. A legitimate schedule does
+    #    not repeat an identical window. Order-preserving.
+    seen = set()
+    deduped = []
+    for e in entries:
+        if e not in seen:
+            seen.add(e)
+            deduped.append(e)
+    if len(deduped) < len(entries):
+        notes.append(
+            f"  Removed {len(entries) - len(deduped)} duplicate window(s)."
+        )
+    entries = deduped
+
+    # ── Sanity checks — each can independently force low confidence even if
+    #    effective_days >= 3. These catch the "weeks of stacked history
+    #    parsed as one week" failure: if quote-stripping misses a separator,
+    #    the resulting entries will either overlap or blow past the plant's
+    #    physical runtime cap, and we refuse to auto-apply.
+    forced_low = False
+
+    # Overlap check: convert to absolute hours from Mon 00:00 and walk sorted.
+    ranges = sorted((wd * 24 + sh, wd * 24 + eh) for wd, sh, eh in entries)
+    for i in range(len(ranges) - 1):
+        if ranges[i + 1][0] < ranges[i][1]:
+            notes.append(
+                f"  Overlapping run windows detected "
+                f"(abs hours {ranges[i]} vs {ranges[i+1]}) — forcing low confidence."
+            )
+            forced_low = True
+            break
+
+    # Total-hours cap: plant max is Mon 06:00 → Sat 04:00 = 118h continuous.
+    # Any schedule exceeding that is physically impossible and almost always
+    # signals quoted-history leakage.
+    total_h = sum(eh - sh for _, sh, eh in entries)
+    if total_h > PLANT_MAX_HOURS:
+        notes.append(
+            f"  Total runtime {total_h}h exceeds plant cap "
+            f"{PLANT_MAX_HOURS}h — forcing low confidence."
+        )
+        forced_low = True
+
+    # Any single window longer than the cap is also impossible.
+    for wd, sh, eh in entries:
+        if eh - sh > PLANT_MAX_HOURS:
+            notes.append(
+                f"  Single window {_DAY_ABBREV[wd]} {sh:02d}:00 duration "
+                f"{eh - sh}h exceeds plant cap {PLANT_MAX_HOURS}h — "
+                f"forcing low confidence."
+            )
+            forced_low = True
+            break
+
+    confidence = "high" if (effective_days >= 3 and not forced_low) else "low"
     return entries, confidence, notes
 
 

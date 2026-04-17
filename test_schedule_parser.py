@@ -129,6 +129,7 @@ class Case:
     expected: List[Entry]
     must_pass: bool = False
     regex_expected: bool = True   # False = don't count in regex pass-rate bar
+    expected_confidence: Optional[str] = None  # pin confidence ('high'/'low'); None = default rule
 
 
 @dataclass
@@ -571,6 +572,43 @@ def curated_must_pass() -> List[Case]:
              "Saterday 0800-1700",
              expected=[(5, 8, 17)],
              must_pass=True),
+        # Outlook forwarded reply chain — only the MOST RECENT schedule block
+        # should survive the quote-history strip. Weeks of stacked history
+        # would otherwise sum to 100h+ of bogus runtime for one week.
+        Case("must_20_outlook_forward_chain", "quoted_reply",
+             "From: Kimberly Hawks <KHawks@FunderAmerica.com>\n"
+             "Sent: Friday, April 17, 2026 11:12 AM\n"
+             "To: Davidson, Jonathan <jonathan.davidson@hexion.com>\n\n"
+             "Hi Jon,\n\n"
+             "Next week: Mon 0600-2200, Tue 0600-2200, Wed 0600-1400\n\n"
+             "Thanks,\nKimberly\n\n"
+             "From: Kimberly Hawks <KHawks@FunderAmerica.com>\n"
+             "Sent: Friday, April 10, 2026 10:00 AM\n"
+             "To: Davidson, Jonathan\n\n"
+             "Last week: Mon 6am-10pm, Tue 6am-10pm, Wed 6am-10pm, Thu 6am-10pm\n",
+             expected=[(0, 6, 22), (1, 6, 22), (2, 6, 14)],
+             must_pass=True),
+        # Plant cap: a schedule summing to >118h is physically impossible and
+        # must drop to low confidence (blocking auto-apply).
+        Case("must_21_over_cap_low_confidence", "unparseable_control",
+             # 6 days × 22h = 132h — over cap.
+             "Mon 0000-2200, Tue 0000-2200, Wed 0000-2200, Thu 0000-2200, "
+             "Fri 0000-2200, Sat 0000-2200",
+             expected=[(0,0,22),(1,0,22),(2,0,22),(3,0,22),(4,0,22),(5,0,22)],
+             expected_confidence="low",
+             must_pass=True),
+        # Overlap: same day emitted twice with overlapping windows must drop
+        # to low confidence.
+        Case("must_22_overlap_low_confidence", "unparseable_control",
+             "Mon 0600-2200\nMon 1000-1400",
+             expected=[(0, 6, 22), (0, 10, 14)],
+             expected_confidence="low",
+             must_pass=True),
+        # Duplicate emission (same window listed twice) should collapse.
+        Case("must_23_dedup_duplicate", "multi_day_list",
+             "Mon 0600-2200, Mon 0600-2200, Tue 0600-2200, Wed 0600-1400",
+             expected=[(0, 6, 22), (1, 6, 22), (2, 6, 14)],
+             must_pass=True),
     ]
 
 
@@ -613,14 +651,34 @@ def _check_passed(case: Case, entries, confidence) -> bool:
       * If expected coverage is >= 3 calendar-days, confidence MUST be 'high'.
       * If expected coverage is < 3 days (e.g. single-day tests), confidence
         may be 'low' — that's the parser's correct behavior.
+      * Expected schedules whose total runtime exceeds the plant's physical
+        cap (PLANT_MAX_HOURS, Mon 06:00 → Sat 04:00 = 118h) are intentionally
+        forced to 'low' confidence by the parser — accept either.
+      * Expected schedules containing overlapping windows are also forced to
+        'low' confidence by the parser — accept either.
       * Unparseable control cases must produce no entries.
     """
+    from read_schedule import PLANT_MAX_HOURS
     actual   = _normalize(entries)
     expected = _normalize(case.expected)
+    # If the case pins a required confidence (e.g. must_21 expects 'low'
+    # because the input exceeds the plant cap), enforce it.
+    if case.expected_confidence is not None and confidence != case.expected_confidence:
+        return False
     if not case.expected:
         return actual == []
     if actual != expected:
         return False
+    # Cases that would trip the parser's sanity checks are allowed to be low.
+    total_h = sum(eh - sh for _, sh, eh in expected)
+    exceeds_cap = total_h > PLANT_MAX_HOURS or any(
+        (eh - sh) > PLANT_MAX_HOURS for _, sh, eh in expected
+    )
+    ranges = sorted((wd * 24 + sh, wd * 24 + eh) for wd, sh, eh in expected)
+    has_overlap = any(ranges[i + 1][0] < ranges[i][1]
+                      for i in range(len(ranges) - 1))
+    if exceeds_cap or has_overlap:
+        return True  # low confidence is the correct outcome
     expected_cov = _coverage_days(expected)
     if expected_cov >= 3 and confidence != "high":
         return False
