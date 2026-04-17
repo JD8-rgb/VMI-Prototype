@@ -858,6 +858,14 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
     best_entries, best_confidence, best_notes, best_msg = [], "low", [], None
 
     for msg in results:
+        # Diagnostic: show what the parser is actually seeing.  Helps debug
+        # cases where the email arrives but the body has unexpected chars
+        # (HTML entities, non-breaking spaces, unusual dashes, etc.) that
+        # prevent the regex from recognising the schedule.
+        raw_body = (msg.get("body") or "").replace("\r", "").strip()
+        body_preview = raw_body[:200].replace("\n", " ⏎ ")
+        print(f"[schedule] Trying email from {msg.get('sender','?')}: "
+              f"body[0:200]={body_preview!r}")
         entries, confidence, notes = parse_schedule(msg["body"], api_key=api_key)
         if confidence == "high":
             best_entries, best_confidence, best_notes, best_msg = entries, confidence, notes, msg
