@@ -395,7 +395,16 @@ def _advance(data, hours, session_start_utc=None):
             m = _re2.search(r"(\d+) day", fetch_log)
             days_found = int(m.group(1)) if m else "?"
             data["schedule_parse_issue"] = {"days_found": days_found}
-        # "not_found" → silent (no email yet, normal)
+            if fetch_log:
+                for line in fetch_log.splitlines():
+                    log.append(f"  {line}")
+
+        elif sched_result == "not_found" and fetch_log:
+            # Surface diagnostics when something was checked but not applied —
+            # helps during demos to confirm the inbox was reached and why the
+            # email wasn't used (session filter, empty body, no schedule text…)
+            for line in fetch_log.splitlines():
+                log.append(f"  {line}")
 
     except Exception as e:
         log.append(f"[Auto] Schedule/plan error: {e}")
