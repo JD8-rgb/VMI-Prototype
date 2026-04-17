@@ -703,15 +703,18 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
     import os as _os
     api_key  = (_os.environ.get("ANTHROPIC_API_KEY", "")
                 or config.get("anthropic_api_key", ""))
-    if not config or not anna:
-        print("[schedule] WARN: anna_email not configured.")
+    if not config:
+        print("[schedule] WARN: email not configured.")
         return "not_found"
 
     client = OutlookClient(config)
-    results = client.search_inbox(sender=anna, top=5)
+    # anna_email="" means "accept from any sender" — useful for demos where
+    # the schedule may be sent from different addresses.
+    results = client.search_inbox(sender=anna or None, top=5)
 
     if not results:
-        print(f"[schedule] No emails found from {anna}.")
+        who = anna if anna else "anyone"
+        print(f"[schedule] No emails found from {who}.")
         return "not_found"
 
     # Filter out emails received BEFORE the current app session started.
