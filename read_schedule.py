@@ -100,6 +100,44 @@ def _parse_time(token):
     return None
 
 
+def _try_day_range_with_time(seg):
+    """
+    Detect a "day range + single time window" schedule like:
+      "Monday - Friday 6AM-10PM"
+      "Mon-Fri 0600-2200"
+      "Monday through Friday 6am to 10pm"
+      "Mon thru Wed 22:00-06:00"   (overnight window applied to each day)
+
+    Unlike _try_multiday_range (which is ONE continuous window across
+    days), this pattern means "apply the SAME daily window to every day
+    in the range". Generates one entry per day.
+
+    Returns list of (weekday, start_h, end_h) tuples, or [] if not found.
+    """
+    _TIME = r'(\d{4}|\d{1,2}:\d{2}(?:\s*(?:am|pm))?|\d{1,2}\s*(?:am|pm))'
+    _SEP  = r'\s*(?:to|through|until|thru|[-–—])\s*'
+
+    pattern = (
+        _DAY_PATTERN + _SEP + _DAY_PATTERN + r'\s+' + _TIME
+        + _SEP + _TIME
+    )
+    m = re.search(pattern, seg, flags=re.IGNORECASE)
+    if not m:
+        return []
+
+    day1 = _DAY_MAP.get(m.group(1).lower())
+    day2 = _DAY_MAP.get(m.group(2).lower())
+    start_h = _parse_time(m.group(3))
+    end_h   = _parse_time(m.group(4))
+    if day1 is None or day2 is None or start_h is None or end_h is None:
+        return []
+    if end_h <= start_h:          # overnight window (e.g. 22:00-06:00)
+        end_h += 24
+
+    days_diff = (day2 - day1) % 7
+    return [((day1 + i) % 7, start_h, end_h) for i in range(days_diff + 1)]
+
+
 def _try_multiday_range(seg):
     """
     Detect a continuous multi-day run window like:
@@ -185,6 +223,34 @@ def _clean_email_text(text):
     return t if t else text
 
 
+# Pattern: a day-range on one line followed by a time-range on the next.
+# Example email bodies where this shows up:
+#     Monday - Friday
+#     6AM-10PM
+# We merge the two lines with a space so the segment splitter keeps them
+# together and _try_day_range_with_time can match.
+_RANGE_SEP_CHARS = r'(?:[-–—]|to|through|until|thru)'
+_TIME_TOKEN      = r'(?:\d{4}|\d{1,2}:\d{2}(?:\s*(?:am|pm))?|\d{1,2}\s*(?:am|pm))'
+_DAY_RANGE_THEN_TIME = re.compile(
+    r'(?P<drange>' + _DAY_PATTERN + r'\s*' + _RANGE_SEP_CHARS + r'\s*'
+    + _DAY_PATTERN + r')\s*\n+\s*(?P<trange>'
+    + _TIME_TOKEN + r'\s*' + _RANGE_SEP_CHARS + r'\s*' + _TIME_TOKEN + r')',
+    re.IGNORECASE,
+)
+
+
+def _join_range_lines(text):
+    """Merge a day-range line with a following time-range line so the
+    segment splitter doesn't strand either half.
+
+    Named groups avoid a trap where _DAY_PATTERN's internal capture shifts
+    the numbered-backreference indices.
+    """
+    if not isinstance(text, str):
+        return text
+    return _DAY_RANGE_THEN_TIME.sub(r'\g<drange> \g<trange>', text)
+
+
 # ── Schedule text parser ──────────────────────────────────────────────────────
 
 def _split_segments(text):
@@ -252,6 +318,9 @@ def parse_schedule_text(text):
     # Clean greetings / sign-offs / quoted replies before segmentation, so
     # prose like "Hi team,\n ... \nThanks, Anna" doesn't pollute segments.
     cleaned = _clean_email_text(text)
+    # Merge "Monday-Friday\n6AM-10PM" style split-across-lines ranges before
+    # the segment splitter sees them on separate lines.
+    cleaned = _join_range_lines(cleaned)
     segments = _split_segments(cleaned)
 
     # Regex that matches any time token: 0600, 06:00, 6am, 6:00am, 22:00, etc.
@@ -265,7 +334,25 @@ def parse_schedule_text(text):
         if not seg:
             continue
 
-        # ── Try multi-day range first ("Run Monday 0600 to Friday 0400") ─────
+        # ── Day-range + single time ("Mon-Fri 6am-10pm") ────────────────────
+        # Applied first because the pattern (DAY sep DAY TIME sep TIME) is
+        # distinct from the continuous range (DAY TIME sep DAY TIME) — the
+        # two don't overlap, but checking this first means a clean, small
+        # branch for the most common recurring-hours format.
+        drange = _try_day_range_with_time(seg)
+        if drange:
+            entries.extend(drange)
+            effective_days += len(drange)
+            days_str = "-".join(_DAY_ABBREV[drange[0][0]].split()[0:1]
+                                + [_DAY_ABBREV[drange[-1][0]]])
+            sh, eh = drange[0][1], drange[0][2]
+            notes.append(
+                f"  Day-range window: {days_str} "
+                f"{sh:02d}:00-{eh % 24:02d}:00 ({len(drange)} days)"
+            )
+            continue
+
+        # ── Continuous multi-day range ("Run Monday 0600 to Friday 0400") ────
         multiday = _try_multiday_range(seg)
         if multiday:
             entries.extend(multiday)
@@ -797,29 +884,53 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
             print(f"  {w['label']}: {time_utils.format_run_hour(data, w['start_hour'])} → {time_utils.format_run_hour(data, w['end_hour'])}")
         return "applied"
 
-    elif best_entries:
-        # Low confidence but at least 1 day parsed — send alert
-        subject = "VMI: Could not read schedule from Anna's email"
+    else:
+        # Either partial parse (low confidence, 1-2 days) OR zero parse. In
+        # BOTH cases we received email(s) but couldn't confidently apply a
+        # schedule — raise an alert so the operator knows the inbound email
+        # needs manual review. Silent "not_found" here would be dangerous:
+        # the operator would assume nothing arrived when in fact a malformed
+        # or unreadable schedule did.
+        days_found  = len(best_entries)
+        preview_msg = best_msg or (results[0] if results else None)
+
+        subject = "VMI: Could not read schedule from inbound email"
+        if days_found:
+            lead = (f"The VMI system received an email but could only parse "
+                    f"{days_found} day(s) with low confidence.")
+        else:
+            lead = ("The VMI system received an email but could not extract "
+                    "ANY schedule windows from it. The format may be "
+                    "unrecognised (e.g. image-only, embedded table, unusual "
+                    "phrasing).")
+        body_preview = ""
+        if preview_msg:
+            raw_body = preview_msg.get("body", "") or ""
+            body_preview = (
+                f"From: {preview_msg.get('sender', 'N/A')}\n"
+                f"Subject: {preview_msg.get('subject', 'N/A')}\n\n"
+                f"Body preview:\n---\n{raw_body[:500]}\n---\n"
+            )
         body = (
-            f"The VMI system found an email from {anna} but could not reliably "
-            f"parse the run schedule from it (only {len(best_entries)} day(s) detected).\n\n"
-            f"Subject: {best_msg['subject'] if best_msg else 'N/A'}\n"
-            f"From: {best_msg['sender'] if best_msg else 'N/A'}\n\n"
+            f"{lead}\n\n"
+            f"{body_preview}\n"
             f"Parse notes:\n" + "\n".join(best_notes or ["(none)"]) + "\n\n"
-            f"Please update the run schedule manually."
+            f"Please review the email and update the run schedule manually."
         )
-        if dist:
+
+        # Dedup: don't resend the same alert on every clock advance.
+        preview_id = preview_msg["id"] if preview_msg else None
+        last_alert_id = data.get("schedule_unreadable_alert_id")
+        if dist and preview_id and preview_id != last_alert_id:
             try:
                 client.send_mail([dist], subject, body)
-                print(f"[schedule] Low-confidence alert sent to {dist}.")
+                print(f"[schedule] Unreadable-email alert sent to {dist}.")
+                data["schedule_unreadable_alert_id"] = preview_id
             except Exception as e:
                 print(f"[schedule] WARN: could not send alert — {e}")
+        elif dist and preview_id == last_alert_id:
+            print(f"[schedule] Alert already sent for this email — suppressing duplicate.")
         return "low_confidence"
-
-    else:
-        # 0 days parsed — emails found but no schedule content detected (e.g. system emails, non-schedule messages)
-        print(f"[schedule] Emails found but no schedule content detected — treating as not found.")
-        return "not_found"
 
 
 # ── Standalone entry point ────────────────────────────────────────────────────
