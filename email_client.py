@@ -161,27 +161,46 @@ class OutlookClient:
 
                 _, data = mail.search(None, search_criteria)
                 ids = data[0].split()
+                total_found = len(ids)
 
                 # Take the last `top` message IDs (highest = most recent in IMAP)
                 ids = ids[-top:]
                 ids.reverse()  # newest first
 
+                print(f"[email] IMAP search ({search_criteria!r}) found {total_found} "
+                      f"id(s); processing newest {len(ids)}.")
+
+                skipped_empty = 0
+                skipped_error = 0
                 for msg_id in ids:
-                    _, raw_data = mail.fetch(msg_id, "(RFC822)")
-                    if not raw_data or raw_data[0] is None:
+                    try:
+                        _, raw_data = mail.fetch(msg_id, "(RFC822)")
+                        if not raw_data or raw_data[0] is None:
+                            skipped_empty += 1
+                            continue
+                        raw = raw_data[0][1]
+                        msg = _email.message_from_bytes(raw)
+
+                        body_text = _extract_body(msg)
+
+                        results.append({
+                            "id":       msg_id.decode(),
+                            "subject":  msg.get("Subject", ""),
+                            "sender":   msg.get("From", ""),
+                            "received": msg.get("Date", ""),
+                            "body":     body_text,
+                        })
+                    except Exception as per_msg_err:
+                        # Per-message failure must NOT abort the whole fetch —
+                        # that would silently truncate the result set and a
+                        # later schedule email could be missed.
+                        skipped_error += 1
+                        print(f"[email] WARN: skipping id={msg_id!r} — {per_msg_err}")
                         continue
-                    raw = raw_data[0][1]
-                    msg = _email.message_from_bytes(raw)
 
-                    body_text = _extract_body(msg)
-
-                    results.append({
-                        "id":       msg_id.decode(),
-                        "subject":  msg.get("Subject", ""),
-                        "sender":   msg.get("From", ""),
-                        "received": msg.get("Date", ""),
-                        "body":     body_text,
-                    })
+                if skipped_empty or skipped_error:
+                    print(f"[email] Fetch summary: {len(results)} ok, "
+                          f"{skipped_empty} empty, {skipped_error} errored.")
         except Exception as e:
             print(f"[email] WARN: IMAP read failed — {e}")
 
