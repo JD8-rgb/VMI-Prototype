@@ -806,39 +806,28 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
         print(f"[schedule] No emails found from {who}.")
         return "not_found"
 
-    # Exclude emails the VMI system itself sent — alerts, red-flag
-    # notifications, etc.  Without this the alert email we generate on a
-    # parse failure gets read back in on the next clock advance, fails to
-    # parse (because it's an alert, not a schedule), generates ANOTHER
-    # alert, and so on in an infinite loop.  The dedup on
-    # `schedule_unreadable_alert_id` can't catch this because each new
-    # alert has a new message id.
-    own_address = (config.get("email_address") or "").lower()
+    # Exclude system-generated emails (alerts, red-flag notifications, etc.)
+    # by body-start signature and subject prefix ONLY.  We intentionally do
+    # NOT filter by sender address — the demo account (vmiprototype@gmail.com)
+    # is both the sender of real schedule emails AND the recipient of alert
+    # emails, so a sender-address check would drop legitimate schedules.
+    # Every alert body the system emits starts with one of these fixed strings:
     _VMI_SUBJECT_PREFIXES = ("VMI:", "VMI ALERT", "VMI RED FLAG")
-    # Body-start signatures for mails the VMI system itself generates —
-    # covers the case where the sender/subject check slips (e.g. Gmail
-    # rewrites the From header on self-sent mail, or the subject is
-    # something bland like "Re: ...").  These strings appear verbatim at
-    # the very top of every alert body we emit.
-    _VMI_BODY_SIGNATURES = (
+    _VMI_BODY_SIGNATURES  = (
         "VMI ALERT",
         "The VMI system received an email",
         "RED FLAG:",
     )
-    print(f"[schedule] self-send filter: own_address={own_address!r}")
     before_self = len(results)
     filtered = []
     for m in results:
-        sender_addr = (m.get("sender", "") or "").lower()
-        subj        = (m.get("subject", "") or "").strip()
-        body_head   = ((m.get("body", "") or "").lstrip())[:64]
+        subj      = (m.get("subject", "") or "").strip()
+        body_head = ((m.get("body",    "") or "").lstrip())[:80]
         drop_reason = None
-        if own_address and own_address in sender_addr:
-            drop_reason = f"sender contains own address ({sender_addr!r})"
-        elif subj.upper().startswith(tuple(p.upper() for p in _VMI_SUBJECT_PREFIXES)):
+        if subj.upper().startswith(tuple(p.upper() for p in _VMI_SUBJECT_PREFIXES)):
             drop_reason = f"subject prefix ({subj!r})"
         elif any(body_head.startswith(sig) for sig in _VMI_BODY_SIGNATURES):
-            drop_reason = f"body signature ({body_head!r})"
+            drop_reason = f"body signature ({body_head[:40]!r})"
         if drop_reason:
             print(f"[schedule]   drop: {drop_reason}")
             continue
@@ -846,12 +835,9 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
     dropped_self = before_self - len(filtered)
     if dropped_self:
         print(f"[schedule] Ignored {dropped_self} VMI-system-generated email(s).")
-    else:
-        print(f"[schedule] Self-send filter dropped 0 of {before_self} — "
-              f"senders={[m.get('sender','?') for m in results]}")
     results = filtered
     if not results:
-        print("[schedule] No candidate schedule emails after filtering self-sent.")
+        print("[schedule] No candidate schedule emails after filtering system-generated.")
         return "not_found"
 
     # Pre-filter: only emails that LOOK like schedule emails — i.e. that
