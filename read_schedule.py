@@ -719,33 +719,42 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
         print(f"[schedule] No emails found from {who}.")
         return "not_found"
 
-    # Filter out emails received BEFORE the current app session started.
-    # Without this, a fresh browser session (or post-Reset) can silently
-    # pick up a stale schedule email that was sent during a previous demo.
-    if session_start_utc is not None:
-        before = len(results)
-        kept = []
-        for m in results:
-            rcv_hdr = m.get("received", "")
-            try:
-                rcv_dt = parsedate_to_datetime(rcv_hdr) if rcv_hdr else None
-                if rcv_dt is not None and rcv_dt.tzinfo is None:
-                    rcv_dt = rcv_dt.replace(tzinfo=timezone.utc)
-            except Exception:
-                rcv_dt = None
-            if rcv_dt is None:
-                # Unparseable date — skip to be safe (don't risk a stale apply)
-                continue
-            if rcv_dt >= session_start_utc:
-                kept.append(m)
-        dropped = before - len(kept)
-        if dropped:
-            print(f"[schedule] Ignored {dropped} email(s) received before "
-                  f"session start ({session_start_utc.isoformat()}).")
-        results = kept
-        if not results:
-            print("[schedule] No new schedule emails since this session started.")
-            return "not_found"
+    # Filter out truly stale emails.  The original filter used the Streamlit
+    # session_start timestamp, but that turned out to be too strict for
+    # demos: an operator who composes the schedule email and THEN opens the
+    # app has their email silently dropped.  We now use a 24-hour wall-clock
+    # window.  The schedule_email_id dedup below still prevents re-applying
+    # any specific email that has already been used.
+    wall_now = datetime.now(timezone.utc)
+    cutoff = wall_now - timedelta(hours=24)
+    # If the session started more recently than the cutoff, use session_start
+    # as the cutoff anyway — keeps legacy behaviour for long-running sessions.
+    if session_start_utc is not None and session_start_utc < cutoff:
+        cutoff = session_start_utc
+
+    before = len(results)
+    kept = []
+    for m in results:
+        rcv_hdr = m.get("received", "")
+        try:
+            rcv_dt = parsedate_to_datetime(rcv_hdr) if rcv_hdr else None
+            if rcv_dt is not None and rcv_dt.tzinfo is None:
+                rcv_dt = rcv_dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            rcv_dt = None
+        if rcv_dt is None:
+            # Unparseable date — skip to be safe
+            continue
+        if rcv_dt >= cutoff:
+            kept.append(m)
+    dropped = before - len(kept)
+    if dropped:
+        print(f"[schedule] Ignored {dropped} email(s) older than cutoff "
+              f"({cutoff.isoformat()}).")
+    results = kept
+    if not results:
+        print("[schedule] No recent schedule emails within the 24h window.")
+        return "not_found"
 
     # Skip the last-applied email so re-checking the inbox after a bulk
     # time advance doesn't re-use a schedule email that already belongs to
