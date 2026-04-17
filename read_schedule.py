@@ -877,19 +877,22 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
         return "not_found"
 
     client = OutlookClient(config)
-    # anna_email="" means "accept from any sender" — useful for demos where
-    # the schedule may be sent from different addresses.  In any-sender mode
-    # use a MUCH wider window (top=50) because the demo generates a lot of
-    # system-authored emails (alerts, reminders, load-entries) that occupy
-    # the most-recent slots.  Without a wide enough window the real
-    # schedule email gets pushed off the bottom of the fetch and looks
-    # like it never arrived.  The downstream self-send + shape filters
-    # handle the extra noise.
-    results = client.search_inbox(sender=anna or None, top=50 if not anna else 5)
+    # Always do an unfiltered top=50 fetch and let the downstream self-send
+    # + shape + body-signature filters separate real schedule emails from
+    # system noise.  Two reasons we do NOT pass sender=anna even when
+    # configured:
+    #   1. Gmail's server-side FROM index lags message delivery, so a fresh
+    #      message can be in the folder but missing from FROM-filtered
+    #      searches for ~30s-minutes.  An unfiltered SEARCH ALL returns it.
+    #   2. top=5 in anna-mode meant accumulated system emails (alerts,
+    #      reminders, load-entries) pushed real schedule emails off the
+    #      bottom of the fetch after a single demo cycle.
+    # The anna_email config entry is retained only as documentation/intent;
+    # it no longer constrains the fetch.
+    results = client.search_inbox(sender=None, top=50)
 
     if not results:
-        who = anna if anna else "anyone"
-        print(f"[schedule] No emails found from {who}.")
+        print("[schedule] Inbox is empty.")
         return "not_found"
 
     # Inbox summary — lets us see immediately whether the schedule email
