@@ -489,6 +489,12 @@ _AMBIGUOUS_DAY_OR = re.compile(
     re.IGNORECASE,
 )
 
+# "either" marks the "either X or Y" ambiguity construction even when the
+# "or" is far from the day names (so the _AMBIGUOUS_DAY_OR pattern above
+# might not match). Detecting "either" alone is sufficient to force low
+# confidence.
+_EITHER_MARKER = re.compile(r'\beither\b', re.IGNORECASE)
+
 
 def _split_segments(text):
     """Split on commas, semicolons, newlines, sentence terminators, and the
@@ -678,6 +684,14 @@ def parse_schedule_text(text):
         notes.append(
             f"  Ambiguous 'day or day' phrasing detected "
             f"({or_hit.group(0)!r}) — forcing low confidence."
+        )
+        forced_low = True
+
+    # "either" marks the "either X or Y" ambiguity construction. Force
+    # low confidence so the operator reviews manually.
+    if _EITHER_MARKER.search(cleaned):
+        notes.append(
+            "  'either' detected — ambiguous schedule, forcing low confidence."
         )
         forced_low = True
 

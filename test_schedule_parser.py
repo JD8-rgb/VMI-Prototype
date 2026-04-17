@@ -707,6 +707,14 @@ def curated_must_pass() -> List[Case]:
              expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16)],
              expected_confidence="low",
              must_pass=True),
+        # "either" anywhere in the body also forces low confidence — it
+        # marks the "either X or Y" ambiguity construction even when "or"
+        # is far from the day names.
+        Case("must_40_either_forces_low", "unparseable_control",
+             "Running either Mon 6am-4pm or not at all",
+             expected=[(0, 6, 16)],
+             expected_confidence="low",
+             must_pass=True),
     ]
 
 
