@@ -691,6 +691,22 @@ def curated_must_pass() -> List[Case]:
              "Mon; Tue; and Wed 0600-1600",
              expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16)],
              must_pass=True),
+        # "DAY or DAY" is ambiguous English — author hasn't decided which
+        # day — and must always force low confidence. The parser may
+        # still extract entries (can't tell which one the author meant),
+        # but confidence MUST drop so auto-apply is blocked and the
+        # operator reviews manually.
+        Case("must_38_or_ambiguity_forces_low", "unparseable_control",
+             "Run Monday or Tuesday 6am-4pm",
+             # Whatever the parser extracts, the key assertion is low conf.
+             expected=[(0, 6, 16), (1, 6, 16)],
+             expected_confidence="low",
+             must_pass=True),
+        Case("must_39_or_ambiguity_multi", "unparseable_control",
+             "We'll run Mon or Tue 6am-4pm, and Wed or Thu 6am-4pm",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16)],
+             expected_confidence="low",
+             must_pass=True),
     ]
 
 
@@ -744,9 +760,14 @@ def _check_passed(case: Case, entries, confidence) -> bool:
     actual   = _normalize(entries)
     expected = _normalize(case.expected)
     # If the case pins a required confidence (e.g. must_21 expects 'low'
-    # because the input exceeds the plant cap), enforce it.
-    if case.expected_confidence is not None and confidence != case.expected_confidence:
-        return False
+    # because the input exceeds the plant cap), enforce it and skip the
+    # coverage-based "must be high" check below — the explicit pin wins.
+    if case.expected_confidence is not None:
+        if confidence != case.expected_confidence:
+            return False
+        if not case.expected:
+            return actual == []
+        return actual == expected
     if not case.expected:
         return actual == []
     if actual != expected:

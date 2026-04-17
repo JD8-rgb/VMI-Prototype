@@ -477,6 +477,19 @@ def _join_day_list(text):
 
 # ── Schedule text parser ──────────────────────────────────────────────────────
 
+# Ambiguous "DAY or DAY" phrasing. In plain English "Monday or Tuesday"
+# means ONE of the two days — the author hasn't decided. We must NEVER
+# auto-apply a schedule built from this, so its presence forces low
+# confidence unconditionally. Detected in the CLEANED text (so a greeting
+# like "Hi or thanks" can't false-positive — "Hi" and "thanks" aren't
+# day names anyway, but being cleaned also strips forwarded-header noise
+# that might otherwise coincidentally contain "or").
+_AMBIGUOUS_DAY_OR = re.compile(
+    r'\b' + _DAY_NOCAP + r'\s+or\s+' + _DAY_NOCAP + r'\b',
+    re.IGNORECASE,
+)
+
+
 def _split_segments(text):
     """Split on commas, semicolons, newlines, sentence terminators, and the
     literal word 'and'. Sentence terminators use lookarounds so they don't
@@ -656,6 +669,17 @@ def parse_schedule_text(text):
     #    the resulting entries will either overlap or blow past the plant's
     #    physical runtime cap, and we refuse to auto-apply.
     forced_low = False
+
+    # Ambiguous "DAY or DAY" phrasing. "Monday or Tuesday 6am-4pm" means
+    # ONE of the two — the author hasn't decided which. Whichever the
+    # parser picks is a coin flip, so refuse to auto-apply.
+    or_hit = _AMBIGUOUS_DAY_OR.search(cleaned)
+    if or_hit:
+        notes.append(
+            f"  Ambiguous 'day or day' phrasing detected "
+            f"({or_hit.group(0)!r}) — forcing low confidence."
+        )
+        forced_low = True
 
     # Overlap check: convert to absolute hours from Mon 00:00 and walk sorted.
     ranges = sorted((wd * 24 + sh, wd * 24 + eh) for wd, sh, eh in entries)
