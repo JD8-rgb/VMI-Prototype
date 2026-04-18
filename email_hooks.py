@@ -53,17 +53,47 @@ def send_alert_emails_if_new(data):
     in data["alerted_hashes"].  Send one email for any new alerts, then
     update the hash list.
 
+    Also appends each new-hash alert to ``data["alert_log"]`` — the persistent
+    history used by the Alert History panel. Logging happens BEFORE the email
+    attempt so a send failure doesn't lose the detection record.
+
     - New hashes are only persisted after a successful send (so failures retry).
     - Stale hashes (alerts that cleared) are always pruned.
 
     Returns the updated data dict.  The caller is responsible for saving it.
     """
-    current_alerts = get_all_alerts(data)
-    current = {alert_hash(a): a for a in current_alerts}   # hash -> text
+    current_alerts = get_all_alerts(data)                           # list[dict]
+    current = {alert_hash(a["text"]): a for a in current_alerts}    # hash -> dict
     prev    = set(data.get("alerted_hashes", []))
 
     new_hashes  = [h for h in current if h not in prev]
-    new_alerts  = [current[h] for h in new_hashes]
+    new_alerts  = [current[h] for h in new_hashes]                  # list[dict]
+
+    # ── Append to persistent alert log (BEFORE email attempt) ───────────────
+    # First-appearance-only: the dedup against `alerted_hashes` means a
+    # condition that keeps firing across many ticks only logs once, until it
+    # clears and later re-fires. That's exactly the "event" granularity we
+    # want for review.
+    if new_alerts:
+        log = data.setdefault("alert_log", [])
+        run_hour  = data.get("current_run_hour", 0)
+        try:
+            logged_at = time_utils.run_hour_to_dt(data, run_hour).isoformat()
+        except Exception:
+            logged_at = None
+        for h, a in zip(new_hashes, new_alerts):
+            log.append({
+                "logged_at_run_hour": run_hour,
+                "logged_at_iso":      logged_at,
+                "hash":               h,
+                "type":               a.get("type"),
+                "severity":           a.get("severity"),
+                "direction":          a.get("direction"),
+                "product":            a.get("product"),
+                "tank":               a.get("tank"),
+                "level_lbs":          a.get("level_lbs"),
+                "text":               a.get("text"),
+            })
 
     if new_alerts:
         config = load_config()
@@ -73,7 +103,7 @@ def send_alert_emails_if_new(data):
                 body = (
                     "VMI ALERT\n"
                     + "=" * 40 + "\n\n"
-                    + "\n\n".join(new_alerts)
+                    + "\n\n".join(a["text"] for a in new_alerts)
                     + "\n\n-- VMI Prototype"
                 )
                 OutlookClient(config).send_mail(

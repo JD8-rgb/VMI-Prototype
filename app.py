@@ -238,19 +238,20 @@ def _advance(data, hours, session_start_utc=None):
         from alerts import get_all_alerts as _gaa
         prev_hashes = set(data.get("alerted_hashes", []))
         # Compute what WOULD be new BEFORE sending (so log is independent of send success)
-        cur_alerts = _gaa(data)
-        cur_map    = {_ah(a): a for a in cur_alerts}
+        cur_alerts = _gaa(data)                            # list[dict]
+        cur_map    = {_ah(a["text"]): a for a in cur_alerts}
         new_to_log = {h: cur_map[h] for h in cur_map if h not in prev_hashes}
-        send_alert_emails_if_new(data)   # mutates data["alerted_hashes"]
+        send_alert_emails_if_new(data)   # mutates data["alerted_hashes"] and data["alert_log"]
         if new_to_log:
             cfg  = load_config()
             dist = cfg.get("distribution_group", "") if cfg else ""
+            preview = "\n\n".join(a["text"] for a in list(new_to_log.values())[:5])
             email_events.append({
                 "sim_time": format_run_hour(data, end),
                 "type":    f"Alert ({len(new_to_log)} new)",
                 "to":      dist or "distribution_group not configured",
                 "subject": f"VMI Alert ({len(new_to_log)} new)",
-                "body":    "VMI ALERT\n" + "="*40 + "\n\n" + "\n\n".join(list(new_to_log.values())[:5]),
+                "body":    "VMI ALERT\n" + "="*40 + "\n\n" + preview,
             })
     except Exception as e:
         log.append(f"[Email] Alert email error: {e}")
@@ -1013,9 +1014,14 @@ if not alerts:
     </div>""", unsafe_allow_html=True)
 else:
     for a in alerts:
-        is_red = a.startswith("RED FLAG")
+        # Alerts are structured dicts (see alerts._alert). Severity keys the
+        # styling; the text field strips the legacy prefix for clean display.
+        is_red = a.get("severity") == "red_flag"
         label  = "🔴 &nbsp; CRITICAL" if is_red else "🟡 &nbsp; WARNING"
-        text   = a.replace("RED FLAG: ", "").replace("YELLOW FLAG: ", "").replace("WARNING: ", "")
+        raw    = a.get("text", "")
+        text   = (raw.replace("RED FLAG: ", "")
+                     .replace("YELLOW FLAG: ", "")
+                     .replace("WARNING: ", ""))
         bg     = "#FFF1F2" if is_red else "#FFFBEB"
         border = "#F43F5E" if is_red else "#F59E0B"
         lcolor = "#9F1239" if is_red else "#92400E"
@@ -1435,6 +1441,58 @@ with st.expander("📋 Alert Rules Reference"):
 - Heavy week ({TARGET_HIGH_RUN_HOURS} run hrs/wk or more): **{TARGET_HIGH_LBS:,} lbs**
 - Intermediate weeks: linear interpolation between the two
 """)
+
+# ── Alert History (expander) ─────────────────────────────────────────────────
+# Persistent record of every distinct alert event. Written by
+# email_hooks.send_alert_emails_if_new on first appearance of each hash; the
+# same condition re-firing later (after it clears and returns) logs a new row.
+# This is the read-out surface for manually tuning targets.
+
+_alert_log = data.get("alert_log", [])
+with st.expander(
+    f"📋 Alert History ({len(_alert_log)} logged)",
+    expanded=False,
+):
+    if not _alert_log:
+        st.caption(
+            "No alerts have fired yet. When a tank drops below safety stock, "
+            "a delivery overfills, or a schedule deadline is missed, the event "
+            "will be recorded here for later review."
+        )
+    else:
+        # Newest first. Filters are view controls only — no data is mutated.
+        products_seen = sorted({e.get("product") for e in _alert_log if e.get("product")})
+        fc1, fc2, fc3 = st.columns(3)
+        dir_filter  = fc1.selectbox("Direction", ["all", "too_low", "too_full", "other"],
+                                    key="alertlog_dir")
+        prod_filter = fc2.selectbox("Product",   ["all"] + products_seen,
+                                    key="alertlog_product")
+        sev_filter  = fc3.selectbox("Severity",  ["all", "red_flag", "warning"],
+                                    key="alertlog_sev")
+
+        rows = list(reversed(_alert_log))
+        if dir_filter  != "all":
+            rows = [r for r in rows if r.get("direction") == dir_filter]
+        if prod_filter != "all":
+            rows = [r for r in rows if r.get("product")   == prod_filter]
+        if sev_filter  != "all":
+            rows = [r for r in rows if r.get("severity")  == sev_filter]
+
+        # Tight projection of fields — full entries remain in data.json for
+        # anyone who wants to dig deeper.
+        view = [{
+            "time":      r.get("logged_at_iso") or f"run-hour {r.get('logged_at_run_hour', 0):.0f}",
+            "severity":  r.get("severity"),
+            "direction": r.get("direction"),
+            "type":      r.get("type"),
+            "product":   r.get("product") or "—",
+            "tank":      r.get("tank") or "—",
+            "level_lbs": r.get("level_lbs"),
+            "text":      r.get("text"),
+        } for r in rows]
+
+        st.dataframe(view, hide_index=True, use_container_width=True)
+        st.caption(f"{len(view)} of {len(_alert_log)} entries shown.")
 
 # ── Recent Email Activity (expander) ─────────────────────────────────────────
 

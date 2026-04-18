@@ -70,7 +70,7 @@ if not alerts:
     print("All clear.")
 else:
     for alert in alerts:
-        print(f"  {alert}")
+        print(f"  {alert['text']}")
 
 data = email_hooks.send_alert_emails_if_new(data)
 with open("data.json", "w") as f:
