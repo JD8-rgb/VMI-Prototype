@@ -26,6 +26,41 @@ PROJECTION_WINDOW_HOURS = 168
 PLANT_STATE_MISMATCH_HOURS = 3   # alert if plant state is off-schedule this many hrs
 
 
+# ---------------------------------------------------------------------------
+# Alert dict helper
+#
+# Every alert in the system is a dict with the shape below. Each field is
+# non-optional — call sites pass None for anything that doesn't apply —
+# so downstream consumers can rely on key presence.
+#
+#   text      (str)   : human-readable alert body, same prefix convention
+#                      as before ("RED FLAG: ...", "WARNING: ...", "LATE TRUCK: ...").
+#   type      (str)   : "safety_stock" | "overfill" | "lead_time" | "late_truck"
+#                       | "schedule_parse" | "schedule_deadline" | "plant_state"
+#   severity  (str)   : "red_flag" | "warning"
+#   direction (str)   : "too_low" | "too_full" | "other"
+#   product   (str | None) : e.g. "Product U"; None if the alert isn't product-scoped.
+#   tank      (str | None) : e.g. "U-Tank1"; None for product-scoped alerts.
+#   level_lbs (float | None): tank/combined fill level snapshot at emission time,
+#                       or None if not applicable (schedule/plant-state alerts).
+#
+# The alert log in data.json copies each of these fields verbatim plus a
+# logged_at_iso timestamp and the dedup hash — see email_hooks.send_alert_emails_if_new.
+# ---------------------------------------------------------------------------
+
+def _alert(text, type, severity, direction,
+           product=None, tank=None, level_lbs=None):
+    return {
+        "text":      text,
+        "type":      type,
+        "severity":  severity,
+        "direction": direction,
+        "product":   product,
+        "tank":      tank,
+        "level_lbs": level_lbs,
+    }
+
+
 def get_lbs_per_hour(data, product):
     return data["consumption_rates"][product]["lbs_per_hour"]
 
@@ -69,11 +104,14 @@ def check_lead_time(data, product):
         return None
     demand = scheduled_hours * rate
     if total_supply < demand:
-        return (f"WARNING: {product} supply {total_supply:,.0f} lbs "
+        text = (f"WARNING: {product} supply {total_supply:,.0f} lbs "
                 f"(usable {usable:,.0f} + inbound {inbound:,.0f}) "
                 f"won't cover next {LEAD_TIME_HOURS}h of scheduled run time "
                 f"({scheduled_hours:.0f} run-hrs = {demand:,.0f} lbs). "
                 f"Order another truck.")
+        return _alert(text, type="lead_time", severity="warning",
+                      direction="too_low", product=product,
+                      level_lbs=float(total_supply))
     return None
 
 
@@ -161,8 +199,9 @@ def simulate_consume(tanks, product, lbs):
 def simulate_delivery(tanks, truck, data=None):
     """
     Pour a truck into the lowest tank, overflow to the other.
-    Returns an alert string if overfill conditions are violated, else None.
-    Pass data to show human-readable arrival times instead of raw run-hours.
+    Returns an alert dict (see `_alert`) if overfill conditions are violated,
+    else None. Pass data to show human-readable arrival times instead of raw
+    run-hours.
     """
     product = truck["product"]
     quantity = truck["quantity_lbs"]
@@ -194,17 +233,25 @@ def simulate_delivery(tanks, truck, data=None):
         # Product spans both tanks (e.g. Product M, 37k lbs > single-tank usable)
         # Alert only if the truck won't fit across BOTH tanks combined.
         if total_space < quantity:
-            alert = (f"RED FLAG: {sap} ({product}, {quantity:,} lbs) at {arrival_label} — "
-                     f"projected combined tank space is {total_space:,.0f} lbs "
-                     f"({target_name} + {other_name or 'no other tank'}). "
-                     f"Truck cannot fit across both tanks. Reschedule or delay.")
+            text = (f"RED FLAG: {sap} ({product}, {quantity:,} lbs) at {arrival_label} — "
+                    f"projected combined tank space is {total_space:,.0f} lbs "
+                    f"({target_name} + {other_name or 'no other tank'}). "
+                    f"Truck cannot fit across both tanks. Reschedule or delay.")
+            alert = _alert(text, type="overfill", severity="red_flag",
+                           direction="too_full", product=product,
+                           tank=target_name,
+                           level_lbs=float(target["current_level_lbs"]))
     else:
         # Product must fit in a single tank (e.g. Product U, 33k lbs ≤ single-tank usable)
         # Alert if the lowest tank doesn't have enough room.
         if target_space < quantity:
-            alert = (f"RED FLAG: {sap} ({product}, {quantity:,} lbs) at {arrival_label} — "
-                     f"projected space in {target_name} is {target_space:,.0f} lbs. "
-                     f"Delivery must fit in one tank. Arriving too early — reschedule later.")
+            text = (f"RED FLAG: {sap} ({product}, {quantity:,} lbs) at {arrival_label} — "
+                    f"projected space in {target_name} is {target_space:,.0f} lbs. "
+                    f"Delivery must fit in one tank. Arriving too early — reschedule later.")
+            alert = _alert(text, type="overfill", severity="red_flag",
+                           direction="too_full", product=product,
+                           tank=target_name,
+                           level_lbs=float(target["current_level_lbs"]))
 
     pour_into_target = min(quantity, target_space)
     target["current_level_lbs"] += pour_into_target
@@ -244,7 +291,8 @@ def run_projection(data):
       - check safety stock for each product
       - if a truck arrives this hour, deliver it and check overfill
 
-    Returns a list of alert strings (deduplicated by content).
+    Returns a list of alert dicts (see `_alert`). Duplicate safety-stock
+    alerts for the same product are suppressed within a single projection.
     """
     tanks = copy.deepcopy(data["tanks"])
     rates = data["consumption_rates"]
@@ -280,11 +328,16 @@ def run_projection(data):
         for product in products:
             level = get_combined_level_from_tanks(tanks, product)
             if level < SAFETY_STOCK_LBS and product not in seen_safety:
-                alerts.append(
+                text = (
                     f"RED FLAG: {product} projected to drop to {level:,.0f} lbs "
                     f"at {format_run_hour(data, next_hour)} — below {SAFETY_STOCK_LBS:,} lb "
                     f"safety stock. Add trucks or check the schedule."
                 )
+                alerts.append(_alert(
+                    text, type="safety_stock", severity="red_flag",
+                    direction="too_low", product=product,
+                    level_lbs=float(level),
+                ))
                 seen_safety.add(product)
 
         hour = next_hour
@@ -293,18 +346,22 @@ def run_projection(data):
 
 
 def check_late_trucks(data):
-    """Return alert strings for any truck more than LATE_TRUCK_HOURS past its arrival time."""
+    """Return alert dicts for any truck more than LATE_TRUCK_HOURS past its arrival time."""
     current = data["current_run_hour"]
     alerts = []
     for truck in data["scheduled_trucks"]:
         overdue = current - truck["arrival_run_hour"]
         if overdue > LATE_TRUCK_HOURS:
-            alerts.append(
+            text = (
                 f"LATE TRUCK: {truck['sap_order']} ({truck['product']}, "
                 f"{truck['quantity_lbs']:,} lbs) was due "
                 f"{format_run_hour(data, truck['arrival_run_hour'])} — "
                 f"{overdue:.0f} hrs overdue. Please verify delivery."
             )
+            alerts.append(_alert(
+                text, type="late_truck", severity="warning",
+                direction="too_low", product=truck.get("product"),
+            ))
     return alerts
 
 
@@ -321,10 +378,11 @@ def check_schedule_alerts(data):
     # ── Low-confidence parse ──────────────────────────────────────────────────
     issue = data.get("schedule_parse_issue")
     if issue:
-        alerts.append(
+        alerts.append(_alert(
             "WARNING: Schedule email received but could not be parsed — "
-            "enter the schedule manually using the Schedule Parser."
-        )
+            "enter the schedule manually using the Schedule Parser.",
+            type="schedule_parse", severity="warning", direction="other",
+        ))
 
     # ── Friday schedule deadline alerts ──────────────────────────────────────
     epoch   = datetime.fromisoformat(data["simulation_epoch"])
@@ -336,16 +394,18 @@ def check_schedule_alerts(data):
         if data.get("schedule_received_for_week") != next_mon:
             if sim_now.hour >= 15:
                 # 3 PM or later — critical: missed the deadline
-                alerts.append(
-                    f"RED FLAG: No schedule received for week of {next_mon_display} by Friday 3 PM — "
-                    f"reminder email sent to customer contact."
-                )
+                alerts.append(_alert(
+                    f"RED FLAG: No schedule received for week of {next_mon_display} "
+                    f"by Friday 3 PM — reminder email sent to customer contact.",
+                    type="schedule_deadline", severity="red_flag", direction="other",
+                ))
             else:
                 # 11 AM–2:59 PM — initial reminder sent, still waiting
-                alerts.append(
+                alerts.append(_alert(
                     f"WARNING: No schedule received for week of {next_mon_display} — "
-                    f"reminder email sent to customer contact at 11 AM."
-                )
+                    f"reminder email sent to customer contact at 11 AM.",
+                    type="schedule_deadline", severity="warning", direction="other",
+                ))
 
     return alerts
 
@@ -379,14 +439,20 @@ def check_plant_state_mismatch(data):
     scheduled_state = "running" if is_running_at(data, current) else "down"
     if actual == scheduled_state:
         return []
-    return [
+    return [_alert(
         f"RED FLAG: Plant state mismatch — actual plant state is '{actual}' "
         f"for {duration:.0f}+ hrs but schedule says '{scheduled_state}'. "
-        f"Verify plant status and/or update the schedule."
-    ]
+        f"Verify plant status and/or update the schedule.",
+        type="plant_state", severity="red_flag", direction="other",
+    )]
 
 
 def get_all_alerts(data):
+    """
+    Aggregate every active alert. Returns a list of alert dicts (see `_alert`).
+    Consumers read ``a["text"]`` for the human-readable body; the other fields
+    power the persistent alert log in data.json.
+    """
     alerts = []
     for product in data["consumption_rates"].keys():
         lead_alert = check_lead_time(data, product)
