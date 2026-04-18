@@ -475,6 +475,243 @@ def _join_day_list(text):
     return text
 
 
+# ── Date tokens → day-abbreviation rewriter ───────────────────────────────────
+#
+# Real-mail schedules often use dates instead of day names:
+#   "4/20, 4/21, 4/22 6am-4pm"       (US numeric)
+#   "20/4, 21/4 6am-4pm"             (EU numeric)
+#   "April 20, April 21 6am-4pm"     (month name)
+#   "2026-04-20 0600-1600"           (ISO 8601)
+#   "4/20-4/22 6am-4pm"              (date range, shared time)
+#   "4/23 6am until 4/24 4am"        (date-based multi-day span)
+#
+# Strategy: scan the cleaned text for date tokens and substitute each with
+# the corresponding day abbreviation (Mon/Tue/...) BEFORE the day-name
+# pipeline runs. The downstream parser is unchanged.
+#
+# International format disambiguation: the target week is a 7-day window,
+# and the US/EU interpretations of an ambiguous N/M token (both ≤ 12) are
+# roughly |N−M|×30 days apart. At most one can fall inside the target
+# week, so target-week membership is a free disambiguator — no config,
+# no mode switch. Proof: for N≠M both in 1..12, |N−M|×30 ≥ 30 days > 7.
+
+_MONTH_ABBREV = {
+    "jan": 1,  "january":   1,
+    "feb": 2,  "february":  2,
+    "mar": 3,  "march":     3,
+    "apr": 4,  "april":     4,
+    "may": 5,
+    "jun": 6,  "june":      6,
+    "jul": 7,  "july":      7,
+    "aug": 8,  "august":    8,
+    "sep": 9,  "sept":      9,  "september": 9,
+    "oct": 10, "october":  10,
+    "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
+_MONTH_KEYS_SORTED = sorted(_MONTH_ABBREV.keys(), key=len, reverse=True)
+_MONTH_NOCAP = r"(?:" + "|".join(_MONTH_KEYS_SORTED) + r")"
+
+# ISO 8601 first (most specific — leading 4-digit year prevents conflict
+# with the generic numeric matcher below).
+_DATE_ISO = re.compile(r'\b(\d{4})-(\d{1,2})-(\d{1,2})\b')
+
+# Month name then day, with optional ordinal suffix: "April 20", "Apr 20th".
+_DATE_MONTH_NAME_FWD = re.compile(
+    r'\b(' + _MONTH_NOCAP + r')\s+(\d{1,2})(?:st|nd|rd|th)?\b',
+    re.IGNORECASE,
+)
+# Day then month name: "20 April", "20th Apr".
+_DATE_MONTH_NAME_REV = re.compile(
+    r'\b(\d{1,2})(?:st|nd|rd|th)?\s+(' + _MONTH_NOCAP + r')\b',
+    re.IGNORECASE,
+)
+# Numeric dates: "4/20", "4-20", "4.20", with optional "/YY" or "/YYYY".
+# Separators /, -, . — must be the SAME separator twice within one token.
+# "10:00" is excluded because `:` is not in the separator class.
+_DATE_NUMERIC = re.compile(
+    r'\b(\d{1,2})([/\-.])(\d{1,2})(?:\2(\d{2,4}))?\b'
+)
+
+
+def _next_monday_from(now_dt):
+    """Next-Mon 00:00 relative to `now_dt` (or `datetime.now()` if None).
+    Matches the contract of `_next_week_bounds` but does not need a data
+    dict — used at pre-parse time before any data context exists."""
+    today = now_dt if now_dt is not None else datetime.now()
+    days_ahead = (7 - today.weekday()) % 7
+    if days_ahead == 0:
+        days_ahead = 7
+    return (today + timedelta(days=days_ahead)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+
+def _resolve_numeric_date(a, b, year_token, target_monday):
+    """
+    Resolve a numeric date token (three integers: first, second, optional
+    year) to a single weekday in the target week.
+
+    Returns (weekday_int, note_tag) where note_tag is one of:
+      "us"       — US M/D interpretation won
+      "eu"       — EU D/M interpretation won
+      "collision" — both fit (should be mathematically impossible; forces low)
+      None        — neither fits; caller should leave token intact
+    """
+    target_end = target_monday + timedelta(days=7)
+
+    def _try(month, day, year):
+        if not (1 <= month <= 12 and 1 <= day <= 31):
+            return None
+        try:
+            dt = datetime(year, month, day)
+        except ValueError:
+            return None
+        if target_monday <= dt < target_end:
+            return dt.weekday()
+        return None
+
+    # Normalise year.
+    if year_token is None:
+        # Try target year first; if target week crosses Dec→Jan, also try
+        # the adjacent year so "1/2" on 12/30 resolves to Jan 2 next year.
+        years = [target_monday.year]
+        alt_year = (target_monday + timedelta(days=7)).year
+        if alt_year != target_monday.year:
+            years.append(alt_year)
+    else:
+        y = int(year_token)
+        if y < 100:
+            y += 2000
+        years = [y]
+
+    us_weekday = None
+    eu_weekday = None
+    for y in years:
+        if us_weekday is None:
+            us_weekday = _try(a, b, y)   # US: a=month, b=day
+        if eu_weekday is None:
+            eu_weekday = _try(b, a, y)   # EU: b=month, a=day
+    if us_weekday is not None and eu_weekday is not None:
+        return (us_weekday, "collision")
+    if us_weekday is not None:
+        return (us_weekday, "us")
+    if eu_weekday is not None:
+        return (eu_weekday, "eu")
+    return (None, None)
+
+
+def _substitute_dates_with_days(text, now_dt=None):
+    """
+    Replace date tokens (ISO, month-name, numeric) in `text` with the
+    corresponding day abbreviation ("Mon"/"Tue"/...) when the date falls
+    in the target week [next_monday, next_monday+7 days).
+
+    Returns (rewritten_text, notes, forced_low_collision) where:
+      notes                 — list of strings to append to parse notes
+      forced_low_collision  — True if an impossible US/EU collision was
+                              detected (should never happen but forces
+                              low confidence defensively)
+
+    Tokens outside the target week or otherwise unresolvable are left in
+    place; the downstream parser will ignore them (no day name present
+    after substitution) and the overall parse will typically end up with
+    fewer effective days → low confidence → operator alert. That's the
+    correct "don't silently shift the target week" behaviour.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return text, [], False
+
+    target_monday = _next_monday_from(now_dt)
+    target_end    = target_monday + timedelta(days=7)
+    notes         = []
+    forced_low    = False
+
+    def _weekday_abbrev(weekday):
+        return _DAY_ABBREV[weekday]
+
+    # Pass 1 — ISO 8601 (most specific). Consumes "YYYY-MM-DD" so the
+    # numeric pattern below can't double-match its "MM-DD" tail.
+    def _iso_sub(m):
+        nonlocal forced_low
+        year, mo, da = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            dt = datetime(year, mo, da)
+        except ValueError:
+            return m.group(0)
+        if target_monday <= dt < target_end:
+            return _weekday_abbrev(dt.weekday())
+        notes.append(
+            f"  Date {m.group(0)!r} is outside target week "
+            f"{target_monday.date()}..{(target_end - timedelta(days=1)).date()} "
+            f"— left un-converted."
+        )
+        return m.group(0)
+    text = _DATE_ISO.sub(_iso_sub, text)
+
+    # Pass 2 — month-name forms. Both orientations ("April 20" and
+    # "20 April") resolve to a single datetime and need no US/EU split.
+    def _month_name_fwd_sub(m):
+        mon = _MONTH_ABBREV[m.group(1).lower()]
+        day = int(m.group(2))
+        return _resolve_monthname(m, mon, day)
+
+    def _month_name_rev_sub(m):
+        day = int(m.group(1))
+        mon = _MONTH_ABBREV[m.group(2).lower()]
+        return _resolve_monthname(m, mon, day)
+
+    def _resolve_monthname(m, mon, day):
+        # Try target year and adjacent year for Dec→Jan boundaries.
+        for year in {target_monday.year,
+                     (target_monday + timedelta(days=7)).year}:
+            try:
+                dt = datetime(year, mon, day)
+            except ValueError:
+                continue
+            if target_monday <= dt < target_end:
+                return _weekday_abbrev(dt.weekday())
+        notes.append(
+            f"  Date {m.group(0)!r} is outside target week "
+            f"{target_monday.date()}..{(target_end - timedelta(days=1)).date()} "
+            f"— left un-converted."
+        )
+        return m.group(0)
+
+    text = _DATE_MONTH_NAME_FWD.sub(_month_name_fwd_sub, text)
+    text = _DATE_MONTH_NAME_REV.sub(_month_name_rev_sub, text)
+
+    # Pass 3 — generic numeric date. This runs LAST so ISO and month-name
+    # forms aren't shadowed (they've already been substituted). The
+    # numeric matcher has no word boundaries inside so "2026-04-20" in
+    # text that somehow dodged Pass 1 could still false-match; but the
+    # \b at the start anchors against the preceding word, and by this
+    # point all ISO tokens are gone.
+    def _numeric_sub(m):
+        nonlocal forced_low
+        a = int(m.group(1))
+        b = int(m.group(3))
+        year_token = m.group(4)
+        weekday, tag = _resolve_numeric_date(a, b, year_token, target_monday)
+        if weekday is None:
+            # Not a valid target-week date. Don't complain loudly — the
+            # token might not be a date at all (e.g. "16/20" could be a
+            # fraction in prose). Just leave it alone.
+            return m.group(0)
+        if tag == "collision":
+            notes.append(
+                f"  Date {m.group(0)!r} is ambiguous (both US and EU "
+                f"interpretations fall in target week) — forcing low confidence."
+            )
+            forced_low = True
+            return m.group(0)
+        return _weekday_abbrev(weekday)
+
+    text = _DATE_NUMERIC.sub(_numeric_sub, text)
+
+    return text, notes, forced_low
+
+
 # ── Schedule text parser ──────────────────────────────────────────────────────
 
 # Ambiguous "DAY or DAY" phrasing. In plain English "Monday or Tuesday"
@@ -550,10 +787,16 @@ def _single_day_window(seg, weekday, day_span, time_pat):
     return ("window", weekday, start_h, end_h)
 
 
-def parse_schedule_text(text):
+def parse_schedule_text(text, now_dt=None):
     """
     Parse plain-text schedule like:
         "Monday 6am-10pm, Tuesday 6am-2pm, Wednesday off, Thursday 6am-10pm"
+
+    now_dt : optional datetime used to anchor date-token → day-name conversion
+             for inputs like "4/20 6am-4pm" or "April 20 0600-1600". Dates in
+             the target week [next_monday, next_monday+7days) are rewritten to
+             "Mon"/"Tue"/... before the day-name pipeline runs. Defaults to
+             datetime.now() when None.
 
     Returns
     -------
@@ -568,6 +811,11 @@ def parse_schedule_text(text):
     # Clean greetings / sign-offs / quoted replies before segmentation, so
     # prose like "Hi team,\n ... \nThanks, Anna" doesn't pollute segments.
     cleaned = _clean_email_text(text)
+    # Rewrite calendar-date tokens ("4/20", "April 20", "2026-04-20", ...) to
+    # day-name abbreviations when they fall inside the target week. This runs
+    # before the range / list joiners so downstream sees clean day names.
+    cleaned, date_notes, date_forced_low = _substitute_dates_with_days(cleaned, now_dt)
+    notes.extend(date_notes)
     # Merge "Monday-Friday\n6AM-10PM" style split-across-lines ranges before
     # the segment splitter sees them on separate lines.
     cleaned = _join_range_lines(cleaned)
@@ -674,7 +922,10 @@ def parse_schedule_text(text):
     #    parsed as one week" failure: if quote-stripping misses a separator,
     #    the resulting entries will either overlap or blow past the plant's
     #    physical runtime cap, and we refuse to auto-apply.
-    forced_low = False
+    # Seed with any forced-low signal from the date-substitution pass (e.g.
+    # a mathematically-impossible US/EU collision) so that signal survives
+    # into the final confidence verdict.
+    forced_low = bool(date_forced_low)
 
     # Ambiguous "DAY or DAY" phrasing. "Monday or Tuesday 6am-4pm" means
     # ONE of the two — the author hasn't decided which. Whichever the
@@ -883,7 +1134,7 @@ def parse_schedule_llm(text, api_key):
     return entries, confidence, notes
 
 
-def parse_schedule(text, api_key=None):
+def parse_schedule(text, api_key=None, now_dt=None):
     """
     REGEX-FIRST strategy:
       1. Run the regex parser (parse_schedule_text). If it returns HIGH
@@ -906,7 +1157,7 @@ def parse_schedule(text, api_key=None):
     Always returns (entries, confidence, notes).
     """
     # ── 1. Regex pass (always) ────────────────────────────────────────────
-    rx_entries, rx_confidence, rx_notes = parse_schedule_text(text)
+    rx_entries, rx_confidence, rx_notes = parse_schedule_text(text, now_dt=now_dt)
     rx_notes = [f"  Regex parser: {len(rx_entries)} window(s), "
                 f"confidence {rx_confidence}."] + rx_notes
 
@@ -1331,7 +1582,7 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
         body_preview = raw_body[:200].replace("\n", " ⏎ ")
         print(f"[schedule] Trying email from {msg.get('sender','?')}: "
               f"body[0:200]={body_preview!r}")
-        entries, confidence, notes = parse_schedule(msg["body"], api_key=api_key)
+        entries, confidence, notes = parse_schedule(msg["body"], api_key=api_key, now_dt=now_dt)
         if confidence == "high":
             best_entries, best_confidence, best_notes, best_msg = entries, confidence, notes, msg
             break

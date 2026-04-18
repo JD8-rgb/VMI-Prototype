@@ -31,6 +31,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Callable, List, Optional, Tuple
 
 # Harness-wide telemetry for rate-limit pressure (populated by run_llm).
@@ -130,6 +131,7 @@ class Case:
     must_pass: bool = False
     regex_expected: bool = True   # False = don't count in regex pass-rate bar
     expected_confidence: Optional[str] = None  # pin confidence ('high'/'low'); None = default rule
+    now_dt: Optional[datetime] = None  # reference "now" for date-token resolution; None = datetime.now()
 
 
 @dataclass
@@ -715,6 +717,57 @@ def curated_must_pass() -> List[Case]:
              expected=[(0, 6, 16)],
              expected_confidence="low",
              must_pass=True),
+
+        # ── Date-token parsing (must_41 … must_48) ──────────────────────────
+        # All pinned to Fri 2026-04-17 so the target week is Mon 4/20 … Sun 4/26.
+        # That makes 4/20 → Mon, 4/21 → Tue, 4/22 → Wed, 4/23 → Thu, etc.
+        # These prove the pre-pass rewriter is fully wired and that the
+        # downstream pipeline treats date-sourced day names identically to
+        # literal day-name input.
+        Case("must_41_us_date_list", "multi_day_list",
+             "4/20 6am-4pm, 4/21 6am-4pm, 4/22 6am-4pm",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16)],
+             now_dt=datetime(2026, 4, 17, 12, 0),
+             must_pass=True),
+        Case("must_42_date_range_shared_time", "multi_day_list",
+             "4/20-4/22 6am-4pm",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16)],
+             now_dt=datetime(2026, 4, 17, 12, 0),
+             must_pass=True),
+        Case("must_43_month_name_fwd", "multi_day_list",
+             "April 20, April 21, April 22 6am-4pm",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16)],
+             now_dt=datetime(2026, 4, 17, 12, 0),
+             must_pass=True),
+        Case("must_44_iso_dates", "multi_day_list",
+             "2026-04-20, 2026-04-21 0600-1600",
+             expected=[(0, 6, 16), (1, 6, 16)],
+             now_dt=datetime(2026, 4, 17, 12, 0),
+             must_pass=True),
+        Case("must_45_eu_date_list", "multi_day_list",
+             "20/4, 21/4 6am-4pm",
+             expected=[(0, 6, 16), (1, 6, 16)],
+             now_dt=datetime(2026, 4, 17, 12, 0),
+             must_pass=True),
+        Case("must_46_date_multiday_span", "continuous_range",
+             "4/23 6am until 4/24 4am",
+             expected=[(3, 6, 28)],
+             now_dt=datetime(2026, 4, 17, 12, 0),
+             must_pass=True),
+        Case("must_47_mixed_dates_and_names", "multi_day_list",
+             "Mon 6am-4pm, 4/21 6am-4pm, Wed 6am-4pm",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16)],
+             now_dt=datetime(2026, 4, 17, 12, 0),
+             must_pass=True),
+        # Out-of-target-week date is left unconverted; with no day name, the
+        # parser finds zero entries → low confidence. Pins the "don't silently
+        # shift the target week" rule.
+        Case("must_48_out_of_target_week_low", "unparseable_control",
+             "5/15 6am-4pm",
+             expected=[],
+             expected_confidence="low",
+             now_dt=datetime(2026, 4, 17, 12, 0),
+             must_pass=True),
     ]
 
 
@@ -798,7 +851,9 @@ def _check_passed(case: Case, entries, confidence) -> bool:
 
 def run_regex(case: Case) -> CaseResult:
     try:
-        entries, confidence, notes = _silent(parse_schedule_text, case.input)
+        entries, confidence, notes = _silent(
+            parse_schedule_text, case.input, now_dt=case.now_dt
+        )
     except Exception as e:
         return CaseResult(case, [], "low", [], False, error=f"exception: {e!r}")
     return CaseResult(case, entries, confidence, notes,
