@@ -888,7 +888,7 @@ with _ps_c:
             "📄 Product Sheet",
             disabled=True,
             use_container_width=True,
-            help="Run `python build_product_sheet.py` to generate.",
+            help="Asset missing — re-add assets/product_sheet.pdf.",
         )
 
 st.markdown(
