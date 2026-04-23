@@ -470,7 +470,7 @@ def _chart(hist, product, safety=None):
             font=dict(size=14, family="Inter", color="#1E2A45"),
             x=0.01, xanchor="left",
         ),
-        height=280,
+        height=560,
         margin=dict(l=5, r=5, t=34, b=44),
         font=dict(family="Inter", color="#1E2A45", size=11),
         yaxis=dict(
