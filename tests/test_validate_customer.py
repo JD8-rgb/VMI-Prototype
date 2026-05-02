@@ -135,7 +135,13 @@ def test_invalid_delivery_slot_hour_errors(tmp_customers):
         "state": _minimal_valid_state(),
     })
     findings = validate_customer.validate_customer("bad_slot")
-    assert any(f.severity == "error" and f.field == "delivery_slots"
+    # PlantConfig.__post_init__ now rejects out-of-range slots at
+    # construction, so the linter surfaces a <load> error instead of
+    # the field-specific check. Either way: at least one error
+    # mentioning delivery_slots.
+    assert any(f.severity == "error"
+                and ("delivery_slots" in f.field
+                     or "delivery_slots" in f.message)
                 for f in findings)
 
 
@@ -155,7 +161,11 @@ def test_zero_lead_time_errors(tmp_customers):
         "state": _minimal_valid_state(),
     })
     findings = validate_customer.validate_customer("zero_lead")
-    assert any(f.severity == "error" and f.field == "lead_time_hours"
+    # PlantConfig.__post_init__ now rejects zero/negative scalars at
+    # construction; linter surfaces it as a <load> error.
+    assert any(f.severity == "error"
+                and ("lead_time_hours" in f.field
+                     or "lead_time_hours" in f.message)
                 for f in findings)
 
 
