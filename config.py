@@ -61,6 +61,17 @@ class PlantConfig:
     delivery_slots: Tuple[int, ...] = (6, 8, 14)
     """Allowed delivery arrival hours (24-hour clock)."""
 
+    # ── Calendar ──────────────────────────────────────────────────────────
+    plant_holidays: Tuple[str, ...] = ()
+    """ISO-format date strings ("YYYY-MM-DD") on which the plant does
+    not run, regardless of what the run-schedule windows say.
+    is_running_at returns False on these dates and the planner's slot
+    enumerator skips them. Empty tuple = no holidays (matches the demo
+    behavior exactly).
+
+    Stored as strings rather than `date` objects so the dataclass
+    remains JSON-serializable through the customer config file."""
+
     # ── Order numbering ───────────────────────────────────────────────────
     sap_order_format: str = "SAP{n:05d}"
     """Python format string for new SAP order numbers. Must contain a

@@ -157,9 +157,22 @@ def check_lead_time(data, product, cfg: PlantConfig = DEFAULT_CONFIG):
     return None
 
 
-def is_running_at(data, hour):
-    """True if the plant is scheduled to be running at this hour."""
+def is_running_at(data, hour, cfg: PlantConfig = DEFAULT_CONFIG):
+    """True if the plant is scheduled to be running at this hour.
+
+    Returns False when the hour falls on a date listed in
+    cfg.plant_holidays, even if a run window covers it. The schedule
+    representation in run_schedule is independent of calendar dates,
+    so without this check a plant that "runs Mon-Fri 6-22" would
+    silently include Christmas Day inside its windows."""
     state = _as_state(data)
+    if cfg.plant_holidays:
+        # Only do the date conversion when there are holidays — avoids
+        # the per-call dt-conversion cost on the demo path.
+        from time_utils import run_hour_to_dt
+        iso = run_hour_to_dt(state, hour).date().isoformat()
+        if iso in cfg.plant_holidays:
+            return False
     for window in state.run_schedule:
         if window.start_hour <= hour < window.end_hour:
             return True
@@ -419,7 +432,7 @@ def run_projection(data, cfg: PlantConfig = DEFAULT_CONFIG):
     while hour < end:
         next_hour = hour + 1
 
-        if is_running_at(state, hour):
+        if is_running_at(state, hour, cfg=cfg):
             for product in products:
                 simulate_consume(tanks, product, state.consumption_rates[product].lbs_per_hour)
 
@@ -546,7 +559,7 @@ def check_plant_state_mismatch(data, cfg: PlantConfig = DEFAULT_CONFIG):
     duration = current - since
     if duration < cfg.plant_state_mismatch_hours:
         return []
-    scheduled_state = "running" if is_running_at(state, current) else "down"
+    scheduled_state = "running" if is_running_at(state, current, cfg=cfg) else "down"
     if actual == scheduled_state:
         return []
     return [_alert(

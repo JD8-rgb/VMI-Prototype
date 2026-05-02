@@ -95,16 +95,18 @@ def get_run_hours_in_window(data, start, end):
 def _all_slot_run_hours(data, range_start, range_end, cfg: PlantConfig = DEFAULT_CONFIG):
     """
     Return all run-hours for the configured delivery slots on Mon-Fri days
-    within [range_start, range_end]. Ascending order.
+    within [range_start, range_end], skipping cfg.plant_holidays.
+    Ascending order.
     """
     slots    = []
     start_dt = run_hour_to_dt(data, range_start).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
     end_dt   = run_hour_to_dt(data, range_end)
+    holidays = set(cfg.plant_holidays)
     day      = start_dt
     while day < end_dt:
-        if day.weekday() < 5:              # Mon–Fri only
+        if day.weekday() < 5 and day.date().isoformat() not in holidays:
             for h in cfg.delivery_slots:
                 slot_dt = day.replace(hour=h)
                 rh      = dt_to_run_hour(data, slot_dt)
@@ -139,7 +141,7 @@ def is_valid_delivery_slot(data, run_hour, week_start, cfg: PlantConfig = DEFAUL
         return False
     if dt.hour not in cfg.delivery_slots:
         return False
-    if not is_running_at(state, run_hour):
+    if not is_running_at(state, run_hour, cfg=cfg):
         return False
     return True
 
@@ -148,7 +150,8 @@ def is_valid_delivery_slot(data, run_hour, week_start, cfg: PlantConfig = DEFAUL
 # Overfill check
 # ---------------------------------------------------------------------------
 
-def _project_tanks_to_hour(data, product, target_hour, product_trucks):
+def _project_tanks_to_hour(data, product, target_hour, product_trucks,
+                            cfg: PlantConfig = DEFAULT_CONFIG):
     """
     Copy tanks, then simulate consumption + deliveries for product up to
     target_hour. Returns the advanced tanks dict (still dict-of-dicts
@@ -182,7 +185,7 @@ def _project_tanks_to_hour(data, product, target_hour, product_trucks):
     hour      = current
     while hour < target_hour:
         next_hour = hour + 1
-        if is_running_at(state, hour):
+        if is_running_at(state, hour, cfg=cfg):
             simulate_consume(tanks, product, rates[product].lbs_per_hour)
         while (truck_idx < len(pending)
                and _truck_arrival(pending[truck_idx]) <= next_hour):
@@ -192,7 +195,8 @@ def _project_tanks_to_hour(data, product, target_hour, product_trucks):
     return tanks
 
 
-def _would_overfill(data, product, slot_rh, product_trucks):
+def _would_overfill(data, product, slot_rh, product_trucks,
+                     cfg: PlantConfig = DEFAULT_CONFIG):
     """
     Return True if delivering a standard truck of product at slot_rh would
     overfill, given already-planned product_trucks. Mirrors the overfill
@@ -202,7 +206,7 @@ def _would_overfill(data, product, slot_rh, product_trucks):
     let levels drop (even below safety stock) rather than to overfill a tank.
     """
     state    = _as_state(data)
-    tanks    = _project_tanks_to_hour(state, product, slot_rh, product_trucks)
+    tanks    = _project_tanks_to_hour(state, product, slot_rh, product_trucks, cfg=cfg)
     quantity = state.truck_quantities[product]
 
     target_name = find_lowest_in(tanks, product)
@@ -242,7 +246,8 @@ def _truck_product_name(t):
 
 
 def find_latest_valid_slot(
-    data, product, latest_hour, earliest_hour, week_start, week_end, all_trucks
+    data, product, latest_hour, earliest_hour, week_start, week_end, all_trucks,
+    cfg: PlantConfig = DEFAULT_CONFIG,
 ):
     """
     Return the latest allowed slot at or before latest_hour that:
@@ -258,8 +263,8 @@ def find_latest_valid_slot(
     product_trucks = [t for t in all_trucks if _truck_product_name(t) == product]
 
     candidates = [
-        rh for rh in _all_slot_run_hours(state, week_start, week_end)
-        if is_valid_delivery_slot(state, rh, week_start)
+        rh for rh in _all_slot_run_hours(state, week_start, week_end, cfg=cfg)
+        if is_valid_delivery_slot(state, rh, week_start, cfg=cfg)
         and rh <= latest_hour
         and rh >= earliest_hour
     ]
@@ -267,13 +272,14 @@ def find_latest_valid_slot(
     for slot in reversed(candidates):        # latest first
         if slot in booked:
             continue
-        if _would_overfill(state, product, slot, product_trucks):
+        if _would_overfill(state, product, slot, product_trucks, cfg=cfg):
             continue
         return slot
     return None
 
 
-def find_earliest_valid_slot(data, product, from_hour, to_hour, all_trucks):
+def find_earliest_valid_slot(data, product, from_hour, to_hour, all_trucks,
+                              cfg: PlantConfig = DEFAULT_CONFIG):
     """
     Return the earliest allowed slot at or after from_hour that:
       - passes is_valid_delivery_slot
@@ -289,14 +295,14 @@ def find_earliest_valid_slot(data, product, from_hour, to_hour, all_trucks):
     product_trucks = [t for t in all_trucks if _truck_product_name(t) == product]
 
     candidates = [
-        rh for rh in _all_slot_run_hours(state, from_hour, to_hour)
-        if is_valid_delivery_slot(state, rh, from_hour)
+        rh for rh in _all_slot_run_hours(state, from_hour, to_hour, cfg=cfg)
+        if is_valid_delivery_slot(state, rh, from_hour, cfg=cfg)
     ]
 
     for slot in sorted(candidates):          # earliest first
         if slot in booked:
             continue
-        if _would_overfill(state, product, slot, product_trucks):
+        if _would_overfill(state, product, slot, product_trucks, cfg=cfg):
             continue
         return slot
     return None
@@ -307,7 +313,8 @@ def find_earliest_valid_slot(data, product, from_hour, to_hour, all_trucks):
 # ---------------------------------------------------------------------------
 
 def find_first_breach_in_target_week(
-    data, product, target, week_start, week_end, extra_trucks, breach_floor=None
+    data, product, target, week_start, week_end, extra_trucks, breach_floor=None,
+    cfg: PlantConfig = DEFAULT_CONFIG,
 ):
     """
     Walk hour by hour from current to week_end, simulating consumption and
@@ -344,7 +351,7 @@ def find_first_breach_in_target_week(
     hour = current
     while hour < week_end:
         next_hour = hour + 1
-        if is_running_at(state, hour):
+        if is_running_at(state, hour, cfg=cfg):
             simulate_consume(tanks, product, rates[product].lbs_per_hour)
         while (truck_idx < len(pending)
                and _truck_arrival(pending[truck_idx]) <= next_hour):
@@ -379,6 +386,7 @@ def plan_for_product(data, product, target, week_start, week_end, extra_trucks,
             state, product, target, week_start, week_end,
             extra_trucks + new_trucks,
             breach_floor=breach_floor,
+            cfg=cfg,
         )
         if breach_hour is None:
             return new_trucks
@@ -391,14 +399,15 @@ def plan_for_product(data, product, target, week_start, week_end, extra_trucks,
         )
 
         slot = find_latest_valid_slot(
-            state, product, breach_hour, earliest, week_start, week_end, all_trucks
+            state, product, breach_hour, earliest, week_start, week_end, all_trucks,
+            cfg=cfg,
         )
 
         if slot is None:
             # Breach falls before the first scheduled run window, or all valid
             # slots are booked / would overfill — try earliest available slot.
             slot = find_earliest_valid_slot(
-                state, product, week_start, week_end, all_trucks
+                state, product, week_start, week_end, all_trucks, cfg=cfg,
             )
             if slot is None:
                 print(

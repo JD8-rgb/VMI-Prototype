@@ -14,12 +14,14 @@ from alerts import (
     is_running_at,
     _as_state,    # polymorphic dict/PlantState shim
 )
+from config import DEFAULT_CONFIG, PlantConfig
 from time_utils import run_hour_to_dt, format_run_hour
 
 PROJECTION_HOURS = 240   # 10 days
 
 
-def compute_level_history(data, hours=PROJECTION_HOURS):
+def compute_level_history(data, hours=PROJECTION_HOURS,
+                            cfg: PlantConfig = DEFAULT_CONFIG):
     """
     Walk forward hour by hour from current_run_hour, applying consumption
     (only during scheduled run windows) and truck deliveries.
@@ -92,7 +94,7 @@ def compute_level_history(data, hours=PROJECTION_HOURS):
         next_hour = hour + 1
 
         # Consume if running
-        if is_running_at(state, hour):
+        if is_running_at(state, hour, cfg=cfg):
             for product, rate_info in state.consumption_rates.items():
                 simulate_consume(tanks, product, rate_info.lbs_per_hour)
 
