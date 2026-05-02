@@ -890,6 +890,36 @@ def curated_must_pass() -> List[Case]:
              expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
              expected_confidence="low",
              must_pass=True),
+
+        # ── Out-of-model / ambiguity rejections (must_65 … must_67) ─────────
+        # Inputs the parser intentionally refuses to model — extracted
+        # entries (if any) come back at LOW confidence so the operator must
+        # confirm or reformat.
+
+        # Product-specific schedule lines: model is single-schedule, so
+        # silently flattening would lose half the intent. Force LOW.
+        Case("must_65_product_specific_lines", "unparseable_control",
+             "Product U: Mon-Wed 0600-1600. Product M: Thu-Fri 0600-1600.",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16)],   # what regex would extract
+             expected_confidence="low",
+             must_pass=True),
+
+        # ── Stale-context targeted recovery (must_66 … must_67) ─────────────
+        # "Changed from X to Y": the broad stale-context strip used to
+        # remove BOTH halves; the targeted pre-pass now strips only
+        # "Changed from X to" so Y survives.
+        Case("must_66_changed_from_to", "continuous_range",
+             "Changed from Mon-Fri 0600-1600 to Tue-Thu 0600-1600.",
+             expected=[(1, 6, 16), (2, 6, 16), (3, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+        # No-"to" fallback: when the phrasing is just "we changed from ...",
+        # the broad strip removes everything (safe-fail to LOW).
+        Case("must_67_changed_from_no_to", "unparseable_control",
+             "We changed from Mon-Wed 6am-4pm. Now closed.",
+             expected=[],
+             expected_confidence="low",
+             must_pass=True),
     ]
 
 

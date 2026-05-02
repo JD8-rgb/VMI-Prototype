@@ -118,6 +118,15 @@ _EXCEPTION_RE = re.compile(
     r'with\s+the\s+exception\s+of)\b'
 )
 
+# Product-specific schedule lines (e.g. "Product U: Mon-Wed 6-16. Product
+# M: Thu-Fri 6-16."). The data model has ONE plant run_schedule, not
+# per-product schedules, so silently flattening would lose half the
+# intent. Force LOW so the operator knows the input doesn't match the
+# parser's model.
+_PRODUCT_PREFIX_RE = re.compile(
+    r'(?im)^\s*product\s+[A-Za-z0-9]+\s*:'
+)
+
 # Any HH:MM time token where MM is non-zero. The parser silently truncates
 # minutes to integer hours, which would shift a 6:30am-4:30pm schedule into
 # 6am-4pm — a real misrepresentation. Force LOW until the parser supports
@@ -525,11 +534,31 @@ def _strip_stale_context(text):
     boundary (`.`, `;`, newline, or end-of-text). The boundary character
     itself is removed so adjacent live content doesn't end up with a
     stranded period.
+
+    Special case: "Changed from X to Y" — the broad strip would remove
+    BOTH the old and new schedule. Run a targeted pre-pass that strips
+    only "Changed from X to" so Y survives as the new schedule.
     """
     if not text:
         return text, []
 
     removed = []
+
+    # Pre-pass: "Changed from X to Y" → keep Y. The targeted regex strips
+    # everything from "changed from" through the connecting "to ", so the
+    # new-schedule side (Y) is left in place for the broad parser to
+    # extract. Done BEFORE the broad strip so the inline-marker pattern
+    # below doesn't see the "changed from" anymore.
+    _CHANGED_FROM_TO_RE = re.compile(
+        r'(?i)\bchanged\s+from\b[^.;\n]*?\bto\b\s*'
+    )
+    new_text, count = _CHANGED_FROM_TO_RE.subn('', text)
+    if count:
+        # Record what was removed (best-effort: capture the whole match
+        # span for the audit note, even though we only want Y to survive).
+        for m in _CHANGED_FROM_TO_RE.finditer(text):
+            removed.append(m.group(0).strip())
+        text = new_text
 
     def _next_boundary(s, start):
         m = re.search(r'[.;\n]', s[start:])
@@ -1222,6 +1251,13 @@ def parse_schedule_text(text, now_dt=None):
         notes.append("  Half-hour times detected (parser truncates to "
                      "integer hours) — forcing low confidence so operator "
                      "can confirm the rounded windows.")
+        forced_low = True
+    if _PRODUCT_PREFIX_RE.search(cleaned):
+        notes.append("  Product-specific schedule lines detected (e.g. "
+                     "'Product U: ...'). The plant model has a single "
+                     "run_schedule, so per-product schedules cannot be "
+                     "represented — forcing low confidence. Send one "
+                     "combined plant schedule instead.")
         forced_low = True
 
     confidence = "high" if (effective_days >= 3 and not forced_low) else "low"
