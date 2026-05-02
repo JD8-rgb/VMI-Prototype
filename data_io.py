@@ -63,3 +63,20 @@ def save_data(data, path=DATA_PATH):
         except OSError:
             pass
         raise
+
+
+# ── Typed-state convenience wrappers ──────────────────────────────────────────
+#
+# These return / accept the PlantState dataclass from state.py instead of
+# raw dicts. New code should prefer these. Existing dict-based code paths
+# continue to work via load_data / save_data.
+
+def load_state(path=DATA_PATH, fallback=DEFAULTS_PATH):
+    """Load JSON state and parse into a PlantState dataclass."""
+    from state import PlantState
+    return PlantState.from_dict(load_data(path, fallback))
+
+
+def save_state(state, path=DATA_PATH):
+    """Atomically write a PlantState dataclass back to JSON."""
+    save_data(state.to_dict(), path)
