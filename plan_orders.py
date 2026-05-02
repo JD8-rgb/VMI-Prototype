@@ -443,7 +443,31 @@ def _load_data():
         return json.load(f)
 
 
-def main():
+def _parse_args(argv=None):
+    """CLI argument parser for plan_orders.main.
+
+    --sap-start lets cron / scheduled-task callers run the planner
+    headlessly. When omitted, main() still prompts via input() for
+    backward compatibility with the old interactive flow.
+    """
+    import argparse
+    p = argparse.ArgumentParser(
+        prog="plan_orders.py",
+        description="Auto-plan truck orders for the upcoming week.",
+    )
+    p.add_argument(
+        "--sap-start",
+        dest="sap_start",
+        default=None,
+        help=("Starting SAP order number string (e.g. SAP20001). When "
+              "given, the planner runs without prompting — required "
+              "for cron / unattended automation."),
+    )
+    return p.parse_args(argv)
+
+
+def main(argv=None):
+    args = _parse_args(argv)
     data = _load_data()
 
     week_start, week_end = get_target_week_bounds(data)
@@ -480,7 +504,11 @@ def main():
         return
 
     print(f"Planner proposes {len(all_new_trucks)} new truck(s).")
-    sap_start_str = input("Enter starting SAP order number (e.g. SAP20001): ").strip()
+    if args.sap_start is not None:
+        sap_start_str = args.sap_start.strip()
+        print(f"Using --sap-start={sap_start_str}")
+    else:
+        sap_start_str = input("Enter starting SAP order number (e.g. SAP20001): ").strip()
     if not sap_start_str:
         print("Cancelled.")
         return
