@@ -482,9 +482,18 @@ to extend coverage and tighten the handoff surface:
 | `3e12fcf` | PlantConfig.__post_init__ validation. Real foot-guns: `sap_order_format` without a `{n}` placeholder would issue identical SAPs on every truck; `target_low_run_hours >= target_high_run_hours` divides by zero in target_for_week. Both now raise ValueError at construction with clear messages. 4 new test cases. |
 | `7eaadaf` | plan_orders --customer flag. Loads `customers/<id>.json`, threads cfg through every planner call, prints proposed trucks in read-only mode. Demonstrated end-to-end: 6 trucks proposed for example_customer at the customer's slots / quantities. 4 new test cases. |
 | `e8972fc` | tank_status --customer flag. Symmetrical to plan_orders. Customer-specific cfg threaded into get_all_alerts so per-tenant safety_stock_lbs / lead_time_hours / plant_holidays apply to the report. |
+| `3cd2850` | Makefile with `test`, `test-quick`, `mypy`, `mypy-strict`, `lint-customers`, `smoke`, `install`, `install-dev`, `clean` targets. Captures the contributor pre-commit gate. |
+| `(linter)` | `validate_customer.py` — lints every file in `customers/`. Catches misconfigurations before runtime. 16 tests. |
+| `8cb0813` | advance_time --customer flag. Three-of-three CLI symmetry: plan_orders, tank_status, advance_time all support read-only multi-tenant runs. Module-level imperative refactored into `main(argv)`. 7 new test cases. |
+| `1eb82cb` | Parser harness diagnostic fix: misleading "wrong entries (diff=+0)" classifier now reports "confidence mismatch (got X, expected Y)" when expected_confidence is set. Display-only; pass/fail decision unchanged. |
+| `d0ceb1f` | email_client pure-function tests (10 cases): `_html_to_text`, `_extract_body`, `load_config`. |
 
 Updated test surface:
-* **210 pytest cases** (was 134 at first summary).
+* **243 pytest cases** (was 134 at first summary).
+* All three CLI scripts (plan_orders, tank_status, advance_time) now
+  support `--customer <id>` for read-only multi-tenant runs.
+* `validate_customer.py` lints customer files at any time and from CI.
+* `Makefile` captures the standard test/mypy/lint/smoke gates.
 * Coverage now spans every algorithm path, the customer loader (with
   path-traversal hardening), the email dedup logic (with mocked SMTP),
   the PDF builder, time_utils parsing, the apply_schedule writer, and
