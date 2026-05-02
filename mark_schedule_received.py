@@ -12,6 +12,7 @@ Usage
 """
 
 import json
+import os
 import sys
 from datetime import datetime, timedelta
 
@@ -32,7 +33,9 @@ else:
     days_ahead = (7 - today.weekday()) % 7 or 7
     target = (today + timedelta(days=days_ahead)).date()
 
-with open(DATA_PATH) as f:
+# Fall back to defaults.json on a fresh clone. Writes still target DATA_PATH.
+_src = DATA_PATH if os.path.exists(DATA_PATH) else "defaults.json"
+with open(_src) as f:
     data = json.load(f)
 
 previous = data.get("schedule_received_for_week")

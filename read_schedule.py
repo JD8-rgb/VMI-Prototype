@@ -18,6 +18,7 @@ Importable
 """
 
 import json
+import os
 import re
 import sys
 from datetime import datetime, timedelta, timezone
@@ -2058,7 +2059,10 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
 # ── Standalone entry point ────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    with open(DATA_PATH) as f:
+    # Fall back to defaults.json on a fresh clone so demos work without
+    # having to seed data.json first. Writes always target DATA_PATH.
+    _src = DATA_PATH if os.path.exists(DATA_PATH) else "defaults.json"
+    with open(_src) as f:
         data = json.load(f)
 
     result = fetch_and_apply_schedule(data, dry_run=DRY_RUN)

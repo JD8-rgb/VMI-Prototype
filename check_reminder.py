@@ -30,6 +30,7 @@ Job 2 — Friday 3:00 PM:
 """
 
 import json
+import os
 import sys
 from datetime import datetime, timedelta
 
@@ -48,7 +49,9 @@ if not is_friday and not FORCE:
     print("Use --force to override.")
     sys.exit(0)
 
-with open(DATA_PATH) as f:
+# Fall back to defaults.json on a fresh clone. Writes still target DATA_PATH.
+_src = DATA_PATH if os.path.exists(DATA_PATH) else "defaults.json"
+with open(_src) as f:
     data = json.load(f)
 
 # Compute next Monday ISO date (same logic used by read_schedule)
