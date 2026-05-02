@@ -339,6 +339,90 @@ def _strip_header_block(text):
     return '\n'.join(lines[i:])
 
 
+# ── Stale-context stripping ─────────────────────────────────────────────────
+#
+# Some emails describe BOTH a past schedule and the current one in the same
+# body, e.g.:
+#     "Last week was Mon-Wed 0600-1600. Next week only Thu-Fri 0600-1600."
+#     "Current: Mon-Wed 0600-1600; Earlier: Thu-Fri 0600-1600"
+# A naïve regex parser sees both blocks as equally valid schedule content
+# and returns whatever matches, often picking the wrong block at HIGH
+# confidence — a dangerous failure mode because it does NOT fail safe.
+#
+# Strategy: before the main cleaning pipeline runs, identify clauses
+# prefixed by stale-context markers (label-style or inline) and strip
+# them through the next clause boundary. After stripping:
+#   - if the live block remains → parser extracts it correctly,
+#   - if NOTHING remains → parser returns low-confidence/empty (safe-fail).
+
+# Labeled blocks. Anchored to start-of-line OR right after . / ; / newline,
+# so "from last week" mid-sentence is not falsely matched.
+_STALE_LABEL_RE = re.compile(
+    r'(?im)(?:^|(?<=[.;\n]))[ \t]*'
+    r'(?:earlier|previously|previous\s+(?:schedule|plan|week)|'
+    r'old\s+(?:schedule|plan)|former\s+schedule|prior\s+(?:week|schedule)|'
+    r'last\s+week)'
+    r'[ \t]*:'
+)
+
+# Inline phrases. Each REQUIRES a follow-up word (was/scheduled/etc.) so
+# common non-schedule phrases like "from last week" or "Tuesday was a
+# holiday" don't get caught.
+_STALE_INLINE_RE = re.compile(
+    r'(?i)\b(?:'
+    r'last\s+week\s+(?:was|we\s+ran|we\s+were\s+(?:on|running))|'
+    r'old\s+(?:schedule|plan)\s+(?:was|had)|'
+    r'originally\s+(?:was|scheduled|planned|set\s+to)|'
+    r'changed\s+from|'
+    r'was\s+supposed\s+to|'
+    r'we\s+were\s+running|'
+    r'used\s+to\s+(?:run|be)'
+    r')\b'
+)
+
+
+def _strip_stale_context(text):
+    """
+    Remove past-schedule clauses from `text`.
+
+    Returns (stripped_text, removed_snippets) where `removed_snippets` is a
+    list of the actual substrings that were removed (for parser notes /
+    audit trail). An empty list means nothing was stripped.
+
+    Each match is deleted from the marker through the next clause
+    boundary (`.`, `;`, newline, or end-of-text). The boundary character
+    itself is removed so adjacent live content doesn't end up with a
+    stranded period.
+    """
+    if not text:
+        return text, []
+
+    removed = []
+
+    def _next_boundary(s, start):
+        m = re.search(r'[.;\n]', s[start:])
+        return start + m.end() if m else len(s)
+
+    # Repeatedly find the EARLIEST stale marker (label or inline) and snip
+    # through the next clause boundary. Repeat until no markers remain.
+    while True:
+        m_label  = _STALE_LABEL_RE.search(text)
+        m_inline = _STALE_INLINE_RE.search(text)
+        candidates = [m for m in (m_label, m_inline) if m]
+        if not candidates:
+            break
+        m = min(candidates, key=lambda x: x.start())
+        end = _next_boundary(text, m.end())
+        snippet = text[m.start():end].strip()
+        if snippet:
+            removed.append(snippet)
+        text = text[:m.start()] + text[end:]
+
+    # Tidy up runs of blank lines / leading-trailing whitespace.
+    text = re.sub(r'\n{3,}', '\n\n', text).strip()
+    return text, removed
+
+
 def _clean_email_text(text):
     """
     Strip forwarded history, greetings, sign-offs, and quoted-reply lines so
@@ -811,6 +895,14 @@ def parse_schedule_text(text, now_dt=None):
     # Clean greetings / sign-offs / quoted replies before segmentation, so
     # prose like "Hi team,\n ... \nThanks, Anna" doesn't pollute segments.
     cleaned = _clean_email_text(text)
+    # Strip stale-context clauses ("Last week was Mon-Wed...", "Earlier:
+    # Thu-Fri 0600-1600", "Old plan was..."). Surfaces what was removed
+    # as a parser note for audit; if nothing remains afterward the parser
+    # falls through to low-confidence/empty (safe-fail).
+    cleaned, stale_removed = _strip_stale_context(cleaned)
+    for snippet in stale_removed:
+        snippet_short = (snippet[:80] + "…") if len(snippet) > 80 else snippet
+        notes.append(f"  Stripped stale-context clause: {snippet_short!r}")
     # Rewrite calendar-date tokens ("4/20", "April 20", "2026-04-20", ...) to
     # day-name abbreviations when they fall inside the target week. This runs
     # before the range / list joiners so downstream sees clean day names.
@@ -1209,6 +1301,7 @@ def parse_schedule(text, api_key=None, now_dt=None):
     # an otherwise-clean forward.
     try:
         cleaned_for_count = _clean_email_text(text)
+        cleaned_for_count, _ = _strip_stale_context(cleaned_for_count)
     except Exception:
         cleaned_for_count = text
     mentioned_weekdays = {

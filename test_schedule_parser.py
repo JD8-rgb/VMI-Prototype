@@ -768,6 +768,51 @@ def curated_must_pass() -> List[Case]:
              expected_confidence="low",
              now_dt=datetime(2026, 4, 17, 12, 0),
              must_pass=True),
+
+        # ── Stale-context guards (must_49 … must_54) ────────────────────────
+        # Past-schedule clauses must be stripped so the parser never picks
+        # the wrong block. Confidence stays at the natural level for the
+        # remaining (live) content. Each case isolates one stale marker
+        # family from the red-team review.
+
+        # Inline "Last week was X" → strip and keep "Next week" block.
+        Case("must_49_last_week_was_inline", "single_day_simple",
+             "Last week was Mon-Wed 0600-1600. Next week only Thu-Fri 0600-1600.",
+             expected=[(3, 6, 16), (4, 6, 16)],
+             expected_confidence="low",   # 2 days = below high-confidence floor
+             must_pass=True),
+        # Label "Earlier:" mid-line (semicolon-separated) → strip Earlier block.
+        Case("must_50_earlier_label_inline", "multi_day_list",
+             "Current: Mon-Wed 0600-1600; Earlier: Thu-Fri 0600-1600",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+        # Inline "Old plan was X" → strip and keep "Updated:" block.
+        Case("must_51_old_plan_was", "single_day_simple",
+             "Old plan was Mon-Wed 6am-4pm. Updated: Thu-Fri 6am-4pm.",
+             expected=[(3, 6, 16), (4, 6, 16)],
+             expected_confidence="low",
+             must_pass=True),
+        # Inline "Originally was X" + new full-week block.
+        Case("must_52_originally_was", "continuous_range",
+             "Originally was Mon-Wed. New schedule: Mon-Fri 6am-4pm.",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+        # Label "Previous schedule:" → strip and keep "New:" block.
+        Case("must_53_previous_schedule_label", "single_day_simple",
+             "Previous schedule: Mon-Wed 6am-4pm. New: Thu-Fri 6am-4pm.",
+             expected=[(3, 6, 16), (4, 6, 16)],
+             expected_confidence="low",
+             must_pass=True),
+        # Label "Last week:" at line start → strip; "from last week" mid-text
+        # is NOT stripped (the anchored regex requires line-start or post-
+        # punctuation position).
+        Case("must_54_last_week_label", "single_day_simple",
+             "Last week: Mon-Wed 6am-4pm. This week: Thu-Fri 6am-4pm.",
+             expected=[(3, 6, 16), (4, 6, 16)],
+             expected_confidence="low",
+             must_pass=True),
     ]
 
 
