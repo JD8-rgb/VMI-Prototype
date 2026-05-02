@@ -2,12 +2,19 @@
 Advance the simulation clock by N run-hours, processing:
 - Truck deliveries at their arrival_run_hour
 - Run-schedule windows (consumption only happens inside scheduled windows)
+
+Consumption and delivery delegate to alerts.simulate_consume /
+alerts.simulate_delivery_no_alert so CLI behavior matches the Streamlit
+app, projection chart, and planner. Previously this script had its own
+copies that consumed from the persisted draw/status field, which made
+CLI runs disagree with the live simulation after the draw-status fix.
 """
 
 import json
 import os
 import sys
 from time_utils import parse_time_input, format_run_hour
+from alerts import simulate_consume, simulate_delivery_no_alert
 import email_hooks
 
 def _load_data():
@@ -55,126 +62,39 @@ print(f"  from: {format_run_hour(data, start_hour)}")
 print(f"  to:   {format_run_hour(data, end_hour)}\n")
 
 
-def find_draw_tank(product):
-    for name, info in tanks.items():
-        if info["product"] == product and info["status"] == "draw":
-            return name
-    return None
-
-
-def find_standby_tank(product):
-    for name, info in tanks.items():
-        if info["product"] == product and info["status"] == "standby":
-            return name
-    return None
-
-
-def find_lowest_tank(product):
-    candidates = [(name, info["current_level_lbs"])
-                  for name, info in tanks.items()
-                  if info["product"] == product]
-    if not candidates:
-        return None
-    candidates.sort(key=lambda pair: pair[1])
-    return candidates[0][0]
-
-
-def find_other_tank(product, exclude_name):
-    for name, info in tanks.items():
-        if info["product"] == product and name != exclude_name:
-            return name
-    return None
-
-
-def consume_product(product, lbs_to_consume):
-    remaining = lbs_to_consume
-    while remaining > 0:
-        draw_name = find_draw_tank(product)
-        if draw_name is None:
-            print(f"  !! No draw tank for {product}. {remaining:,.1f} lbs unmet.")
-            return
-        draw_tank = tanks[draw_name]
-        current = draw_tank["current_level_lbs"]
-        heel = draw_tank["heel_lbs"]
-        drawable = current - heel
-
-        if drawable <= 0:
-            print(f"  {draw_name} at/below heel ({current:,.1f}). Switching.")
-            standby_name = find_standby_tank(product)
-            if standby_name is None:
-                new_level = current - remaining
-                draw_tank["current_level_lbs"] = round(new_level, 1)
-                print(f"  !! No standby for {product}. {draw_name} -> {new_level:,.1f} (NEGATIVE).")
-                return
-            draw_tank["status"] = "standby"
-            tanks[standby_name]["status"] = "draw"
-            print(f"  Switched draw: {draw_name} -> {standby_name}")
-            continue
-
-        if remaining <= drawable:
-            new_level = current - remaining
-            draw_tank["current_level_lbs"] = round(new_level, 1)
-            print(f"  {draw_name}: consumed {remaining:,.1f} lbs ({current:,.1f} -> {new_level:,.1f})")
-            remaining = 0
-        else:
-            draw_tank["current_level_lbs"] = round(heel, 1)
-            print(f"  {draw_name}: consumed {drawable:,.1f} lbs ({current:,.1f} -> {heel:,.1f}) — reached heel")
-            remaining -= drawable
-            standby_name = find_standby_tank(product)
-            if standby_name is None:
-                print(f"  !! No standby for {product}. {remaining:,.1f} lbs unmet.")
-                return
-            draw_tank["status"] = "standby"
-            tanks[standby_name]["status"] = "draw"
-            print(f"  Switched draw: {draw_name} -> {standby_name}")
-
-
 def consume_segment(seg_hours):
+    """Drain each product's per-hour rate × seg_hours via shared logic."""
     if seg_hours <= 0:
         return
     for product, rate_info in rates.items():
         demand = rate_info["lbs_per_hour"] * seg_hours
+        # Snapshot tank levels so we can print a per-tank delta after
+        # simulate_consume has done its (possibly multi-tank) draining.
+        before = {n: i["current_level_lbs"] for n, i in tanks.items()
+                  if i["product"] == product}
         print(f"  {product}: {demand:,.1f} lbs demand")
-        consume_product(product, demand)
+        simulate_consume(tanks, product, demand)
+        for name, prev in before.items():
+            now = tanks[name]["current_level_lbs"]
+            if abs(now - prev) > 0.01:
+                print(f"    {name}: {prev:,.1f} -> {now:,.1f}  "
+                      f"(consumed {prev - now:,.1f} lbs, status={tanks[name]['status']})")
 
 
 def deliver_truck(truck):
+    """Pour truck into the lowest-level tank via shared logic."""
     product = truck["product"]
     quantity = truck["quantity_lbs"]
     sap = truck["sap_order"]
     print(f"  >> DELIVERY: {sap} | {product} | {quantity:,} lbs")
-
-    target_name = find_lowest_tank(product)
-    if target_name is None:
-        print(f"  !! No tank for {product}. Aborted.")
-        return
-
-    target = tanks[target_name]
-    original_status = target["status"]
-    target["status"] = "receiving"
-    space = target["max_capacity_lbs"] - target["current_level_lbs"]
-    to_pour = min(quantity, space)
-    target["current_level_lbs"] = round(target["current_level_lbs"] + to_pour, 1)
-    print(f"     {target_name}: +{to_pour:,.1f} lbs -> {target['current_level_lbs']:,.1f}")
-    overflow = quantity - to_pour
-    target["status"] = original_status
-
-    if overflow > 0:
-        other_name = find_other_tank(product, target_name)
-        if other_name is None:
-            print(f"  !! Overflow {overflow:,.1f} lbs and no other tank. LOST.")
-            return
-        other = tanks[other_name]
-        other_original = other["status"]
-        other["status"] = "receiving"
-        other_space = other["max_capacity_lbs"] - other["current_level_lbs"]
-        other_pour = min(overflow, other_space)
-        other["current_level_lbs"] = round(other["current_level_lbs"] + other_pour, 1)
-        print(f"     {other_name} (overflow): +{other_pour:,.1f} lbs -> {other['current_level_lbs']:,.1f}")
-        other["status"] = other_original
-        still_over = overflow - other_pour
-        if still_over > 0:
-            print(f"  !! {still_over:,.1f} lbs could not fit in either tank. LOST.")
+    before = {n: i["current_level_lbs"] for n, i in tanks.items()
+              if i["product"] == product}
+    simulate_delivery_no_alert(tanks, truck)
+    for name, prev in before.items():
+        now = tanks[name]["current_level_lbs"]
+        if abs(now - prev) > 0.01:
+            print(f"     {name}: +{now - prev:,.1f} lbs -> {now:,.1f}  "
+                  f"(status={tanks[name]['status']})")
 
 
 # --- Build event queue: trucks + run-window edges, in [start_hour, end_hour] ---
