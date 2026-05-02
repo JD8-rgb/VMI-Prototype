@@ -956,6 +956,37 @@ def curated_must_pass() -> List[Case]:
              expected_confidence="high",
              must_pass=True),
 
+        # ── 'Previously running' / 'Earlier we ran' inline detection ────────
+        # (must_67d … must_67g)
+        # Pre-fix: the LABEL pattern matched 'Previously:' (with colon)
+        # but the INLINE pattern didn't include 'previously' or 'earlier'
+        # without a colon, so "Previously running Mon-Fri ..." was NOT
+        # treated as stale and both old + new schedules ended up extracted.
+        # Now the inline pattern catches `previously` followed by a verb
+        # (running / ran / was / had / scheduled) and `earlier we`
+        # followed by ran / were running / had — covering the natural
+        # English phrasings the prior coverage missed.
+        Case("must_67d_previously_running", "single_day_simple",
+             "Previously running Mon-Fri 6am-10pm. Now Wed-Thu 6am-4pm.",
+             expected=[(2, 6, 16), (3, 6, 16)],
+             expected_confidence="low",
+             must_pass=True),
+        Case("must_67e_previously_running_semicolon", "single_day_simple",
+             "Previously running Mon-Fri 6am-10pm; new plan Wed-Thu 6am-4pm.",
+             expected=[(2, 6, 16), (3, 6, 16)],
+             expected_confidence="low",
+             must_pass=True),
+        Case("must_67f_earlier_we_ran", "single_day_simple",
+             "Earlier we ran Mon-Wed 6am-10pm. This week Thu-Fri 6am-4pm.",
+             expected=[(3, 6, 16), (4, 6, 16)],
+             expected_confidence="low",
+             must_pass=True),
+        Case("must_67g_previously_was", "continuous_range",
+             "Previously was Mon-Wed 6am-10pm. Updated: Mon-Fri 6am-4pm.",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+
         # ── Range + day-off subtraction (must_68 … must_70) ─────────────────
         # 'Mon-Fri 6am-4pm; Wed off' must NOT include Wed. The off marker
         # in a separate segment was previously ignored by the in-segment

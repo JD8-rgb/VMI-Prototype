@@ -605,11 +605,18 @@ _STALE_LABEL_RE = re.compile(
 # Inline phrases. Each REQUIRES a follow-up word (was/scheduled/etc.) so
 # common non-schedule phrases like "from last week" or "Tuesday was a
 # holiday" don't get caught.
+#
+# `previously` and `earlier` are also matched WITHOUT a colon (the LABEL
+# pattern catches the colon form). Each requires a following verb so
+# "Earlier today" / "Previously discussed" don't accidentally match —
+# only the schedule-history phrasings do.
 _STALE_INLINE_RE = re.compile(
     r'(?i)\b(?:'
     r'last\s+week\s+(?:was|we\s+ran|we\s+were\s+(?:on|running))|'
     r'old\s+(?:schedule|plan)\s+(?:was|had)|'
     r'originally\s+(?:was|scheduled|planned|set\s+to)|'
+    r'previously\s+(?:running|ran|was|had|scheduled)|'
+    r'earlier\s+we\s+(?:ran|were\s+running|had)|'
     r'changed\s+from|'
     r'was\s+supposed\s+to|'
     r'we\s+were\s+running|'
