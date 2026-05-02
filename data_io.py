@@ -62,8 +62,35 @@ _MIGRATIONS: Dict[int, Callable[[Dict[str, Any]], None]] = {
 def _migrate(data: Dict[str, Any]) -> Dict[str, Any]:
     """Run any pending schema migrations on `data` in place. Returns the
     same dict for chainability. Idempotent: a file already at
-    CURRENT_SCHEMA_VERSION is returned unchanged."""
-    version = data.get("schema_version", 0)
+    CURRENT_SCHEMA_VERSION is returned unchanged.
+
+    Robust to malformed schema_version values:
+      * Missing or None → treated as 0 (pre-versioned files).
+      * Numeric string ("1") → coerced via int().
+      * Anything else (a list, a non-numeric string) → ValueError
+        with a clear message rather than a cryptic TypeError deep
+        inside the while-loop comparison.
+    """
+    raw_version = data.get("schema_version", 0)
+    if raw_version is None:
+        version = 0
+    elif isinstance(raw_version, bool):
+        # bool is a subclass of int; reject explicitly so True doesn't
+        # silently become version 1.
+        raise ValueError(
+            f"data_io: schema_version must be int, got bool {raw_version!r}."
+        )
+    elif isinstance(raw_version, int):
+        version = raw_version
+    else:
+        try:
+            version = int(raw_version)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"data_io: schema_version must be int (or coercible), "
+                f"got {type(raw_version).__name__} {raw_version!r}."
+            ) from None
+
     while version < CURRENT_SCHEMA_VERSION:
         migrator = _MIGRATIONS.get(version)
         if migrator is None:

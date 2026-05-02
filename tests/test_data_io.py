@@ -55,6 +55,40 @@ def test_migrate_raises_on_future_version():
     assert out["schema_version"] == 999
 
 
+def test_migrate_handles_null_schema_version():
+    """Null/missing schema_version must be treated as 0 (pre-versioned),
+    not crash with 'NoneType < int' from the while-loop comparison."""
+    out = _migrate({"schema_version": None, "marker": "x"})
+    assert out["schema_version"] == CURRENT_SCHEMA_VERSION
+    assert out["marker"] == "x"
+
+
+def test_migrate_handles_numeric_string():
+    """A numeric string must coerce to int rather than fail comparison."""
+    out = _migrate({"schema_version": "0"})
+    assert out["schema_version"] == CURRENT_SCHEMA_VERSION
+
+
+def test_migrate_rejects_garbage_schema_version():
+    """A malformed schema_version that can't be coerced must raise
+    ValueError with a clear message, not a cryptic TypeError."""
+    with pytest.raises(ValueError) as exc:
+        _migrate({"schema_version": "not_a_number"})
+    assert "schema_version" in str(exc.value)
+
+
+def test_migrate_rejects_bool_schema_version():
+    """bool is a subclass of int in Python; True would silently be
+    version 1, which is a misleading shape error. Reject explicitly."""
+    with pytest.raises(ValueError):
+        _migrate({"schema_version": True})
+
+
+def test_migrate_rejects_list_schema_version():
+    with pytest.raises(ValueError):
+        _migrate({"schema_version": [1, 2]})
+
+
 def test_load_data_migrates_legacy_file(tmp_path):
     """load_data must upgrade an unversioned file in memory."""
     legacy_path = tmp_path / "legacy.json"
