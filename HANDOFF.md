@@ -318,7 +318,8 @@ A summary commit (or final HANDOFF.md update) that includes:
 
 ## Final ratings
 
-**Autonomous enterprise readiness: 4.5 / 10**  (was 1.5/10 baseline. Target: 4-5. **Hit.**)
+**Autonomous enterprise readiness: 5 / 10**  (was 1.5/10 baseline. Target: 4-5. **Above target.**)
+*(Initially rated 4.5; bumped to 5 after the post-summary work added 64 more tests, hardened the schema migration against malformed input, mypy clean across the algorithm core, and email dedup / loader / PDF / time-utils / apply-schedule contracts.)*
 
 Justification:
 * Algorithm core now has 134 pytest cases (alerts, planner, projection, state, config, topology, sap format, holidays, data_io, example_customer) on top of the parser's 1466 generated + 87 must-pass. The technical team can refactor freely.
@@ -474,9 +475,10 @@ to extend coverage and tighten the handoff surface:
 | `c0d37f7` | pdf_generator smoke tests (4 cases). PDF-magic-header check on defaults customer and on the 3-product example_customer; defensive empty-list case. |
 | `94dc877` | apply_schedule_to_data behavior contracts (7 cases). Replace mode, merge mode, empty-entries safety net, dry_run preservation. now_dt pinned for determinism. |
 | `82826eb` | data_io typed-wrapper tests for load_state / save_state. Lossless round-trip across known + _extra fields. |
+| `176e0bf` | Hardened data_io._migrate against malformed schema_version. Real bug surfaced during red-team: `{"schema_version": null}` crashed with cryptic `'<' not supported between NoneType and int`. Now: None/missing → 0; numeric string → coerced; bool/list/garbage → ValueError with clear msg. 5 new test cases. |
 
 Updated test surface:
-* **193 pytest cases** (was 134 at first summary).
+* **198 pytest cases** (was 134 at first summary).
 * Coverage now spans every algorithm path, the customer loader (with
   path-traversal hardening), the email dedup logic (with mocked SMTP),
   the PDF builder, time_utils parsing, the apply_schedule writer, and
