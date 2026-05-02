@@ -163,37 +163,41 @@ def find_other_in(tanks, product, exclude):
 
 
 def simulate_consume(tanks, product, lbs):
-    """Consume from draw tank, switch at heel. Mutates the tanks dict."""
+    """Consume from the lowest above-heel tank for this product.
+
+    Mirrors operator behavior: always drain the tank with less inventory
+    first, switch to the other when it hits heel. Status flags are
+    recomputed each step so the displayed draw/standby always reflects
+    where the plant is actually pulling from — never persisted state from
+    a stale prior tick.
+    """
     remaining = lbs
     while remaining > 0:
-        draw_name = find_draw_in(tanks, product)
-        if draw_name is None:
+        product_tanks = [(name, info) for name, info in tanks.items()
+                         if info["product"] == product]
+        if not product_tanks:
             return
-        draw_tank = tanks[draw_name]
+        drawable_tanks = [(n, i) for n, i in product_tanks
+                          if i["current_level_lbs"] > i["heel_lbs"]]
+        if not drawable_tanks:
+            # All tanks at or below heel — nothing left to draw
+            return
+        draw_name, draw_tank = min(
+            drawable_tanks, key=lambda p: p[1]["current_level_lbs"]
+        )
+        # Reflect reality: the lowest above-heel tank is the draw, others standby
+        for _n, i in product_tanks:
+            i["status"] = "standby"
+        draw_tank["status"] = "draw"
+
         drawable = draw_tank["current_level_lbs"] - draw_tank["heel_lbs"]
-        if drawable <= 0:
-            standby_name = find_standby_in(tanks, product)
-            if standby_name is None:
-                draw_tank["current_level_lbs"] -= remaining
-                return
-            standby_tank = tanks[standby_name]
-            if standby_tank["current_level_lbs"] - standby_tank["heel_lbs"] <= 0:
-                # Both tanks at or below heel — nothing left to draw
-                return
-            draw_tank["status"] = "standby"
-            tanks[standby_name]["status"] = "draw"
-            continue
         if remaining <= drawable:
             draw_tank["current_level_lbs"] -= remaining
             remaining = 0
         else:
             draw_tank["current_level_lbs"] = draw_tank["heel_lbs"]
             remaining -= drawable
-            standby_name = find_standby_in(tanks, product)
-            if standby_name is None:
-                return
-            draw_tank["status"] = "standby"
-            tanks[standby_name]["status"] = "draw"
+            # Loop iterates and picks the next-lowest above-heel tank.
 
 
 def simulate_delivery(tanks, truck, data=None):
@@ -260,6 +264,7 @@ def simulate_delivery(tanks, truck, data=None):
         pour_into_other = min(overflow, other_space)
         other["current_level_lbs"] += pour_into_other
 
+    _refresh_draw_status(tanks, product)
     return alert
 
 
@@ -282,6 +287,26 @@ def simulate_delivery_no_alert(tanks, truck):
             other_space = other["max_capacity_lbs"] - other["current_level_lbs"]
             pour_into_other = min(overflow, other_space)
             other["current_level_lbs"] += pour_into_other
+    _refresh_draw_status(tanks, product)
+
+
+def _refresh_draw_status(tanks, product):
+    """Recompute draw/standby flags so display matches reality.
+
+    The lowest above-heel tank is the draw; everything else for that
+    product is standby. If no tank has drawable inventory the draw flag
+    falls onto the lowest tank (so the UI still has *something* labeled).
+    """
+    product_tanks = [(n, i) for n, i in tanks.items()
+                     if i["product"] == product]
+    if not product_tanks:
+        return
+    drawable = [(n, i) for n, i in product_tanks
+                if i["current_level_lbs"] > i["heel_lbs"]]
+    pool = drawable if drawable else product_tanks
+    draw_name, _ = min(pool, key=lambda p: p[1]["current_level_lbs"])
+    for n, i in product_tanks:
+        i["status"] = "draw" if n == draw_name else "standby"
 
 
 def run_projection(data):
