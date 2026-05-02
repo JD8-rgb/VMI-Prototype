@@ -1,0 +1,97 @@
+{
+  "_comment": "Scalability proof customer. Three products with asymmetric tank topology, custom delivery slots, custom SAP format, and a sample holiday calendar. The smoke test in tests/test_example_customer.py exercises every algorithm path against this customer.",
+  "config_overrides": {
+    "lead_time_hours": 72,
+    "safety_stock_lbs": 8000,
+    "late_truck_hours": 4,
+    "delivery_slots": [5, 11, 17],
+    "target_low_run_hours": 28,
+    "target_high_run_hours": 118,
+    "target_low_lbs": 12000,
+    "target_high_lbs": 30000,
+    "sap_order_format": "ORD-{n:08d}",
+    "sap_order_seed": 100000,
+    "plant_holidays": [
+      "2026-05-25",
+      "2026-07-03",
+      "2026-12-25"
+    ]
+  },
+  "state": {
+    "schema_version": 1,
+    "simulation_epoch": "2026-04-13T00:00:00",
+    "current_run_hour": 0.0,
+    "tanks": {
+      "Acid-T1": {
+        "product": "Product Acid",
+        "current_level_lbs": 4000,
+        "max_capacity_lbs": 30000,
+        "heel_lbs": 800,
+        "status": "draw"
+      },
+      "Acid-T2": {
+        "product": "Product Acid",
+        "current_level_lbs": 18000,
+        "max_capacity_lbs": 30000,
+        "heel_lbs": 800,
+        "status": "standby"
+      },
+      "Acid-T3": {
+        "product": "Product Acid",
+        "current_level_lbs": 22000,
+        "max_capacity_lbs": 30000,
+        "heel_lbs": 800,
+        "status": "standby"
+      },
+      "Base-T1": {
+        "product": "Product Base",
+        "current_level_lbs": 12000,
+        "max_capacity_lbs": 40000,
+        "heel_lbs": 1000,
+        "status": "draw"
+      },
+      "Base-T2": {
+        "product": "Product Base",
+        "current_level_lbs": 25000,
+        "max_capacity_lbs": 40000,
+        "heel_lbs": 1000,
+        "status": "standby"
+      },
+      "Catalyst-Solo": {
+        "product": "Product Catalyst",
+        "current_level_lbs": 9000,
+        "max_capacity_lbs": 50000,
+        "heel_lbs": 500,
+        "status": "draw"
+      }
+    },
+    "consumption_rates": {
+      "Product Acid":     { "lbs_per_hour": 450.0 },
+      "Product Base":     { "lbs_per_hour": 600.0 },
+      "Product Catalyst": { "lbs_per_hour": 120.0 }
+    },
+    "truck_quantities": {
+      "Product Acid":     28000,
+      "Product Base":     45000,
+      "Product Catalyst": 22000
+    },
+    "schedule_received_for_week": null,
+    "schedule_email_id": null,
+    "schedule_parse_issue": null,
+    "alerted_hashes": [],
+    "scheduled_trucks": [],
+    "sap_history": [],
+    "run_schedule": [
+      { "start_hour":   6.0, "end_hour":  22.0, "label": "Mon" },
+      { "start_hour":  30.0, "end_hour":  46.0, "label": "Tue" },
+      { "start_hour":  54.0, "end_hour":  70.0, "label": "Wed" },
+      { "start_hour":  78.0, "end_hour":  94.0, "label": "Thu" },
+      { "start_hour": 102.0, "end_hour": 118.0, "label": "Fri" },
+      { "start_hour": 174.0, "end_hour": 190.0, "label": "Mon+1w" },
+      { "start_hour": 198.0, "end_hour": 214.0, "label": "Tue+1w" },
+      { "start_hour": 222.0, "end_hour": 238.0, "label": "Wed+1w" },
+      { "start_hour": 246.0, "end_hour": 262.0, "label": "Thu+1w" },
+      { "start_hour": 270.0, "end_hour": 286.0, "label": "Fri+1w" }
+    ]
+  }
+}
