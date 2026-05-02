@@ -12,6 +12,7 @@ from alerts import (
     simulate_consume,
     simulate_delivery_no_alert,
     is_running_at,
+    _as_state,    # polymorphic dict/PlantState shim
 )
 from time_utils import run_hour_to_dt, format_run_hour
 
@@ -56,15 +57,18 @@ def compute_level_history(data, hours=PROJECTION_HOURS):
       ],
     }
     """
-    tanks   = copy.deepcopy(data["tanks"])
-    rates   = data["consumption_rates"]
-    current = data["current_run_hour"]
+    state   = _as_state(data)
+    # Convert to dict-of-dicts here because simulate_consume /
+    # simulate_delivery_no_alert still operate on the legacy shape.
+    tanks   = copy.deepcopy(state.to_dict()["tanks"])
+    current = state.current_run_hour
     end     = current + hours
 
     # Trucks that arrive within the projection window
     pending = sorted(
-        [t for t in data["scheduled_trucks"] if current < t["arrival_run_hour"] <= end],
-        key=lambda t: t["arrival_run_hour"],
+        [t for t in state.scheduled_trucks
+         if current < t.arrival_run_hour <= end],
+        key=lambda t: t.arrival_run_hour,
     )
     truck_idx = 0
 
@@ -78,7 +82,7 @@ def compute_level_history(data, hours=PROJECTION_HOURS):
     while hour <= end:
         # Record state BEFORE this hour's consumption (so the initial point is visible)
         run_hours.append(hour)
-        datetimes.append(format_run_hour(data, hour))
+        datetimes.append(format_run_hour(state, hour))
         for name in tank_names:
             tank_hist[name].append(round(tanks[name]["current_level_lbs"], 1))
 
@@ -88,20 +92,20 @@ def compute_level_history(data, hours=PROJECTION_HOURS):
         next_hour = hour + 1
 
         # Consume if running
-        if is_running_at(data, hour):
-            for product, rate_info in rates.items():
-                simulate_consume(tanks, product, rate_info["lbs_per_hour"])
+        if is_running_at(state, hour):
+            for product, rate_info in state.consumption_rates.items():
+                simulate_consume(tanks, product, rate_info.lbs_per_hour)
 
         # Deliver trucks that arrive before or at next_hour
-        while truck_idx < len(pending) and pending[truck_idx]["arrival_run_hour"] <= next_hour:
+        while truck_idx < len(pending) and pending[truck_idx].arrival_run_hour <= next_hour:
             truck = pending[truck_idx]
-            simulate_delivery_no_alert(tanks, truck)
+            simulate_delivery_no_alert(tanks, truck.to_dict())
             truck_events.append({
-                "run_hour": truck["arrival_run_hour"],
-                "datetime": format_run_hour(data, truck["arrival_run_hour"]),
-                "sap":      truck["sap_order"],
-                "product":  truck["product"],
-                "qty":      truck["quantity_lbs"],
+                "run_hour": truck.arrival_run_hour,
+                "datetime": format_run_hour(state, truck.arrival_run_hour),
+                "sap":      truck.sap_order,
+                "product":  truck.product,
+                "qty":      truck.quantity_lbs,
             })
             truck_idx += 1
 
@@ -109,14 +113,14 @@ def compute_level_history(data, hours=PROJECTION_HOURS):
 
     # Clip run windows to the projection window for chart shading
     clipped_windows = []
-    for w in data["run_schedule"]:
-        ws = max(w["start_hour"], current)
-        we = min(w["end_hour"], end)
+    for w in state.run_schedule:
+        ws = max(w.start_hour, current)
+        we = min(w.end_hour, end)
         if we > ws:
             clipped_windows.append({
                 "start_hour": ws,
                 "end_hour":   we,
-                "label":      w.get("label", ""),
+                "label":      w.label,
             })
 
     return {
