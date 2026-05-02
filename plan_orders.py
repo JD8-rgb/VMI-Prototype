@@ -30,7 +30,7 @@ import email_hooks
 from alerts import (
     simulate_consume, simulate_delivery_no_alert,
     is_running_at, get_combined_level_from_tanks,
-    find_lowest_in, find_other_in,
+    find_lowest_in, find_others_in,
     _as_state,    # polymorphic dict/PlantState shim
 )
 from config import DEFAULT_CONFIG, PlantConfig
@@ -216,15 +216,15 @@ def _would_overfill(data, product, slot_rh, product_trucks):
     )
     expected_overflow = quantity > single_tank_usable
 
-    other_name  = find_other_in(tanks, product, target_name)
-    other_space = (
-        (tanks[other_name]["max_capacity_lbs"] - tanks[other_name]["current_level_lbs"])
-        if other_name else 0
-    )
-    total_space = target_space + other_space
+    other_names  = find_others_in(tanks, product, target_name)
+    other_spaces = [
+        tanks[n]["max_capacity_lbs"] - tanks[n]["current_level_lbs"]
+        for n in other_names
+    ]
+    total_space = target_space + sum(other_spaces)
 
     if expected_overflow:
-        return total_space < quantity   # truck must fit across both tanks
+        return total_space < quantity   # truck must fit across all tanks
     else:
         return target_space < quantity  # truck must fit in one tank
 

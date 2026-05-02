@@ -198,11 +198,28 @@ def find_lowest_in(tanks, product):
     return candidates[0][0]
 
 
+def find_others_in(tanks, product, exclude):
+    """All tanks for `product` except `exclude`, sorted ascending by
+    current level. Lowest-first ordering means overflow pouring fills
+    the least-full tank before the more-full one — matches operator
+    behavior and keeps levels balanced.
+
+    Returns [] when there's only one tank for the product (the 1-tank
+    customer topology). Algorithm callers must handle the empty-list
+    case the same way they handled `find_other_in` returning None.
+    """
+    candidates = [(name, info) for name, info in tanks.items()
+                  if info["product"] == product and name != exclude]
+    candidates.sort(key=lambda pair: pair[1]["current_level_lbs"])
+    return [name for name, _ in candidates]
+
+
 def find_other_in(tanks, product, exclude):
-    for name, info in tanks.items():
-        if info["product"] == product and name != exclude:
-            return name
-    return None
+    """Back-compat single-other lookup for the 2-tank-per-product
+    topology. Prefer `find_others_in` for new code so 1- and 3+-tank
+    customers work without changes."""
+    others = find_others_in(tanks, product, exclude)
+    return others[0] if others else None
 
 
 def simulate_consume(tanks, product, lbs):
@@ -269,21 +286,26 @@ def simulate_delivery(tanks, truck, data=None):
     target_name = find_lowest_in(tanks, product)
     target = tanks[target_name]
     target_space = target["max_capacity_lbs"] - target["current_level_lbs"]
-    other_name = find_other_in(tanks, product, target_name)
-    other = tanks[other_name] if other_name else None
-    other_space = (other["max_capacity_lbs"] - other["current_level_lbs"]) if other else 0
-    total_space = target_space + other_space
+    other_names = find_others_in(tanks, product, target_name)
+    other_spaces = [
+        tanks[n]["max_capacity_lbs"] - tanks[n]["current_level_lbs"]
+        for n in other_names
+    ]
+    total_space = target_space + sum(other_spaces)
 
     alert = None
 
     if expected_overflow:
-        # Product spans both tanks (e.g. Product M, 37k lbs > single-tank usable)
-        # Alert only if the truck won't fit across BOTH tanks combined.
+        # Product needs more than one tank (e.g. Product M, 37k lbs > single-tank usable)
+        # Alert only if the truck won't fit across the target + every other tank for
+        # this product combined. Generalizes to any number of tanks (1, 2, 3+).
         if total_space < quantity:
+            others_label = (" + ".join(other_names) if other_names
+                            else "no other tank")
             text = (f"RED FLAG: {sap} ({product}, {quantity:,} lbs) at {arrival_label} — "
                     f"projected combined tank space is {total_space:,.0f} lbs "
-                    f"({target_name} + {other_name or 'no other tank'}). "
-                    f"Truck cannot fit across both tanks. Reschedule or delay.")
+                    f"({target_name} + {others_label}). "
+                    f"Truck cannot fit across all tanks. Reschedule or delay.")
             alert = _alert(text, type="overfill", severity="red_flag",
                            direction="too_full", product=product,
                            tank=target_name,
@@ -303,9 +325,15 @@ def simulate_delivery(tanks, truck, data=None):
     pour_into_target = min(quantity, target_space)
     target["current_level_lbs"] += pour_into_target
     overflow = quantity - pour_into_target
-    if overflow > 0 and other:
-        pour_into_other = min(overflow, other_space)
-        other["current_level_lbs"] += pour_into_other
+    # Cascade overflow into other tanks lowest-current-level first. With
+    # 1 tank the loop is a no-op; with 2 it matches the prior behavior
+    # exactly; with 3+ it fills tanks in order until the truck is empty.
+    for name, space in zip(other_names, other_spaces):
+        if overflow <= 0:
+            break
+        pour = min(overflow, space)
+        tanks[name]["current_level_lbs"] += pour
+        overflow -= pour
 
     _refresh_draw_status(tanks, product)
     return alert
@@ -323,13 +351,16 @@ def simulate_delivery_no_alert(tanks, truck):
     pour_into_target = min(quantity, target_space)
     target["current_level_lbs"] += pour_into_target
     overflow = quantity - pour_into_target
-    if overflow > 0:
-        other_name = find_other_in(tanks, product, target_name)
-        if other_name:
-            other = tanks[other_name]
-            other_space = other["max_capacity_lbs"] - other["current_level_lbs"]
-            pour_into_other = min(overflow, other_space)
-            other["current_level_lbs"] += pour_into_other
+    # Cascade overflow through every other tank (lowest-first) so 1- and
+    # 3+-tank topologies work without changes.
+    for other_name in find_others_in(tanks, product, target_name):
+        if overflow <= 0:
+            break
+        other = tanks[other_name]
+        other_space = other["max_capacity_lbs"] - other["current_level_lbs"]
+        pour = min(overflow, other_space)
+        other["current_level_lbs"] += pour
+        overflow -= pour
     _refresh_draw_status(tanks, product)
 
 
