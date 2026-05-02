@@ -5,11 +5,18 @@ Loads data.json (or defaults.json), prints tank/schedule/truck/alert
 state, and exits. Does NOT mutate data, send emails, or touch the
 dedup-state file. If you want notifications, run the scheduled
 advance_time.py / read_schedule.py path that already handles them.
+
+Optional `--customer <id>` argument loads the per-tenant config + state
+from customers/<id>.json instead. Convenient for "what does customer X
+look like right now?" without standing up the multi-tenant Streamlit shell.
 """
 
+import argparse
 import json
 import os
+import sys
 from alerts import get_all_alerts
+from config import DEFAULT_CONFIG
 from time_utils import format_run_hour
 
 def _load_data():
@@ -17,7 +24,19 @@ def _load_data():
     with open(path) as f:
         return json.load(f)
 
-data = _load_data()
+
+_parser = argparse.ArgumentParser(prog="tank_status.py", description=__doc__)
+_parser.add_argument("--customer", default=None,
+                      help="Read-only status for customers/<id>.json")
+_args = _parser.parse_args()
+
+if _args.customer is not None:
+    from customers import load_customer
+    cfg, data = load_customer(_args.customer)
+    print(f"(Customer: {_args.customer})")
+else:
+    cfg = DEFAULT_CONFIG
+    data = _load_data()
 
 tanks = data["tanks"]
 trucks = data["scheduled_trucks"]
@@ -73,7 +92,7 @@ print("\n" + "=" * 60)
 print("ALERTS")
 print("=" * 60)
 
-alerts = get_all_alerts(data)
+alerts = get_all_alerts(data, cfg=cfg)
 if not alerts:
     print("All clear.")
 else:
