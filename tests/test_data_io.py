@@ -178,6 +178,27 @@ def test_load_state_returns_plant_state(tmp_path, defaults_dict):
     assert state.current_run_hour == defaults_dict["current_run_hour"]
 
 
+def test_fsync_failure_logged_as_warning(tmp_path, defaults_dict, caplog,
+                                            monkeypatch):
+    """fsync OSError used to be swallowed silently. Now it must surface
+    via logger.warning so production monitoring can detect a genuine
+    durability regression on a real disk."""
+    target = tmp_path / "out.json"
+
+    def _broken_fsync(fd):
+        raise OSError("simulated fsync failure")
+
+    monkeypatch.setattr(os, "fsync", _broken_fsync)
+
+    # Save still succeeds (write is atomic in the page-cache sense)
+    with caplog.at_level("WARNING", logger="data_io"):
+        save_data({"foo": 1}, path=str(target))
+    assert target.exists()
+    # And a warning was emitted
+    assert any("fsync" in r.message and "failed" in r.message
+                for r in caplog.records)
+
+
 def test_save_state_round_trips_through_load_state(tmp_path, defaults_dict):
     """save_state(load_state(...)) should be lossless across all known
     fields PLUS unknown fields that round-trip via _extra."""

@@ -20,12 +20,15 @@ rather than calling `json.dump` directly.
 """
 
 import json
+import logging
 import os
 import tempfile
 from typing import Any, Callable, Dict, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from state import PlantState
+
+logger = logging.getLogger(__name__)
 
 DATA_PATH    = "data.json"
 DEFAULTS_PATH = "defaults.json"
@@ -140,11 +143,20 @@ def save_data(data: Dict[str, Any], path: str = DATA_PATH) -> None:
             f.flush()
             try:
                 os.fsync(f.fileno())
-            except OSError:
+            except OSError as e:
                 # fsync isn't supported on every filesystem (some Windows
-                # network drives); the os.replace below is still atomic
-                # in the page-cache sense.
-                pass
+                # network drives, tmpfs in some sandboxes). The os.replace
+                # below remains atomic in the page-cache sense even when
+                # fsync fails, so the file isn't corrupt — it's just not
+                # guaranteed durable across power loss until the OS
+                # flushes the page cache itself. Surface as a warning so
+                # production monitoring can detect a genuine durability
+                # regression on a real disk.
+                logger.warning(
+                    "fsync(%s) failed: %s — write is atomic in the "
+                    "page-cache sense but durability across power loss "
+                    "is not guaranteed.", path, e,
+                )
         os.replace(tmp, path)
     except Exception:
         # Clean up the tempfile if anything went wrong before replace.
