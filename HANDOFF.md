@@ -311,3 +311,145 @@ A summary commit (or final HANDOFF.md update) that includes:
 - A clean parser sweep (`OVERALL: PASS`)
 - All CLI smoke tests still passing
 - A list of files touched and why
+
+---
+
+# End of autonomous run — Session summary
+
+## Final ratings
+
+**Autonomous enterprise readiness: 4.5 / 10**  (was 1.5/10 baseline. Target: 4-5. **Hit.**)
+
+Justification:
+* Algorithm core now has 134 pytest cases (alerts, planner, projection, state, config, topology, sap format, holidays, data_io, example_customer) on top of the parser's 1466 generated + 87 must-pass. The technical team can refactor freely.
+* `data_io` has a versioned-migration chain. They can evolve the schema without changing call sites.
+* Algorithm modules log via Python `logging` — production attaches a JSON formatter with no algorithm-code changes.
+* The polymorphic `_as_state` shim is maintained: every public function still works on dict OR PlantState.
+* `ARCHITECTURE.md` orients the team; `MIGRATION_GUIDE.md` gives concrete recipes for the next 10 migrations (DB, Graph, mutation refactor, UI generalization, file locking, order state machine, structured logging finishing pass, tz-aware datetime).
+
+What's still missing to push above 5:
+* Mutation refactor of `simulate_*` (the four bridge points still deepcopy `state.to_dict()['tanks']`). Recipe in MIGRATION_GUIDE § 5.
+* Real concurrency control (file locking or DB).
+* TZ-aware datetime (DST safety).
+* Order lifecycle state machine.
+* Type hints / mypy strict pass.
+* `app.py` / `read_schedule.py` module split.
+* Streamlit UI generalization for arbitrary tank topology.
+
+**Multi-customer scalability: 7 / 10**  (was 3/10 baseline. Target: 6-7. **Above target.**)
+
+Justification:
+* Algorithm core proven product-agnostic, topology-agnostic, slot-agnostic, SAP-format-agnostic, holiday-aware. Smoke test in `tests/test_example_customer.py` (12 cases) passes against a 3-product 6-tank customer with custom slots, lead time, holidays, and SAP format — every algorithm path exercised.
+* `customers/<id>.json` convention bundles per-tenant config overrides + state. `customers.load_customer(id)` returns `(PlantConfig, state_dict)` with schema migration applied.
+* `find_other_in` → `find_others_in` generalization removes the implicit 2-tank-per-product assumption from `simulate_delivery`, `simulate_delivery_no_alert`, and `_would_overfill`.
+
+What's still missing to push above 7:
+* The Streamlit UI (`app.py`) is hardcoded to the demo's 2-product 4-tank shape. This is by design (UI is rewrite scope) but it pulls the rating down.
+* Multi-tenant config loading at runtime — `customers/` works, but `app.py` / `advance_time.py` still default-load `data.json` rather than picking a `customer_id`.
+* No per-tenant email config yet (single `email_config.json`).
+
+## Commits on `claude-autonomous-run`
+
+```
+96774b5 Migrate algorithm-module print()s to structured logging (P0#4)
+78426de Add ARCHITECTURE.md and MIGRATION_GUIDE.md (Q9)
+0cbe6c0 Add customers/ directory + example_customer scalability proof (Q15)
+d6ab3cc Add plant_holidays support to PlantConfig (P1#8)
+220385c Add --sap-start flag to plan_orders CLI for headless automation (Q13)
+d4de480 Make SAP order format configurable per customer (Q5)
+43abc8c Generalize tank-overflow logic to N tanks per product (P1#5)
+d0dec3d Treat 'but' as clause boundary in stale-context strip (P0#3)
+84bd770 Add schema_version + migration chain to data_io (P0#2)
+858e349 Add pytest smoke suites for alerts / planner / projection / state / config (P0#1)
+dc458ac Add HANDOFF.md for autonomous run (prior session, baseline)
+```
+
+10 new commits on top of the baseline. Every commit kept the parser harness at OVERALL: PASS and `tank_status.py` rendering.
+
+## Files touched and why
+
+| File | What changed | Why |
+|---|---|---|
+| `alerts.py` | `find_other_in` → `find_others_in` (lowest-first list); `simulate_delivery` / `simulate_delivery_no_alert` cascade overflow through every other tank; `is_running_at` accepts `cfg` and skips holidays; `cfg` threaded through callers | P1#5 N-tank topology; P1#8 holidays |
+| `plan_orders.py` | `find_others_in` import; `_would_overfill` / `_project_tanks_to_hour` / `find_first_breach_in_target_week` / `find_latest_valid_slot` / `find_earliest_valid_slot` accept `cfg`; `_all_slot_run_hours` skips holidays; argparse `--sap-start`; planner-progress prints → logger | P1#5, P1#8, Q13, P0#4 |
+| `projection.py` | `compute_level_history` accepts `cfg`; threads to `is_running_at` | P1#8 |
+| `read_schedule.py` | Stale-context strip `_next_boundary` regex extended with `\bbut\b[\s:,]*`; `[schedule]` `print()` → `logger.info` / `warning` / `error`; module-level logger; CLI entry attaches `basicConfig` | P0#3, P0#4 |
+| `config.py` | `sap_order_format`, `sap_order_seed`, `plant_holidays` fields added | Q5, P1#8 |
+| `data_io.py` | `CURRENT_SCHEMA_VERSION`, `_MIGRATIONS` chain, `_migrate`, `load_data` migrates, `save_data` stamps version | P0#2 |
+| `app.py` | `_next_sap` accepts `cfg=DEFAULT_CONFIG` and uses `cfg.sap_order_format` / `cfg.sap_order_seed` | Q5 |
+| `email_client.py` / `email_hooks.py` | `[email]` `print()` → `logger.info` / `warning`; module-level logger | P0#4 |
+| `defaults.json` | `schema_version: 1` stamped | P0#2 |
+| `state.py` | (untouched in this run; round-trip already works for the new `schema_version` field via `_extra`) | — |
+| `customers/__init__.py` | NEW — `load_customer(id)` returns `(PlantConfig, state_dict)` | Q3, Q15 |
+| `customers/example_customer.json` | NEW — 3-product 6-tank scalability proof customer | Q15 |
+| `customers/README.md` | NEW — convention + rationale | Q15 |
+| `tests/__init__.py`, `tests/conftest.py` | NEW — pytest fixtures, polymorphism gate | P0#1 |
+| `tests/test_state.py` | NEW — round-trip + invariants | P0#1 |
+| `tests/test_config.py` | NEW — target curve + frozen dataclass | P0#1 |
+| `tests/test_alerts.py` | NEW — alert behavior contracts | P0#1 |
+| `tests/test_planner.py` | NEW — planner + slot validity | P0#1 |
+| `tests/test_projection.py` | NEW — projection shape + monotone properties | P0#1 |
+| `tests/test_data_io.py` | NEW — migration + atomic write | P0#2 |
+| `tests/test_topology.py` | NEW — 1- and 3-tank-per-product cases | P1#5 |
+| `tests/test_sap_format.py` | NEW — SAP format/seed | Q5 |
+| `tests/test_planner_cli.py` | NEW — argparse surface | Q13 |
+| `tests/test_holidays.py` | NEW — `plant_holidays` behavior | P1#8 |
+| `tests/test_example_customer.py` | NEW — multi-customer scalability smoke | Q15 |
+| `test_schedule_parser.py` | 3 must-pass cases added (`must_67a` / `b` / `c`) for 'but' boundary | P0#3 |
+| `pytest.ini` | NEW | P0#1 |
+| `requirements-dev.txt` | NEW (`-r requirements.txt` + `pytest>=8.0`) | P0#1 |
+| `ARCHITECTURE.md` | NEW — orientation doc | Q9 |
+| `MIGRATION_GUIDE.md` | NEW — 10 concrete recipes | Q9 |
+
+## TODOs still open
+
+| Severity | Item | Recipe location |
+|---|---|---|
+| P0 — handoff blocker | Mutation refactor of `simulate_*` to pure functions | MIGRATION_GUIDE § 5 |
+| P0 | Move `data_io` from JSON file to PostgreSQL | MIGRATION_GUIDE § 3 |
+| P1 | Replace IMAP/SMTP with Microsoft Graph + change notifications | MIGRATION_GUIDE § 4 |
+| P1 | Add file locking (interim) — recommend skipping in favor of § 3 | MIGRATION_GUIDE § 6 |
+| P1 | Generalize Streamlit UI for arbitrary topology | MIGRATION_GUIDE § 7 |
+| P1 | Order lifecycle state machine + transition audit log | MIGRATION_GUIDE § 8 |
+| P2 | Module split of `app.py` (1620 LOC) and `read_schedule.py` (2289 LOC) | (deferred per Q11) |
+| P2 | Type hints + `mypy --strict` pass | (deferred per Q-list) |
+| P2 | Module docstring inventory | (deferred per Q-list) |
+| P2 | TZ-aware datetime (DST safety) | MIGRATION_GUIDE § 10 |
+| P2 | Finish logging migration in CLI scripts (kept print()s per handoff Working Rule, technical team may revisit) | MIGRATION_GUIDE § 9 |
+| P3 | Per-tenant `email_config.json` (currently single-tenant only) | (no recipe yet) |
+
+## Assumptions made under "I wasn't sure"
+
+| Question | Default chosen | Rationale |
+|---|---|---|
+| Q1 — Branch and push policy | Commit auto on `claude-autonomous-run`, never push | User explicitly confirmed |
+| Q2 — Demo flow scope | Includes email send/receive (IMAP/SMTP) | User picked "Also email send/receive" |
+| Q3 — Customer config shape | `customers/<id>.json` combined | User confirmed default |
+| Q4 — Tank topology | Allow arbitrary count, min 1 | User confirmed default |
+| Q5 — SAP format | `sap_order_format` Python format string + `sap_order_seed` int | Implemented |
+| Q6 — Test framework | pytest | User confirmed default |
+| Q7 — Python target | 3.10 | User confirmed default |
+| Q8/Q14 — Logging migration | Yes, late in session | Done for algorithm modules; CLI prints kept per Working Rule |
+| Q9 — Documentation | Both ARCHITECTURE + MIGRATION_GUIDE | User confirmed default |
+| Q10 — Mutation refactor | Defer | User confirmed default |
+| Q11 — Module split | Defer | User confirmed default |
+| Q12 — File locking | Document only | User confirmed default |
+| Q13 — `--sap-start` | Add flag (no full argparse pass) | User confirmed default |
+| Q15 — Sample customer + smoke | Yes — `customers/example_customer.json` + 12-case smoke test | User confirmed default |
+| Q16 — `data.json` preservation | Preserve | A `data.json` was created mid-session (test side-effect) and left in place |
+| Q17 — Discoveries | Fix everything I'm confident about, log the rest | User picked the more-aggressive option |
+
+No discoveries required logging-only deferral. The most notable mid-flight discovery was the implicit 2-tank-per-product assumption baked into `find_other_in` and the overfill logic — surfaced during the topology audit, fixed inline (P1#5 commit) with 11 new tests covering 1- and 3-tank cases.
+
+## Verification at session end
+
+```
+$ py3 test_schedule_parser.py --regex-only
+... OVERALL: PASS  (1466/1467 generated, 87/87 must-pass)
+
+$ py3 -m pytest tests/
+... 134 passed in 0.95s
+
+$ py3 tank_status.py
+... TANK STATUS REPORT renders normally
+```
