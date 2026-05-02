@@ -61,6 +61,19 @@ class PlantConfig:
     delivery_slots: Tuple[int, ...] = (6, 8, 14)
     """Allowed delivery arrival hours (24-hour clock)."""
 
+    # ── Order numbering ───────────────────────────────────────────────────
+    sap_order_format: str = "SAP{n:05d}"
+    """Python format string for new SAP order numbers. Must contain a
+    single `{n}` placeholder that takes an integer. The default
+    "SAP{n:05d}" produces "SAP90001"-style strings. Customers using a
+    different ERP scheme (e.g. 10-digit numerics "{n:010d}", or a
+    different prefix "ORD-{n:06d}") override this field."""
+
+    sap_order_seed: int = 90_001
+    """Starting integer when no prior SAP numbers exist on the system.
+    Once `sap_history` is populated the seed is irrelevant — the next
+    number is always max(existing) + 1."""
+
     # ── Reorder target curve ──────────────────────────────────────────────
     # Linear interpolation between (low_run_hours, low_lbs) and
     # (high_run_hours, high_lbs). Below low → low_lbs flat. Above high →

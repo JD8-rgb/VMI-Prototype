@@ -625,7 +625,7 @@ def _parse_nl(text, data):
     return product, arr_rh, cand.strftime("%a %Y-%m-%d %H:%M")
 
 
-def _next_sap(data):
+def _next_sap(data, cfg=None):
     """Return the next SAP order number, monotonic across all time.
 
     Looks at BOTH currently-scheduled trucks AND the persistent
@@ -633,13 +633,21 @@ def _next_sap(data):
     Without the history check, delivered/pruned trucks free up their
     SAP numbers and the next planner cycle re-issues the same string —
     which collides with the prior real-life delivered order.
+
+    The output format and seed integer come from PlantConfig
+    (cfg.sap_order_format, cfg.sap_order_seed) so customers using a
+    non-default ERP numbering scheme don't need to fork app.py.
     """
+    if cfg is None:
+        from config import DEFAULT_CONFIG
+        cfg = DEFAULT_CONFIG
     issued = set(data.get("sap_history", []))
     issued.update(t["sap_order"] for t in data["scheduled_trucks"]
                   if t.get("sap_order"))
     nums = [int(re.search(r"\d+$", s).group())
             for s in issued if re.search(r"\d+$", s)]
-    return f"SAP{max(nums) + 1 if nums else 90001}"
+    next_n = max(nums) + 1 if nums else cfg.sap_order_seed
+    return cfg.sap_order_format.format(n=next_n)
 
 
 def _record_sap(data, sap_order):
