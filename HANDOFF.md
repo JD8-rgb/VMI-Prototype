@@ -337,7 +337,8 @@ What's still missing to push above 5:
 * `app.py` / `read_schedule.py` module split.
 * Streamlit UI generalization for arbitrary tank topology.
 
-**Multi-customer scalability: 7 / 10**  (was 3/10 baseline. Target: 6-7. **Above target.**)
+**Multi-customer scalability: 7.5 / 10**  (was 3/10 baseline. Target: 6-7. **Above target.**)
+*(Initially rated 7; bumped to 7.5 after the --customer flag landed on plan_orders and tank_status CLI scripts. Multi-tenant runtime is now actually exercisable from CLI without standing up the Streamlit shell.)*
 
 Justification:
 * Algorithm core proven product-agnostic, topology-agnostic, slot-agnostic, SAP-format-agnostic, holiday-aware. Smoke test in `tests/test_example_customer.py` (12 cases) passes against a 3-product 6-tank customer with custom slots, lead time, holidays, and SAP format — every algorithm path exercised.
@@ -476,9 +477,14 @@ to extend coverage and tighten the handoff surface:
 | `94dc877` | apply_schedule_to_data behavior contracts (7 cases). Replace mode, merge mode, empty-entries safety net, dry_run preservation. now_dt pinned for determinism. |
 | `82826eb` | data_io typed-wrapper tests for load_state / save_state. Lossless round-trip across known + _extra fields. |
 | `176e0bf` | Hardened data_io._migrate against malformed schema_version. Real bug surfaced during red-team: `{"schema_version": null}` crashed with cryptic `'<' not supported between NoneType and int`. Now: None/missing → 0; numeric string → coerced; bool/list/garbage → ValueError with clear msg. 5 new test cases. |
+| `a1d8e6c` | Hoisted stale-context regexes to module scope. Pure refactor — _CHANGED_FROM_TO_RE and the boundary regex compile once at import instead of on every parser call. |
+| `36cde4b` | fetch_and_apply_schedule early-return path tests (4 cases). OutlookClient mocked. Covers no-config, empty-inbox, only-self-generated, and no-schedule-shaped-emails branches. |
+| `3e12fcf` | PlantConfig.__post_init__ validation. Real foot-guns: `sap_order_format` without a `{n}` placeholder would issue identical SAPs on every truck; `target_low_run_hours >= target_high_run_hours` divides by zero in target_for_week. Both now raise ValueError at construction with clear messages. 4 new test cases. |
+| `7eaadaf` | plan_orders --customer flag. Loads `customers/<id>.json`, threads cfg through every planner call, prints proposed trucks in read-only mode. Demonstrated end-to-end: 6 trucks proposed for example_customer at the customer's slots / quantities. 4 new test cases. |
+| `e8972fc` | tank_status --customer flag. Symmetrical to plan_orders. Customer-specific cfg threaded into get_all_alerts so per-tenant safety_stock_lbs / lead_time_hours / plant_holidays apply to the report. |
 
 Updated test surface:
-* **198 pytest cases** (was 134 at first summary).
+* **210 pytest cases** (was 134 at first summary).
 * Coverage now spans every algorithm path, the customer loader (with
   path-traversal hardening), the email dedup logic (with mocked SMTP),
   the PDF builder, time_utils parsing, the apply_schedule writer, and
