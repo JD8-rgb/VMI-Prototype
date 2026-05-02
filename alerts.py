@@ -66,8 +66,15 @@ def get_lbs_per_hour(data, product):
 
 
 def get_combined_usable(data, product):
+    """Total drawable lbs across all tanks for a product.
+
+    Each tank contributes max(0, current_level_lbs - heel_lbs). Without
+    the clamp, an empty tank with a non-zero heel (e.g. 0 lbs vs 1,000
+    heel) would contribute -1,000 and falsely shrink reported usable
+    inventory.
+    """
     return sum(
-        info["current_level_lbs"] - info["heel_lbs"]
+        max(0, info["current_level_lbs"] - info["heel_lbs"])
         for info in data["tanks"].values()
         if info["product"] == product
     )
@@ -383,12 +390,15 @@ def run_projection(data):
 
 
 def check_late_trucks(data):
-    """Return alert dicts for any truck more than LATE_TRUCK_HOURS past its arrival time."""
+    """Return alert dicts for any truck >= LATE_TRUCK_HOURS past its arrival time."""
     current = data["current_run_hour"]
     alerts = []
     for truck in data["scheduled_trucks"]:
         overdue = current - truck["arrival_run_hour"]
-        if overdue > LATE_TRUCK_HOURS:
+        # Inclusive (>=) so the documented "3+ hours" threshold actually
+        # fires at exactly 3.0 hours. Was `>` which silently waited until
+        # 3.0001 hours.
+        if overdue >= LATE_TRUCK_HOURS:
             text = (
                 f"LATE TRUCK: {truck['sap_order']} ({truck['product']}, "
                 f"{truck['quantity_lbs']:,} lbs) was due "
