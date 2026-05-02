@@ -74,11 +74,11 @@ def compute_level_history(data, hours=PROJECTION_HOURS,
     )
     truck_idx = 0
 
-    run_hours  = []
-    datetimes  = []
-    tank_names = list(tanks.keys())
-    tank_hist  = {name: [] for name in tank_names}
-    truck_events = []
+    run_hours: list[float]               = []
+    datetimes: list[str]                 = []
+    tank_names                            = list(tanks.keys())
+    tank_hist: dict[str, list[float]]    = {name: [] for name in tank_names}
+    truck_events: list[dict]             = []
 
     hour = current
     while hour <= end:

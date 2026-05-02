@@ -380,9 +380,9 @@ def _truck_as_dict(t):
 def plan_for_product(data, product, target, week_start, week_end, extra_trucks,
                      cfg: PlantConfig = DEFAULT_CONFIG):
     state       = _as_state(data)
-    new_trucks  = []
+    new_trucks: list[dict] = []
     current     = state.current_run_hour
-    breach_floor = None
+    breach_floor: float | None = None
 
     for iteration in range(MAX_ITERATIONS):
         breach_hour = find_first_breach_in_target_week(

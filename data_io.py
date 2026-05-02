@@ -22,7 +22,10 @@ rather than calling `json.dump` directly.
 import json
 import os
 import tempfile
-from typing import Callable, Dict
+from typing import Any, Callable, Dict, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from state import PlantState
 
 DATA_PATH    = "data.json"
 DEFAULTS_PATH = "defaults.json"
@@ -43,7 +46,7 @@ DEFAULTS_PATH = "defaults.json"
 CURRENT_SCHEMA_VERSION = 1
 
 
-def _migrate_v0_to_v1(data: dict) -> None:
+def _migrate_v0_to_v1(data: Dict[str, Any]) -> None:
     """Pre-versioned files → v1. No structural change; this version
     bump exists so future migrators have a known baseline to migrate
     from."""
@@ -51,12 +54,12 @@ def _migrate_v0_to_v1(data: dict) -> None:
     return
 
 
-_MIGRATIONS: Dict[int, Callable[[dict], None]] = {
+_MIGRATIONS: Dict[int, Callable[[Dict[str, Any]], None]] = {
     0: _migrate_v0_to_v1,
 }
 
 
-def _migrate(data: dict) -> dict:
+def _migrate(data: Dict[str, Any]) -> Dict[str, Any]:
     """Run any pending schema migrations on `data` in place. Returns the
     same dict for chainability. Idempotent: a file already at
     CURRENT_SCHEMA_VERSION is returned unchanged."""
@@ -74,7 +77,8 @@ def _migrate(data: dict) -> dict:
     return data
 
 
-def load_data(path=DATA_PATH, fallback=DEFAULTS_PATH):
+def load_data(path: str = DATA_PATH,
+               fallback: str = DEFAULTS_PATH) -> Dict[str, Any]:
     """Load JSON state, run schema migrations, return the upgraded dict.
     Falls back to `fallback` if `path` is absent."""
     src = path if os.path.exists(path) else fallback
@@ -83,7 +87,7 @@ def load_data(path=DATA_PATH, fallback=DEFAULTS_PATH):
     return _migrate(data)
 
 
-def save_data(data, path=DATA_PATH):
+def save_data(data: Dict[str, Any], path: str = DATA_PATH) -> None:
     """
     Atomically write `data` (a dict) as JSON to `path`.
 
@@ -130,12 +134,13 @@ def save_data(data, path=DATA_PATH):
 # raw dicts. New code should prefer these. Existing dict-based code paths
 # continue to work via load_data / save_data.
 
-def load_state(path=DATA_PATH, fallback=DEFAULTS_PATH):
+def load_state(path: str = DATA_PATH,
+                fallback: str = DEFAULTS_PATH) -> "PlantState":
     """Load JSON state and parse into a PlantState dataclass."""
     from state import PlantState
     return PlantState.from_dict(load_data(path, fallback))
 
 
-def save_state(state, path=DATA_PATH):
+def save_state(state: "PlantState", path: str = DATA_PATH) -> None:
     """Atomically write a PlantState dataclass back to JSON."""
     save_data(state.to_dict(), path)
