@@ -958,6 +958,36 @@ def curated_must_pass() -> List[Case]:
              expected_confidence="low",
              must_pass=True),
 
+        # ── Single-letter day lists (must_76 … must_78) ─────────────────────
+        # Lists like 'M W F' / 'M,W,F' / 'M/T/W/Th/F' expand to comma-
+        # separated full names. T = Tue (matches the existing range
+        # convention).
+        Case("must_76_letter_list_space", "multi_day_list",
+             "M W F 6a-4p",
+             expected=[(0, 6, 16), (2, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+        Case("must_77_letter_list_comma", "multi_day_list",
+             "M,W,F 6a-4p",
+             expected=[(0, 6, 16), (2, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+        Case("must_78_letter_list_slash_full", "multi_day_list",
+             "M/T/W/Th/F 6a-4p",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+
+        # ── Bare 24-hour clock (must_79) ────────────────────────────────────
+        # 'Mon-Fri 6-16' — end ≥13 means both numbers must be 24-hour.
+        # Doesn't conflict with the 12-hour heuristic (which fires when
+        # both ≤12). ISO/US dates are protected by lookbehind on `-`/`/`.
+        Case("must_79_bare_24h_range", "continuous_range",
+             "Mon-Fri 6-16",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+
         # ── 'from' before time range (must_74 … must_75) ───────────────────
         # 'Monday-Friday from 6 AM to 4 PM' is very common business
         # phrasing. Previously the range parser stopped at "from" and

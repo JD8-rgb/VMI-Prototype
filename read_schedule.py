@@ -89,10 +89,16 @@ _AP_ABBREV_RE = re.compile(r'(\d)\s*([ap])\b(?!m)', re.IGNORECASE)
 
 # Single-letter day ranges: M-F, M-W, M-Th, T-Th, T-F, W-F, W-Th, Th-F.
 # `M` alone at line start could be a month abbreviation, so we ONLY accept
-# the range pattern (two letters, dash, two letters) — never a lone letter.
+# the range/list pattern — never a lone letter.
 # T is interpreted as Tuesday by convention (Thursday writes as `Th`).
 _LETTER_DAY_RANGE_RE = re.compile(
     r'\b(M|T|W|Th|F)\s*[-–—]\s*(M|T|W|Th|F)\b'
+)
+# Single-letter day LISTS: 'M W F', 'M,W,F', 'M/T/W/Th/F'. Require at
+# LEAST 2 letters separated by space/comma/slash so a stray lone 'M' or
+# 'T' doesn't get rewritten. Same Tue=T convention as ranges.
+_LETTER_DAY_LIST_RE = re.compile(
+    r'\b(M|T|W|Th|F)(?:\s*[,/\s]\s*(M|T|W|Th|F))+\b'
 )
 _LETTER_TO_DAY_NAME = {"M": "Mon", "T": "Tue", "W": "Wed", "Th": "Thu", "F": "Fri"}
 
@@ -167,12 +173,15 @@ def _has_nonzero_minutes(text):
 #
 # The trailing lookahead also refuses any `:` or `.` follow-up so we don't
 # half-match `12:00-11:00pm` (which has am/pm context the parser MUST keep).
+# `(?<![-/])` prevents matching numbers inside dates (`2026-04-20`, `04/20`).
+# `(?![-/]\d)` prevents the SECOND number from preceding another date piece.
 _BARE_NUM_RANGE_RE = re.compile(
-    r'(?<![ap]m)\b(\d{1,2})(?::00)?\b\s*'
+    r'(?<![ap]m)(?<![-/])\b(\d{1,2})(?::00)?\b\s*'
     r'(?:to|until|through|thru|[-–—])\s*'
-    r'\b(\d{1,2})(?::00)?\b(?!\s*(?:[ap]m|[:.]))',
+    r'\b(\d{1,2})(?::00)?\b(?!\s*(?:[ap]m|[:.]))(?![-/]\d)',
     re.IGNORECASE,
 )
+
 
 
 def _normalize_phrasing(text):
@@ -214,16 +223,47 @@ def _normalize_phrasing(text):
         notes.append("  Expanded single-letter day range (e.g. 'M-F' → 'Mon-Fri').")
     text = new
 
-    # 4. "6 to 4" / "6:00-4:00" with no am/pm → 12-hour clock heuristic
-    def _twelvehr(m):
+    # 3b. Single-letter day LISTS → comma-separated full names. Handles
+    # 'M W F' / 'M,W,F' / 'M/T/W/Th/F'. Done AFTER ranges so 'M-F' stays
+    # a range, but a list like 'M W F' gets each letter expanded.
+    def _expand_letter_list(m):
+        # Re-tokenise the whole match against the same letters so we
+        # capture all elements (the regex's named groups only pick up
+        # the first + last in a multi-letter list).
+        token_re = re.compile(r'\b(M|T|W|Th|F)\b', re.IGNORECASE)
+        tokens = [t.capitalize() for t in token_re.findall(m.group(0))]
+        if all(t in _LETTER_TO_DAY_NAME for t in tokens) and len(tokens) >= 2:
+            return ", ".join(_LETTER_TO_DAY_NAME[t] for t in tokens)
+        return m.group(0)
+    new = _LETTER_DAY_LIST_RE.sub(_expand_letter_list, text)
+    if new != text:
+        notes.append("  Expanded single-letter day list (e.g. 'M W F' → "
+                     "'Mon, Wed, Fri').")
+    text = new
+
+    # 4. Bare-numeric time ranges with no am/pm context — two heuristics:
+    #    (a) "6 to 4"  : both 1..12, start > end → 12-hour clock (6am-4pm)
+    #    (b) "6 to 16" : end in [13..23]          → 24-hour clock (06:00-16:00)
+    # Both rewrite the matched range into a form the existing time parser
+    # already understands (am/pm or 4-digit military). They never overlap:
+    # case (a) requires both ≤12, case (b) requires end ≥13.
+    rewrites = []
+    def _bare_range(m):
         a, b = int(m.group(1)), int(m.group(2))
         if 1 <= a <= 12 and 1 <= b <= 12 and a > b:
+            rewrites.append("12hr")
             return f"{a}am to {b}pm"
+        if 0 <= a <= 23 and 13 <= b <= 23 and a < b:
+            rewrites.append("24hr")
+            return f"{a:02d}00-{b:02d}00"
         return m.group(0)
-    new = _BARE_NUM_RANGE_RE.sub(_twelvehr, text)
-    if new != text:
+    new = _BARE_NUM_RANGE_RE.sub(_bare_range, text)
+    if "12hr" in rewrites:
         notes.append("  Applied 12-hour clock heuristic to bare-numeric "
                      "range (start > end → start AM, end PM).")
+    if "24hr" in rewrites:
+        notes.append("  Applied 24-hour clock heuristic to bare-numeric "
+                     "range (end ≥ 13 → both treated as 24-hour times).")
     text = new
 
     return text, notes
