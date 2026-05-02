@@ -1,8 +1,16 @@
+"""
+tank_status.py — READ-ONLY status report.
+
+Loads data.json (or defaults.json), prints tank/schedule/truck/alert
+state, and exits. Does NOT mutate data, send emails, or touch the
+dedup-state file. If you want notifications, run the scheduled
+advance_time.py / read_schedule.py path that already handles them.
+"""
+
 import json
 import os
 from alerts import get_all_alerts
 from time_utils import format_run_hour
-import email_hooks
 
 def _load_data():
     path = "data.json" if os.path.exists("data.json") else "defaults.json"
@@ -72,8 +80,5 @@ else:
     for alert in alerts:
         print(f"  {alert['text']}")
 
-data = email_hooks.send_alert_emails_if_new(data)
-with open("data.json", "w") as f:
-    json.dump(data, f, indent=2)
-
 print("=" * 60)
+print("(read-only — no emails sent, no data written)")
