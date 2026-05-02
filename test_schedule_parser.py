@@ -1268,13 +1268,22 @@ def _failure_modes(results: List[CaseResult], top_n: int = 15):
     if not fails:
         print("\n(no failures)")
         return
-    # Simple grouping by (category, error-ish reason)
+    # Simple grouping by (category, error-ish reason). The
+    # expected-confidence mismatch branch fires BEFORE the wrong-entries
+    # fallthrough so cases like must_71 (expected_confidence=low,
+    # got=high, entries match) classify accurately as a confidence
+    # issue rather than the misleading "wrong entries (diff=+0)".
     groups: dict = {}
     for r in fails:
         if r.error:
             key = (r.case.category, f"error:{r.error[:60]}")
         elif not r.entries:
             key = (r.case.category, "no entries extracted")
+        elif (r.case.expected_confidence is not None
+              and r.confidence != r.case.expected_confidence):
+            key = (r.case.category,
+                   f"confidence mismatch (got {r.confidence}, "
+                   f"expected {r.case.expected_confidence})")
         elif r.confidence != "high" and r.case.expected:
             key = (r.case.category, f"low confidence (expected high); got {len(r.entries)} entries")
         else:
