@@ -329,13 +329,15 @@ def _advance(data, hours, session_start_utc=None):
                     all_new.extend(new)
 
                 if all_new:
-                    existing = [
-                        t["sap_order"] for t in data["scheduled_trucks"]
-                        if t.get("sap_order")
-                    ]
+                    # Use the shared _next_sap which consults both
+                    # scheduled_trucks AND the persistent sap_history,
+                    # so delivered trucks' numbers can never be reused.
+                    issued = set(data.get("sap_history", []))
+                    issued.update(t["sap_order"] for t in data["scheduled_trucks"]
+                                  if t.get("sap_order"))
                     nums = [
                         int(_re.search(r"\d+$", s).group())
-                        for s in existing if _re.search(r"\d+$", s)
+                        for s in issued if _re.search(r"\d+$", s)
                     ]
                     next_n = max(nums) + 1 if nums else 20001
                     all_new.sort(key=lambda t: t["arrival_run_hour"])
@@ -343,6 +345,7 @@ def _advance(data, hours, session_start_utc=None):
                         t["sap_order"] = f"SAP{next_n + i}"
                         t.pop("_planned_reason", None)
                         data["scheduled_trucks"].append(t)
+                        _record_sap(data, t["sap_order"])
                     log.append(
                         f"[Auto] Committed {len(all_new)} truck order(s): "
                         + ", ".join(t["sap_order"] for t in all_new)
@@ -584,9 +587,29 @@ def _parse_nl(text, data):
 
 
 def _next_sap(data):
-    existing = [t["sap_order"] for t in data["scheduled_trucks"] if t.get("sap_order")]
-    nums = [int(re.search(r"\d+$", s).group()) for s in existing if re.search(r"\d+$", s)]
+    """Return the next SAP order number, monotonic across all time.
+
+    Looks at BOTH currently-scheduled trucks AND the persistent
+    `sap_history` list (every SAP number ever issued, never pruned).
+    Without the history check, delivered/pruned trucks free up their
+    SAP numbers and the next planner cycle re-issues the same string —
+    which collides with the prior real-life delivered order.
+    """
+    issued = set(data.get("sap_history", []))
+    issued.update(t["sap_order"] for t in data["scheduled_trucks"]
+                  if t.get("sap_order"))
+    nums = [int(re.search(r"\d+$", s).group())
+            for s in issued if re.search(r"\d+$", s)]
     return f"SAP{max(nums) + 1 if nums else 90001}"
+
+
+def _record_sap(data, sap_order):
+    """Append `sap_order` to data['sap_history'] (deduped, kept sorted)."""
+    if not sap_order:
+        return
+    hist = set(data.get("sap_history", []))
+    hist.add(sap_order)
+    data["sap_history"] = sorted(hist)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1223,14 +1246,20 @@ with ap_col:
                 f"  ·  {item['qty']:,} lbs  \n_{item['reason']}_"
             )
         if st.button("✅ Commit Trucks  (SAP numbers auto-assigned)", type="primary", key="commit_btn"):
-            existing = [t["sap_order"] for t in data["scheduled_trucks"] if t.get("sap_order")]
-            nums = [int(re.search(r"\d+$", s).group()) for s in existing if re.search(r"\d+$", s)]
+            # Check both scheduled trucks AND sap_history so delivered
+            # trucks' numbers are never reused.
+            issued = set(data.get("sap_history", []))
+            issued.update(t["sap_order"] for t in data["scheduled_trucks"]
+                          if t.get("sap_order"))
+            nums = [int(re.search(r"\d+$", s).group())
+                    for s in issued if re.search(r"\d+$", s)]
             next_n  = max(nums) + 1 if nums else 20001
             sorted_t = sorted(st.session_state.planned_trucks, key=lambda t: t["arrival_run_hour"])
             for i, t in enumerate(sorted_t):
                 t["sap_order"] = f"SAP{next_n + i}"
                 t.pop("_planned_reason", None)
                 data["scheduled_trucks"].append(t)
+                _record_sap(data, t["sap_order"])
             try:
                 st.session_state.pdf_bytes = build_load_entry_pdf(sorted_t, data)
             except Exception as e:
@@ -1306,6 +1335,7 @@ with tab_nl:
                     "sap_order": sap, "product": product,
                     "quantity_lbs": qty, "arrival_run_hour": arr_rh,
                 })
+                _record_sap(data, sap)
                 st.success(f"Added {sap}: {product} — {qty:,} lbs arriving {display}")
                 st.rerun()
             except ValueError as e:
@@ -1333,6 +1363,7 @@ with tab_form:
                     "sap_order": sap, "product": prod_in,
                     "quantity_lbs": int(qty_in), "arrival_run_hour": arr_rh,
                 })
+                _record_sap(data, sap)
                 st.success(f"Added {sap}.")
                 st.rerun()
 
