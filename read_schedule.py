@@ -1008,6 +1008,33 @@ def _coverage_days(entries):
     return total
 
 
+def _entry_weekdays_covered(entries):
+    """
+    Return the set of weekday ints (0=Mon..6=Sun) actually touched by the
+    given entries — including spillover days from multi-day windows.
+
+    Critical for the LLM-rescue gating decision: a Thu→Fri overnight
+    window covers BOTH Thursday and Friday, but a naive
+    ``len({weekday for weekday, _, _ in entries})`` count would only
+    register Thursday, falsely making the parser look incomplete and
+    triggering an unnecessary LLM cross-check (which has been seen to
+    hallucinate end-day extensions).
+    """
+    covered = set()
+    for weekday, start_h, end_h in entries:
+        if end_h <= start_h:
+            covered.add(int(weekday) % 7)
+            continue
+        start_day = int(start_h) // 24
+        # End is exclusive in entry semantics ("ends at Fri 04:00" → end_h=100,
+        # last hour really used = 99 → day 4 = Fri). (end_h - 1) // 24 gives the
+        # final touched day inclusively.
+        end_day = int(end_h - 1) // 24
+        for d in range(start_day, end_day + 1):
+            covered.add(d % 7)
+    return covered
+
+
 def parse_schedule_llm(text, api_key):
     """
     Use Claude to parse schedule text into run windows.
@@ -1184,11 +1211,15 @@ def parse_schedule(text, api_key=None, now_dt=None):
         cleaned_for_count = _clean_email_text(text)
     except Exception:
         cleaned_for_count = text
-    distinct_day_mentions = len(set(
-        m.group(1).lower()
+    mentioned_weekdays = {
+        _DAY_MAP[m.group(1).lower()]
         for m in re.finditer(_DAY_PATTERN, cleaned_for_count, flags=re.IGNORECASE)
-    ))
-    distinct_regex_days = len({e[0] for e in rx_entries})
+    }
+    distinct_day_mentions = len(mentioned_weekdays)
+    # Count days actually touched by regex entries — including spillover from
+    # multi-day windows. A Thu→Fri overnight covers BOTH Thu AND Fri.
+    rx_covered_weekdays = _entry_weekdays_covered(rx_entries)
+    distinct_regex_days = len(rx_covered_weekdays)
 
     if rx_confidence == "high" and distinct_regex_days >= distinct_day_mentions:
         print(f"[schedule] Regex parse is HIGH confidence "
@@ -1238,7 +1269,29 @@ def parse_schedule(text, api_key=None, now_dt=None):
         llm_failure_note = f"  LLM rescue failed (unexpected): {e}"
         return rx_entries, rx_confidence, [llm_failure_note] + rx_notes
 
-    # ── 3. Score both and keep the better one ─────────────────────────────
+    # ── 3. Validate the LLM result against the source text ────────────────
+    # The LLM has been observed to extend a multi-day window's end weekday
+    # past what the source actually says (e.g. regex correctly parsed
+    # "Thu 6am → Fri 4am", LLM hallucinated "Thu 6am → Sat 4am"). Reject
+    # any LLM weekday that's NOT in the source text mentions AND NOT
+    # already covered by the regex result. Such days are inventions.
+    llm_covered_weekdays = _entry_weekdays_covered(llm_entries)
+    invented_weekdays = (
+        llm_covered_weekdays - mentioned_weekdays - rx_covered_weekdays
+    )
+    if invented_weekdays:
+        invented_names = sorted(_DAY_ABBREV[d] for d in invented_weekdays)
+        print(f"[schedule] LLM rescue rejected — extended into "
+              f"{', '.join(invented_names)} which the source text never "
+              f"mentions. Keeping regex result.")
+        combined_notes = (
+            [f"  LLM rescue rejected — invented day(s): "
+             f"{', '.join(invented_names)}. Kept regex result."]
+            + rx_notes + llm_notes
+        )
+        return rx_entries, rx_confidence, combined_notes
+
+    # ── 4. Score both and keep the better one ─────────────────────────────
     def _score(entries, confidence):
         # Higher is better. Confidence dominates; then coverage-days; then count.
         return (1 if confidence == "high" else 0,
