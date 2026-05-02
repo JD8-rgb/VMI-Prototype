@@ -6,20 +6,21 @@
 PYTHON ?= python3
 
 .PHONY: help test test-quick test-parser test-pytest mypy mypy-strict \
-        smoke clean install install-dev
+        smoke lint-customers clean install install-dev
 
 help:
 	@echo "Targets:"
-	@echo "  test          Run parser stress + pytest (~1.5s, the standard pre-commit gate)"
-	@echo "  test-quick    pytest only (~1s)"
-	@echo "  test-parser   Schedule parser stress harness only"
-	@echo "  test-pytest   Pytest only (alias of test-quick)"
-	@echo "  mypy          Default-mode mypy on the algorithm core"
-	@echo "  mypy-strict   --strict on the leaf modules (data_io, state, config)"
-	@echo "  smoke         Quick CLI smoke (tank_status, plan_orders --customer)"
-	@echo "  install       pip install -r requirements.txt"
-	@echo "  install-dev   pip install -r requirements-dev.txt (adds pytest)"
-	@echo "  clean         Remove __pycache__/ and .pytest_cache/"
+	@echo "  test            Run parser stress + pytest (~1.5s, the standard pre-commit gate)"
+	@echo "  test-quick      pytest only (~1s)"
+	@echo "  test-parser     Schedule parser stress harness only"
+	@echo "  test-pytest     Pytest only (alias of test-quick)"
+	@echo "  mypy            Default-mode mypy on the algorithm core"
+	@echo "  mypy-strict     --strict on the leaf modules (data_io, state, config)"
+	@echo "  lint-customers  Run validate_customer.py over customers/"
+	@echo "  smoke           Quick CLI smoke (tank_status, plan_orders --customer)"
+	@echo "  install         pip install -r requirements.txt"
+	@echo "  install-dev     pip install -r requirements-dev.txt (adds pytest)"
+	@echo "  clean           Remove __pycache__/ and .pytest_cache/"
 
 test: test-parser test-pytest
 
@@ -39,6 +40,9 @@ mypy:
 mypy-strict:
 	$(PYTHON) -m mypy --strict --ignore-missing-imports \
 	    state.py config.py data_io.py
+
+lint-customers:
+	$(PYTHON) validate_customer.py
 
 smoke:
 	@echo "── tank_status (defaults) ──"
