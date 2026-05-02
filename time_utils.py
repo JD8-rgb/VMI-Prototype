@@ -36,21 +36,41 @@ def format_run_hour(data, run_hour):
     return dt.strftime(DISPLAY_FORMAT)
 
 
+# Implausible run-hour magnitude. The simulation runs in hours; anything
+# above ~5 years (43,800 hours) is almost certainly a date typo without
+# separators rather than a real duration. Reject so we don't silently
+# advance the clock 2,000+ years.
+_MAX_REASONABLE_RUN_HOURS = 50_000
+
+
 def parse_time_input(data, text):
     """
     Accept either a run-hour number ('168' or '168.5') or a datetime
     string ('2026-04-20 08:00' or '2026-04-20T08:00'). Return a run-hour
     float in either case.
 
-    Auto-detect: if the string parses as a float, treat as run-hour.
-    Otherwise try to parse as ISO datetime.
+    Auto-detect: if the string parses as a float AND is within a sane
+    magnitude, treat as run-hour. Otherwise try to parse as ISO datetime.
+    The magnitude check catches '20260415' typos (a date pasted without
+    separators succeeds as float() but means 2,300 years in the future).
     """
     text = text.strip()
-    # Try float first
+    # Try float first, but reject implausible magnitudes (almost certainly
+    # a date typed without separators).
     try:
-        return float(text)
-    except ValueError:
-        pass
+        v = float(text)
+        if abs(v) > _MAX_REASONABLE_RUN_HOURS:
+            raise ValueError(
+                f"'{text}' parses as {v:,.0f} run-hours which is >{_MAX_REASONABLE_RUN_HOURS:,} "
+                f"(~{_MAX_REASONABLE_RUN_HOURS/8760:.0f} years). Did you mean a "
+                f"date? Use 'YYYY-MM-DD HH:MM' format."
+            )
+        return v
+    except ValueError as e:
+        # Re-raise the magnitude-check error directly; only suppress
+        # plain "could not convert" so we can try ISO parsing next.
+        if "run-hours" in str(e):
+            raise
     # Try datetime — accept space or T as separator
     normalized = text.replace(" ", "T")
     try:
