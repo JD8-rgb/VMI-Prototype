@@ -1535,32 +1535,62 @@ def parse_schedule(text, api_key=None, now_dt=None):
         _DAY_MAP[m.group(1).lower()]
         for m in re.finditer(_DAY_PATTERN, cleaned_for_count, flags=re.IGNORECASE)
     }
-    distinct_day_mentions = len(mentioned_weekdays)
+    # Off-day mentions ('Tue off', 'Wed shutdown', 'Thu no run') are days
+    # the operator EXPLICITLY excluded — they SHOULD be missing from the
+    # extracted entries. Don't count them as "missing mentioned" or we'd
+    # downgrade every correctly-handled off-day schedule to LOW.
+    _DAY_OFF_RE_LOCAL = re.compile(
+        r'(?i)\b(' + '|'.join(_DAY_KEYS_SORTED) + r')\b'
+        r'\s+(?:is\s+)?(?:off|no\s*run|shutdown|n/a|none|down)\b'
+    )
+    off_mention_weekdays = {
+        _DAY_MAP[m.group(1).lower()]
+        for m in _DAY_OFF_RE_LOCAL.finditer(cleaned_for_count)
+    }
+    effective_mentioned = mentioned_weekdays - off_mention_weekdays
+    distinct_day_mentions = len(effective_mentioned)
     # Count days actually touched by regex entries — including spillover from
     # multi-day windows. A Thu→Fri overnight covers BOTH Thu AND Fri.
     rx_covered_weekdays = _entry_weekdays_covered(rx_entries)
     distinct_regex_days = len(rx_covered_weekdays)
+    # Set difference, not just count — a range can ADD an unmentioned day
+    # (e.g. Wed-Fri implies Thu) while a mentioned day (Tue) is missing,
+    # making the COUNTS match by accident. We only trust a HIGH parse if
+    # every effective-mentioned weekday is genuinely present in the
+    # extracted set.
+    missing_mentioned = effective_mentioned - rx_covered_weekdays
 
-    if rx_confidence == "high" and distinct_regex_days >= distinct_day_mentions:
+    if rx_confidence == "high" and not missing_mentioned:
         print(f"[schedule] Regex parse is HIGH confidence "
               f"({len(rx_entries)} window(s), covered all "
               f"{distinct_day_mentions} mentioned day(s)) — no LLM call needed.")
         return rx_entries, rx_confidence, rx_notes
 
     if rx_confidence == "high":
-        # HIGH but missed a day — cross-check with LLM. Fall through to
-        # the LLM block below, which will score and pick the better result.
-        print(f"[schedule] Regex is HIGH confidence but only covered "
-              f"{distinct_regex_days}/{distinct_day_mentions} mentioned day(s) — "
-              f"running LLM cross-check to recover missed days.")
+        # HIGH but missed a SPECIFIC mentioned day (set difference, not
+        # count). Cross-check with LLM. Fall through to the LLM block,
+        # which will score and pick the better result.
+        missing_names = sorted(_DAY_ABBREV[d] for d in missing_mentioned)
+        print(f"[schedule] Regex is HIGH confidence but missing mentioned "
+              f"day(s) {missing_names} — running LLM cross-check to recover.")
 
-    elif rx_entries and distinct_regex_days >= distinct_day_mentions:
+    elif rx_entries and not missing_mentioned:
         print(f"[schedule] Regex covered all {distinct_day_mentions} distinct "
               f"day mention(s) — no LLM call needed.")
         return rx_entries, rx_confidence, rx_notes
 
     # ── 2. Regex was incomplete — try the LLM as a rescue ─────────────────
     if not api_key:
+        # If a mentioned day is genuinely missing AND no LLM is available,
+        # downgrade HIGH→LOW so the operator confirms manually. Better to
+        # over-flag than to silently apply a partial schedule.
+        if rx_confidence == "high" and missing_mentioned:
+            missing_names = sorted(_DAY_ABBREV[d] for d in missing_mentioned)
+            note = (f"  No Anthropic API key configured AND mentioned day(s) "
+                    f"{missing_names} are missing from the regex result — "
+                    f"downgrading to low confidence so operator can confirm.")
+            print("[schedule] " + note.strip())
+            return rx_entries, "low", [note] + rx_notes
         note = "  No Anthropic API key configured — using regex parser only."
         print("[schedule] " + note.strip())
         return rx_entries, rx_confidence, [note] + rx_notes

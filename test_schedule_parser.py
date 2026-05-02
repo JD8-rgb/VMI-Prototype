@@ -943,6 +943,19 @@ def curated_must_pass() -> List[Case]:
              expected=[(0, 6, 16), (1, 6, 16), (3, 6, 16), (4, 6, 16)],
              expected_confidence="high",
              must_pass=True),
+
+        # ── Set-based completeness gating (must_71) ─────────────────────────
+        # 'Mon ..., Tues TBD, Wed-Fri ...' — the count of covered weekdays
+        # (Mon, Wed, Thu, Fri = 4) accidentally equals the count of mentioned
+        # weekdays (Mon, Tue, Wed, Fri = 4). The OLD count-based gate
+        # returned HIGH silently dropping Tue. The NEW set-based gate
+        # detects that Tue is mentioned but missing from covered, and
+        # downgrades to LOW (no API key configured in test).
+        Case("must_71_count_collision_drops_day", "multi_day_list",
+             "Mon 6am-4pm, Tues TBD, Wed-Fri 6am-4pm",
+             expected=[(0, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="low",
+             must_pass=True),
     ]
 
 
