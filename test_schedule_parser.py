@@ -958,6 +958,21 @@ def curated_must_pass() -> List[Case]:
              expected_confidence="low",
              must_pass=True),
 
+        # ── 'from' before time range (must_74 … must_75) ───────────────────
+        # 'Monday-Friday from 6 AM to 4 PM' is very common business
+        # phrasing. Previously the range parser stopped at "from" and
+        # extracted only Mon and Fri at low confidence.
+        Case("must_74_day_range_from_time", "continuous_range",
+             "Monday-Friday from 6 AM to 4 PM",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+        Case("must_75_day_range_through_from_time", "continuous_range",
+             "Monday through Friday from 6 AM to 4 PM",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+
         # ── Set-based completeness gating (must_71) ─────────────────────────
         # 'Mon ..., Tues TBD, Wed-Fri ...' — the count of covered weekdays
         # (Mon, Wed, Thu, Fri = 4) accidentally equals the count of mentioned

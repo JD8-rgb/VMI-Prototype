@@ -293,10 +293,15 @@ def _try_day_range_with_time(seg):
     """
     _TIME = r'(\d{4}|\d{1,2}:\d{2}(?:\s*(?:am|pm))?|\d{1,2}\s*(?:am|pm))'
     _SEP  = r'\s*(?:to|through|until|thru|[-–—])\s*'
+    # Optional 'from'/'between' before the time range (and 'and' as the
+    # separator inside 'between X and Y'). Matches 'Mon-Fri from 6am to 4pm'
+    # and 'Mon-Fri between 6am and 4pm' which were previously dropping
+    # the range parser into a partial Monday/Friday parse.
+    _OPT_FROM = r'(?:\s+(?:from|between))?'
 
-    # Pass 1 — day-first:  DAY sep DAY  TIME sep TIME
+    # Pass 1 — day-first:  DAY sep DAY  [from] TIME sep TIME
     pattern_day_first = (
-        _DAY_PATTERN + _SEP + _DAY_PATTERN + r'\s+' + _TIME
+        _DAY_PATTERN + _SEP + _DAY_PATTERN + _OPT_FROM + r'\s+' + _TIME
         + _SEP + _TIME
     )
     m = re.search(pattern_day_first, seg, flags=re.IGNORECASE)
@@ -306,9 +311,9 @@ def _try_day_range_with_time(seg):
             m.group(1), m.group(2), m.group(3), m.group(4)
         )
     else:
-        # Pass 2 — time-first:  TIME sep TIME  DAY sep DAY
+        # Pass 2 — time-first:  [from] TIME sep TIME  DAY sep DAY
         pattern_time_first = (
-            _TIME + _SEP + _TIME + r'\s+'
+            _OPT_FROM + r'\s*' + _TIME + _SEP + _TIME + r'\s+'
             + _DAY_PATTERN + _SEP + _DAY_PATTERN
         )
         m = re.search(pattern_time_first, seg, flags=re.IGNORECASE)
