@@ -1830,16 +1830,25 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
         print("[schedule] No schedule-shaped emails in inbox — nothing to do.")
         return "not_found"
 
-    # Filter out truly stale emails.  The original filter used the Streamlit
-    # session_start timestamp, but that turned out to be too strict for
-    # demos: an operator who composes the schedule email and THEN opens the
-    # app has their email silently dropped.  We now use a 24-hour wall-clock
-    # window.  The schedule_email_id dedup below still prevents re-applying
-    # any specific email that has already been used.
+    # Filter out truly stale emails.
+    #
+    # The PRIMARY cutoff is a 24-hour wall-clock window. The original
+    # implementation used the Streamlit session_start timestamp, but that
+    # was too strict for demos: an operator who composes the schedule
+    # email a few minutes BEFORE opening the app would have their email
+    # silently dropped.
+    #
+    # The DEDUP safety net (schedule_email_id, written to data.json after
+    # a successful apply) prevents re-applying any specific email that
+    # was already processed — so even if an "old" email sneaks through
+    # the 24h window after a session restart, it cannot be applied twice.
+    #
+    # The session_start fallback below ONLY widens the window for
+    # long-running sessions (when session_start is older than 24h ago) so
+    # emails received during such a session are not dropped mid-stream.
+    # It does NOT restrict fresh sessions to session_start.
     wall_now = datetime.now(timezone.utc)
     cutoff = wall_now - timedelta(hours=24)
-    # If the session started more recently than the cutoff, use session_start
-    # as the cutoff anyway — keeps legacy behaviour for long-running sessions.
     if session_start_utc is not None and session_start_utc < cutoff:
         cutoff = session_start_utc
 
