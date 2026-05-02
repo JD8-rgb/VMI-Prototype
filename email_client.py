@@ -10,6 +10,10 @@ import email as _email
 import imaplib
 import json
 import smtplib
+
+import logging
+logger = logging.getLogger(__name__)
+
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
@@ -40,7 +44,7 @@ def load_config():
         with open(CONFIG_PATH) as f:
             return json.load(f)
     except FileNotFoundError:
-        print(f"[email] WARN: {CONFIG_PATH} not found — email features disabled.")
+        logger.warning(f"{CONFIG_PATH} not found — email features disabled.")
         return {}
 
 
@@ -73,7 +77,7 @@ class OutlookClient:
                       e.g. [("loads.pdf", pdf_bytes)]
         """
         if not self.address:
-            print("[email] WARN: no email_address configured — skipping send.")
+            logger.warning("no email_address configured — skipping send.")
             return
 
         if isinstance(to, str):
@@ -167,7 +171,7 @@ class OutlookClient:
                 ids = ids[-top:]
                 ids.reverse()  # newest first
 
-                print(f"[email] IMAP search ({search_criteria!r}) found {total_found} "
+                logger.info(f"IMAP search ({search_criteria!r}) found {total_found} "
                       f"id(s); processing newest {len(ids)}.")
 
                 skipped_empty = 0
@@ -195,14 +199,14 @@ class OutlookClient:
                         # that would silently truncate the result set and a
                         # later schedule email could be missed.
                         skipped_error += 1
-                        print(f"[email] WARN: skipping id={msg_id!r} — {per_msg_err}")
+                        logger.warning(f"skipping id={msg_id!r} — {per_msg_err}")
                         continue
 
                 if skipped_empty or skipped_error:
-                    print(f"[email] Fetch summary: {len(results)} ok, "
+                    logger.info(f"Fetch summary: {len(results)} ok, "
                           f"{skipped_empty} empty, {skipped_error} errored.")
         except Exception as e:
-            print(f"[email] WARN: IMAP read failed — {e}")
+            logger.warning(f"IMAP read failed — {e}")
 
         return results
 

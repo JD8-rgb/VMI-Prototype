@@ -18,6 +18,7 @@ Importable
 """
 
 import json
+import logging
 import os
 import re
 import sys
@@ -27,6 +28,11 @@ from email.utils import parsedate_to_datetime
 from email_client import OutlookClient, load_config
 from email_hooks import send_friday_reminder_if_needed
 import time_utils
+
+# Module-level logger. Production attaches a JSON formatter (Splunk /
+# Datadog) at the root; the prototype's CLI scripts attach a
+# StreamHandler when they want the [schedule] diagnostics on stdout.
+logger = logging.getLogger(__name__)
 
 DATA_PATH = "data.json"
 DRY_RUN   = "--dry-run" in sys.argv
@@ -1708,7 +1714,7 @@ def parse_schedule(text, api_key=None, now_dt=None):
     missing_mentioned = effective_mentioned - rx_covered_weekdays
 
     if rx_confidence == "high" and not missing_mentioned:
-        print(f"[schedule] Regex parse is HIGH confidence "
+        logger.info(f"Regex parse is HIGH confidence "
               f"({len(rx_entries)} window(s), covered all "
               f"{distinct_day_mentions} mentioned day(s)) — no LLM call needed.")
         return rx_entries, rx_confidence, rx_notes
@@ -1718,11 +1724,11 @@ def parse_schedule(text, api_key=None, now_dt=None):
         # count). Cross-check with LLM. Fall through to the LLM block,
         # which will score and pick the better result.
         missing_names = sorted(_DAY_ABBREV[d] for d in missing_mentioned)
-        print(f"[schedule] Regex is HIGH confidence but missing mentioned "
+        logger.warning(f"Regex is HIGH confidence but missing mentioned "
               f"day(s) {missing_names} — running LLM cross-check to recover.")
 
     elif rx_entries and not missing_mentioned:
-        print(f"[schedule] Regex covered all {distinct_day_mentions} distinct "
+        logger.info(f"Regex covered all {distinct_day_mentions} distinct "
               f"day mention(s) — no LLM call needed.")
         return rx_entries, rx_confidence, rx_notes
 
@@ -1736,16 +1742,16 @@ def parse_schedule(text, api_key=None, now_dt=None):
             note = (f"  No Anthropic API key configured AND mentioned day(s) "
                     f"{missing_names} are missing from the regex result — "
                     f"downgrading to low confidence so operator can confirm.")
-            print("[schedule] " + note.strip())
+            logger.info(note.strip())
             return rx_entries, "low", [note] + rx_notes
         note = "  No Anthropic API key configured — using regex parser only."
-        print("[schedule] " + note.strip())
+        logger.info(note.strip())
         return rx_entries, rx_confidence, [note] + rx_notes
 
     llm_failure_note = None
     try:
         llm_entries, llm_confidence, llm_notes = parse_schedule_llm(text, api_key)
-        print(f"[schedule] LLM rescue returned {llm_confidence} confidence "
+        logger.info(f"LLM rescue returned {llm_confidence} confidence "
               f"({len(llm_entries)} window(s)).")
     except LLMParseError as e:
         stage_label = {
@@ -1756,13 +1762,13 @@ def parse_schedule(text, api_key=None, now_dt=None):
             "json":   "API response was not valid JSON",
             "schema": "API returned JSON with unexpected fields",
         }.get(e.stage, "LLM parse failed")
-        print(f"[schedule] LLM rescue failed — {stage_label}: {e.detail}")
+        logger.error(f"LLM rescue failed — {stage_label}: {e.detail}")
         if e.raw_response:
-            print(f"[schedule] Raw model output (truncated): {e.raw_response}")
+            logger.info(f"Raw model output (truncated): {e.raw_response}")
         llm_failure_note = f"  LLM rescue failed — {stage_label}: {e.detail}"
         return rx_entries, rx_confidence, [llm_failure_note] + rx_notes
     except Exception as e:
-        print(f"[schedule] LLM rescue failed (unexpected): {e}")
+        logger.error(f"LLM rescue failed (unexpected): {e}")
         llm_failure_note = f"  LLM rescue failed (unexpected): {e}"
         return rx_entries, rx_confidence, [llm_failure_note] + rx_notes
 
@@ -1778,7 +1784,7 @@ def parse_schedule(text, api_key=None, now_dt=None):
     )
     if invented_weekdays:
         invented_names = sorted(_DAY_ABBREV[d] for d in invented_weekdays)
-        print(f"[schedule] LLM rescue rejected — extended into "
+        logger.warning(f"LLM rescue rejected — extended into "
               f"{', '.join(invented_names)} which the source text never "
               f"mentions. Keeping regex result.")
         combined_notes = (
@@ -1796,7 +1802,7 @@ def parse_schedule(text, api_key=None, now_dt=None):
                 len(entries))
 
     if _score(llm_entries, llm_confidence) > _score(rx_entries, rx_confidence):
-        print(f"[schedule] LLM rescue improved on regex "
+        logger.info(f"LLM rescue improved on regex "
               f"({llm_confidence}, {len(llm_entries)} window(s)).")
         combined_notes = (
             ["  Used LLM rescue — regex was low confidence."]
@@ -1804,7 +1810,7 @@ def parse_schedule(text, api_key=None, now_dt=None):
         )
         return llm_entries, llm_confidence, combined_notes
     else:
-        print(f"[schedule] Keeping regex result — LLM rescue did not improve it "
+        logger.info(f"Keeping regex result — LLM rescue did not improve it "
               f"({rx_confidence}, {len(rx_entries)} window(s)).")
         combined_notes = (
             ["  Kept regex result — LLM rescue did not improve confidence."]
@@ -1908,7 +1914,7 @@ def apply_schedule_to_data(data, entries, dry_run=False, now_dt=None,
     week_start_rh, week_end_rh, next_monday = _next_week_bounds(data, now_dt=now_dt)
 
     if not entries:
-        print("[schedule] apply_schedule_to_data: entries is empty — "
+        logger.info("apply_schedule_to_data: entries is empty — "
               "leaving existing run_schedule untouched and NOT marking the "
               "week as received.")
         return data, 0, []
@@ -1990,7 +1996,7 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
     api_key  = (_os.environ.get("ANTHROPIC_API_KEY", "")
                 or config.get("anthropic_api_key", ""))
     if not config:
-        print("[schedule] WARN: email not configured.")
+        logger.warning("email not configured.")
         return "not_found"
 
     client = OutlookClient(config)
@@ -2009,15 +2015,15 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
     results = client.search_inbox(sender=None, top=50)
 
     if not results:
-        print("[schedule] Inbox is empty.")
+        logger.info("Inbox is empty.")
         return "not_found"
 
     # Inbox summary — lets us see immediately whether the schedule email
     # is actually being fetched by IMAP and what its body looks like.
-    print(f"[schedule] search_inbox returned {len(results)} email(s):")
+    logger.info(f"search_inbox returned {len(results)} email(s):")
     for m in results:
         body_snip = ((m.get("body", "") or "").replace("\r", "").replace("\n", " ⏎ "))[:80]
-        print(f"[schedule]   - from={m.get('sender','?')[:40]!r} "
+        logger.info(f"  - from={m.get('sender','?')[:40]!r} "
               f"subj={m.get('subject','')[:40]!r} "
               f"body[:80]={body_snip!r}")
 
@@ -2055,15 +2061,15 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
         elif any(body_head.startswith(sig) for sig in _VMI_BODY_SIGNATURES):
             drop_reason = f"body signature ({body_head[:40]!r})"
         if drop_reason:
-            print(f"[schedule]   drop: {drop_reason}")
+            logger.info(f"  drop: {drop_reason}")
             continue
         filtered.append(m)
     dropped_self = before_self - len(filtered)
     if dropped_self:
-        print(f"[schedule] Ignored {dropped_self} VMI-system-generated email(s).")
+        logger.info(f"Ignored {dropped_self} VMI-system-generated email(s).")
     results = filtered
     if not results:
-        print("[schedule] No candidate schedule emails after filtering system-generated.")
+        logger.info("No candidate schedule emails after filtering system-generated.")
         return "not_found"
 
     # Pre-filter: only emails that LOOK like schedule emails — i.e. that
@@ -2093,15 +2099,15 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
             shape_kept.append(m)
         else:
             body_snip = body.replace("\r", "").replace("\n", " ⏎ ")[:100]
-            print(f"[schedule]   skip (no day or time tokens): "
+            logger.info(f"  skip (no day or time tokens): "
                   f"subject={m.get('subject','')!r} "
                   f"body[:100]={body_snip!r}")
     dropped_shape = before_shape - len(shape_kept)
     if dropped_shape:
-        print(f"[schedule] Skipped {dropped_shape} email(s) that look non-schedule.")
+        logger.info(f"Skipped {dropped_shape} email(s) that look non-schedule.")
     results = shape_kept
     if not results:
-        print("[schedule] No schedule-shaped emails in inbox — nothing to do.")
+        logger.info("No schedule-shaped emails in inbox — nothing to do.")
         return "not_found"
 
     # Filter out truly stale emails.
@@ -2143,11 +2149,11 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
             kept.append(m)
     dropped = before - len(kept)
     if dropped:
-        print(f"[schedule] Ignored {dropped} email(s) older than cutoff "
+        logger.info(f"Ignored {dropped} email(s) older than cutoff "
               f"({cutoff.isoformat()}).")
     results = kept
     if not results:
-        print("[schedule] No recent schedule emails within the 24h window.")
+        logger.info("No recent schedule emails within the 24h window.")
         return "not_found"
 
     # Skip emails we've already processed — either successfully applied OR
@@ -2165,7 +2171,7 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
     if ignore_ids:
         results = [m for m in results if m["id"] not in ignore_ids]
     if not results:
-        print(f"[schedule] No new emails since last applied/alerted "
+        logger.info(f"No new emails since last applied/alerted "
               f"(ids={sorted(ignore_ids)}).")
         return "not_found"
 
@@ -2180,7 +2186,7 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
         # prevent the regex from recognising the schedule.
         raw_body = (msg.get("body") or "").replace("\r", "").strip()
         body_preview = raw_body[:200].replace("\n", " ⏎ ")
-        print(f"[schedule] Trying email from {msg.get('sender','?')}: "
+        logger.info(f"Trying email from {msg.get('sender','?')}: "
               f"body[0:200]={body_preview!r}")
         entries, confidence, notes = parse_schedule(msg["body"], api_key=api_key, now_dt=now_dt)
         if confidence == "high":
@@ -2189,7 +2195,7 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
         elif len(entries) > len(best_entries):
             best_entries, best_confidence, best_notes, best_msg = entries, confidence, notes, msg
 
-    print(f"[schedule] Best match: {len(best_entries)} day(s) parsed — confidence: {best_confidence}")
+    logger.info(f"Best match: {len(best_entries)} day(s) parsed — confidence: {best_confidence}")
     for n in best_notes:
         print(n)
 
@@ -2198,9 +2204,9 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
         _, _, next_monday = _next_week_bounds(data, now_dt=now_dt)
         week_str = next_monday.date().isoformat()
         if dry_run:
-            print(f"[schedule] DRY RUN — would replace {removed} window(s) with {len(new_windows)} for week of {week_str}:")
+            logger.info(f"DRY RUN — would replace {removed} window(s) with {len(new_windows)} for week of {week_str}:")
         else:
-            print(f"[schedule] Applied {len(new_windows)} window(s) for week of {week_str} (removed {removed} old).")
+            logger.info(f"Applied {len(new_windows)} window(s) for week of {week_str} (removed {removed} old).")
             # Remember which email we just used so we don't re-apply it next check
             if best_msg:
                 data["schedule_email_id"] = best_msg["id"]
@@ -2253,20 +2259,24 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
         if dist and preview_id and preview_id not in alerted_set:
             try:
                 client.send_mail([dist], subject, body)
-                print(f"[schedule] Unreadable-email alert sent to {dist}.")
+                logger.info(f"Unreadable-email alert sent to {dist}.")
                 alerted_set.add(preview_id)
                 data["schedule_alerted_ids"] = sorted(alerted_set)
                 data["schedule_unreadable_alert_id"] = preview_id  # keep legacy field in sync
             except Exception as e:
-                print(f"[schedule] WARN: could not send alert — {e}")
+                logger.warning(f"could not send alert — {e}")
         elif dist and preview_id in alerted_set:
-            print(f"[schedule] Alert already sent for this email — suppressing duplicate.")
+            logger.info(f"Alert already sent for this email — suppressing duplicate.")
         return "low_confidence"
 
 
 # ── Standalone entry point ────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # Surface the [schedule] diagnostics (now logger.info/warning/error)
+    # on stdout so CLI behavior matches the pre-migration print() output.
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
     # Fall back to defaults.json on a fresh clone so demos work without
     # having to seed data.json first. Writes always target DATA_PATH.
     _src = DATA_PATH if os.path.exists(DATA_PATH) else "defaults.json"
@@ -2283,6 +2293,6 @@ if __name__ == "__main__":
     if result in ("applied", "low_confidence") and not DRY_RUN:
         from data_io import save_data
         save_data(data)
-        print(f"[schedule] data.json saved (result={result}).")
+        logger.info(f"data.json saved (result={result}).")
     elif result == "not_found":
-        print("[schedule] No schedule found — consider running check_reminder.py.")
+        logger.info("No schedule found — consider running check_reminder.py.")

@@ -14,6 +14,10 @@ alert_hash(alert_str)            -> str
 """
 
 import hashlib
+
+import logging
+logger = logging.getLogger(__name__)
+
 from datetime import datetime, timedelta
 
 from alerts import get_all_alerts
@@ -113,9 +117,9 @@ def send_alert_emails_if_new(data):
                 )
                 # Send succeeded: mark all current hashes as sent, prune stale
                 data["alerted_hashes"] = list(current.keys())
-                print(f"[email] {len(new_alerts)} alert(s) sent to {dist}.")
+                logger.info(f"{len(new_alerts)} alert(s) sent to {dist}.")
             except Exception as e:
-                print(f"[email] WARN: alert email failed — {e}")
+                logger.warning(f"alert email failed — {e}")
                 # Send failed: prune stale but do NOT add unsent new hashes
                 data["alerted_hashes"] = list(prev & set(current.keys()))
         else:
@@ -143,7 +147,7 @@ def send_cs_load_entry(data, new_trucks):
     config = load_config()
     cs     = config.get("cs_email", "")
     if not config or not cs:
-        print("[email] WARN: cs_email not configured — skipping CS email.")
+        logger.warning("cs_email not configured — skipping CS email.")
         return
 
     try:
@@ -168,10 +172,10 @@ def send_cs_load_entry(data, new_trucks):
             body,
             attachments=[("loads.pdf", pdf_bytes)],
         )
-        print(f"[email] CS load-entry email sent to {cs}.")
+        logger.info(f"CS load-entry email sent to {cs}.")
 
     except Exception as e:
-        print(f"[email] WARN: CS load-entry email failed — {e}")
+        logger.warning(f"CS load-entry email failed — {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +195,7 @@ def send_friday_reminder_if_needed(data, now_dt=None):
     config  = load_config()
     contact = config.get("anna_email", "")
     if not config or not contact:
-        print("[email] WARN: anna_email not configured — skipping reminder.")
+        logger.warning("anna_email not configured — skipping reminder.")
         return
 
     today = now_dt if now_dt is not None else datetime.now()
@@ -203,7 +207,7 @@ def send_friday_reminder_if_needed(data, now_dt=None):
 
     received = data.get("schedule_received_for_week")
     if received == target_monday:
-        print(f"[email] Schedule already received for week of {target_monday} — no reminder sent.")
+        logger.info(f"Schedule already received for week of {target_monday} — no reminder sent.")
         return
 
     try:
@@ -212,6 +216,6 @@ def send_friday_reminder_if_needed(data, now_dt=None):
             "Schedule request",
             "Hi,\n\nCan you please share next week's run schedule?\n\nThank you.",
         )
-        print(f"[email] Reminder sent to {contact} for week of {target_monday}.")
+        logger.info(f"Reminder sent to {contact} for week of {target_monday}.")
     except Exception as e:
-        print(f"[email] WARN: reminder email failed — {e}")
+        logger.warning(f"reminder email failed — {e}")

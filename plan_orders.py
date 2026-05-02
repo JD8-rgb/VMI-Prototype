@@ -19,6 +19,7 @@ Rules:
 """
 
 import json
+import logging
 import sys
 import copy
 import re
@@ -27,6 +28,8 @@ from time_utils import (
     get_epoch, run_hour_to_dt, dt_to_run_hour, format_run_hour,
 )
 import email_hooks
+
+logger = logging.getLogger(__name__)
 from alerts import (
     simulate_consume, simulate_delivery_no_alert,
     is_running_at, get_combined_level_from_tanks,
@@ -410,16 +413,18 @@ def plan_for_product(data, product, target, week_start, week_end, extra_trucks,
                 state, product, week_start, week_end, all_trucks, cfg=cfg,
             )
             if slot is None:
-                print(
-                    f"  !! {product}: No valid delivery slot found in target week "
-                    f"(all slots may be booked or would overfill). "
-                    f"Letting alerts handle the shortfall."
+                logger.warning(
+                    "%s: No valid delivery slot found in target week "
+                    "(all slots may be booked or would overfill). "
+                    "Letting alerts handle the shortfall.",
+                    product,
                 )
                 return new_trucks
             breach_floor = slot + 1
-            print(
-                f"  {product}: Level depleted at week start — "
-                f"placing at earliest valid slot {format_run_hour(state, slot)}"
+            logger.info(
+                "%s: Level depleted at week start — placing at earliest "
+                "valid slot %s",
+                product, format_run_hour(state, slot),
             )
 
         quantity  = state.truck_quantities[product]
@@ -434,10 +439,11 @@ def plan_for_product(data, product, target, week_start, week_end, extra_trucks,
             ),
         }
         new_trucks.append(new_truck)
-        print(f"  Placed {product} truck at {format_run_hour(data, slot)}")
-        print(f"    reason: {new_truck['_planned_reason']}")
+        logger.info("Placed %s truck at %s",
+                     product, format_run_hour(data, slot))
+        logger.info("  reason: %s", new_truck["_planned_reason"])
 
-    print(f"  !! Hit max iterations ({MAX_ITERATIONS}) for {product}.")
+    logger.warning("Hit max iterations (%d) for %s.", MAX_ITERATIONS, product)
     return new_trucks
 
 
@@ -477,6 +483,12 @@ def _parse_args(argv=None):
 
 def main(argv=None):
     args = _parse_args(argv)
+    # Surface algorithm-module logger output (planner progress, parser
+    # diagnostics) on stdout so CLI users still see what they used to
+    # see before the print()→logger migration. Don't reconfigure if a
+    # handler is already attached (e.g. when run from a test harness).
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
     data = _load_data()
 
     week_start, week_end = get_target_week_bounds(data)
