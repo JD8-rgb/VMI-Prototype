@@ -996,6 +996,26 @@ def curated_must_pass() -> List[Case]:
              expected_confidence="high",
              must_pass=True),
 
+        # ── Unicode dash normalization (must_79a … must_79c) ────────────────
+        # Word/Outlook auto-replace `-` with U+2212 (MINUS SIGN), U+2010
+        # (HYPHEN), and other dash variants. Pre-fix: these broke the
+        # day-range parser, producing low-confidence Mon+Fri only.
+        Case("must_79a_minus_sign_dash", "continuous_range",
+             "Mon−Fri 6am-4pm",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+        Case("must_79b_em_dash", "continuous_range",
+             "Mon—Fri 6am—4pm",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+        Case("must_79c_rtl_marker", "continuous_range",
+             "Mon-Fri ‏6am-4pm",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+
         # ── Bare 24-hour clock (must_79) ────────────────────────────────────
         # 'Mon-Fri 6-16' — end ≥13 means both numbers must be 24-hour.
         # Doesn't conflict with the 12-hour heuristic (which fires when

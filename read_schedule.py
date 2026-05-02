@@ -669,6 +669,52 @@ def _strip_stale_context(text):
     return text, removed
 
 
+# Unicode dash variants Word/Outlook auto-replace into copy-pasted text:
+#   U+2010 HYPHEN, U+2011 NON-BREAKING HYPHEN, U+2012 FIGURE DASH,
+#   U+2013 EN DASH, U+2014 EM DASH, U+2015 HORIZONTAL BAR,
+#   U+2212 MINUS SIGN, U+FE58 SMALL EM DASH, U+FE63 SMALL HYPHEN-MINUS,
+#   U+FF0D FULLWIDTH HYPHEN-MINUS.
+# All folded to plain ASCII '-' so the existing regexes (which mostly
+# accept [-–—] but miss the rest) work uniformly.
+_DASH_VARIANTS = "‐‑‒–—―−﹘﹣－"
+_DASH_VARIANT_RE = re.compile(f"[{_DASH_VARIANTS}]")
+
+# Unicode formatting characters that have NO visible width but break
+# regex word-boundary / character matching when copy-pasted from Word,
+# Outlook, or RTL/multilingual systems:
+#   U+200B ZERO WIDTH SPACE, U+200C ZERO WIDTH NON-JOINER,
+#   U+200D ZERO WIDTH JOINER, U+200E LEFT-TO-RIGHT MARK,
+#   U+200F RIGHT-TO-LEFT MARK, U+202A-U+202E directional embedding/override,
+#   U+2060 WORD JOINER, U+2066-U+2069 directional isolate, U+FEFF BOM.
+_INVISIBLE_FORMATTING = (
+    "​‌‍‎‏"
+    "‪‫‬‭‮"
+    "⁠⁦⁧⁨⁩"
+    "﻿"
+)
+_INVISIBLE_RE = re.compile(f"[{_INVISIBLE_FORMATTING}]")
+
+# Non-breaking space (U+00A0) folds to a regular space so `\s` matches it.
+_NBSP_RE = re.compile(" ")
+
+
+def _normalize_unicode(text):
+    """Fold Unicode dash variants and strip invisible formatting markers.
+
+    Run once at the very top of _clean_email_text so every downstream
+    parser sees clean ASCII separators. Without this, a copy-paste from
+    Word/Outlook can replace `-` with U+2212 (MINUS SIGN) and silently
+    break the day-range parser, producing low-confidence partial parses
+    on otherwise-perfect schedules.
+    """
+    if not text:
+        return text
+    text = _DASH_VARIANT_RE.sub("-", text)
+    text = _INVISIBLE_RE.sub("", text)
+    text = _NBSP_RE.sub(" ", text)
+    return text
+
+
 def _clean_email_text(text):
     """
     Strip forwarded history, greetings, sign-offs, and quoted-reply lines so
@@ -681,6 +727,10 @@ def _clean_email_text(text):
     """
     if not isinstance(text, str) or not text.strip():
         return text
+    # Fold Unicode dash variants (U+2212, U+2010, etc.) and strip invisible
+    # formatting markers BEFORE any other regex runs. Otherwise a Word-pasted
+    # 'Mon−Fri' (with U+2212) silently fails the day-range parser.
+    text = _normalize_unicode(text)
     # Truncate stacked reply chains FIRST so downstream strips only see the
     # topmost message + one quoted block.
     text = _strip_quoted_history(text)
