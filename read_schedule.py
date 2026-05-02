@@ -73,6 +73,98 @@ _DAY_PATTERN = r"\b(" + "|".join(_DAY_KEYS_SORTED) + r")\b"
 # at 4AM", "Sun on 0600"). Non-capturing, optional group; absorbed and ignored.
 _FILLER = r"(?:\s+(?:at|on|from|starting))?"
 
+# ── Text normalization helpers ────────────────────────────────────────────────
+#
+# These run BEFORE the segmenter / time-parser so common shorthand survives.
+# Each is conservative: it only rewrites text that is highly likely to be a
+# time/day phrase, never touches surrounding prose.
+
+_NOON_RE     = re.compile(r'\bnoon\b',     re.IGNORECASE)
+_MIDNIGHT_RE = re.compile(r'\bmidnight\b', re.IGNORECASE)
+
+# `6a` / `6p` / `6 a` / `6 p` → `6am` / `6pm`. Negative lookahead avoids
+# matching the `a` in `am` (so we don't double-suffix).
+_AP_ABBREV_RE = re.compile(r'(\d)\s*([ap])\b(?!m)', re.IGNORECASE)
+
+# Single-letter day ranges: M-F, M-W, M-Th, T-Th, T-F, W-F, W-Th, Th-F.
+# `M` alone at line start could be a month abbreviation, so we ONLY accept
+# the range pattern (two letters, dash, two letters) — never a lone letter.
+# T is interpreted as Tuesday by convention (Thursday writes as `Th`).
+_LETTER_DAY_RANGE_RE = re.compile(
+    r'\b(M|T|W|Th|F)\s*[-–—]\s*(M|T|W|Th|F)\b'
+)
+_LETTER_TO_DAY_NAME = {"M": "Mon", "T": "Tue", "W": "Wed", "Th": "Thu", "F": "Fri"}
+
+# `6 to 4` / `6:00-4:00` etc. with NO am/pm context, both numbers in [1,12],
+# and start > end → assume 12-hour clock with start AM, end PM. Rewrites to
+# `6am to 4pm` so the existing time parser handles it. The :00 suffix is
+# optional so `6 to 4` and `6:00 to 4:00` both qualify; `6:30 to 4:30` does
+# NOT match (half-hour stays unhandled here and is forced low elsewhere).
+#
+# The trailing lookahead also refuses any `:` or `.` follow-up so we don't
+# half-match `12:00-11:00pm` (which has am/pm context the parser MUST keep).
+_BARE_NUM_RANGE_RE = re.compile(
+    r'(?<![ap]m)\b(\d{1,2})(?::00)?\b\s*'
+    r'(?:to|until|through|thru|[-–—])\s*'
+    r'\b(\d{1,2})(?::00)?\b(?!\s*(?:[ap]m|[:.]))',
+    re.IGNORECASE,
+)
+
+
+def _normalize_phrasing(text):
+    """
+    Apply text-level shorthand expansions before the parser sees the body.
+
+    Returns (normalized_text, notes) where notes is a list of human-readable
+    descriptions of what was rewritten (so the operator can audit).
+    """
+    if not text:
+        return text, []
+    notes = []
+
+    # 1. noon / midnight → numeric times
+    new = _NOON_RE.sub("12pm", text)
+    if new != text:
+        notes.append("  Substituted 'noon' → '12pm'.")
+    text = new
+    new = _MIDNIGHT_RE.sub("12am", text)
+    if new != text:
+        notes.append("  Substituted 'midnight' → '12am'.")
+    text = new
+
+    # 2. a/p abbreviations → am/pm
+    new = _AP_ABBREV_RE.sub(lambda m: m.group(1) + m.group(2).lower() + "m", text)
+    if new != text:
+        notes.append("  Expanded 'a'/'p' abbreviations to 'am'/'pm'.")
+    text = new
+
+    # 3. Single-letter day ranges → full range (M-F → Mon-Fri, etc.)
+    def _expand_letter_range(m):
+        a = m.group(1).capitalize()
+        b = m.group(2).capitalize()
+        if a in _LETTER_TO_DAY_NAME and b in _LETTER_TO_DAY_NAME:
+            return f"{_LETTER_TO_DAY_NAME[a]}-{_LETTER_TO_DAY_NAME[b]}"
+        return m.group(0)
+    new = _LETTER_DAY_RANGE_RE.sub(_expand_letter_range, text)
+    if new != text:
+        notes.append("  Expanded single-letter day range (e.g. 'M-F' → 'Mon-Fri').")
+    text = new
+
+    # 4. "6 to 4" / "6:00-4:00" with no am/pm → 12-hour clock heuristic
+    def _twelvehr(m):
+        a, b = int(m.group(1)), int(m.group(2))
+        if 1 <= a <= 12 and 1 <= b <= 12 and a > b:
+            return f"{a}am to {b}pm"
+        return m.group(0)
+    new = _BARE_NUM_RANGE_RE.sub(_twelvehr, text)
+    if new != text:
+        notes.append("  Applied 12-hour clock heuristic to bare-numeric "
+                     "range (start > end → start AM, end PM).")
+    text = new
+
+    return text, notes
+
+
 # ── Time parser ───────────────────────────────────────────────────────────────
 
 def _parse_time(token):
@@ -903,6 +995,11 @@ def parse_schedule_text(text, now_dt=None):
     for snippet in stale_removed:
         snippet_short = (snippet[:80] + "…") if len(snippet) > 80 else snippet
         notes.append(f"  Stripped stale-context clause: {snippet_short!r}")
+    # Normalize common shorthand BEFORE date / day-list / range processing:
+    # noon/midnight, a/p abbreviations, single-letter day ranges (M-F),
+    # and the "6 to 4" 12-hour-clock heuristic.
+    cleaned, norm_notes = _normalize_phrasing(cleaned)
+    notes.extend(norm_notes)
     # Rewrite calendar-date tokens ("4/20", "April 20", "2026-04-20", ...) to
     # day-name abbreviations when they fall inside the target week. This runs
     # before the range / list joiners so downstream sees clean day names.

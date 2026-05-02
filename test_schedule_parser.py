@@ -813,6 +813,49 @@ def curated_must_pass() -> List[Case]:
              expected=[(3, 6, 16), (4, 6, 16)],
              expected_confidence="low",
              must_pass=True),
+
+        # ── Normalization shortcuts (must_55 … must_60) ─────────────────────
+        # Real operator emails frequently use shorthand. Each shortcut should
+        # round-trip into the same internal representation as the canonical
+        # form ("Mon 6am-4pm").
+
+        # 12-hour-clock heuristic: bare "6 to 4" with start>end means 6am-4pm.
+        Case("must_55_six_to_four_heuristic", "multi_day_list",
+             "Mon 6-4, Tue 6-4, Wed 6-4",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+        # `6a` / `4p` abbreviations expand to `6am` / `4pm`.
+        Case("must_56_a_p_abbrev", "multi_day_list",
+             "Mon 6a-4p, Tue 6a-4p, Wed 6a-4p",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+        # `noon` and `midnight` substitute to `12pm` / `12am`.
+        Case("must_57_noon_keyword", "multi_day_list",
+             "Mon noon-8pm, Tue noon-8pm, Wed noon-8pm",
+             expected=[(0, 12, 20), (1, 12, 20), (2, 12, 20)],
+             expected_confidence="high",
+             must_pass=True),
+        # Single-letter day range `M-F` expands to `Mon-Fri`.
+        Case("must_58_m_dash_f", "continuous_range",
+             "M-F 0600-1600",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+        # 12-hour-clock heuristic on `Mon-Fri 6:00-4:00` (HH:00 form).
+        Case("must_59_six_colon_to_four_colon", "continuous_range",
+             "Mon-Fri 6:00-4:00",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+        # Sanity: `12:00-11:00pm` keeps explicit am/pm context untouched.
+        # (Would have been clobbered by an over-eager heuristic.)
+        Case("must_60_explicit_pm_kept", "single_day_simple",
+             "Thu 12:00-11:00pm",
+             expected=[(3, 12, 23)],
+             expected_confidence="low",   # single day -> below high threshold
+             must_pass=True),
     ]
 
 
