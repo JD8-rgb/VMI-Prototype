@@ -149,18 +149,35 @@ _NONZERO_MINUTES_HHMM_RE  = re.compile(r'(?<!\d)([0-2]\d)([0-5]\d)(?!\d)')
 
 
 def _has_nonzero_minutes(text):
+    """
+    Detect HH:MM or HHMM time tokens with non-zero minutes.
+
+    HHMM is harder than HH:MM because a 4-digit number can be a year
+    (2026), an order count, etc. We require an HHMM token to appear
+    INSIDE a recognizable time range — i.e. another time token within
+    a few characters before or after it via a range separator. That
+    way 'Note: 2026 is a leap year. Mon-Fri 6am-4pm' doesn't trigger
+    on the year, but 'Mon-Fri 0630-1630' does.
+    """
     for m in _NONZERO_MINUTES_COLON_RE.finditer(text):
-        # "6:30" → minutes = 30. Use the last two chars after the
-        # separator so both ":" and "." are handled.
+        # "6:30" → minutes = 30. Last two chars (handles : and . both).
         mins = int(m.group(0)[-2:])
         if mins != 0:
             return True
     for m in _NONZERO_MINUTES_HHMM_RE.finditer(text):
-        # 0630 → hours=06, minutes=30. Hours must be a valid hour (≤23)
-        # to avoid matching things like '4900' (year, count).
         h = int(m.group(1))
         mins = int(m.group(2))
-        if h <= 23 and mins != 0:
+        if mins == 0 or h > 23:
+            continue
+        # Context check: is this HHMM part of an actual time range?
+        # Look for `-`, `–`, `—`, `to`, `until`, `through`, `thru`
+        # within ~6 chars before or after, OR an adjacent HHMM token
+        # via the same separator.
+        start, end = m.span()
+        before = text[max(0, start - 8):start]
+        after  = text[end:end + 8]
+        sep_re = r'(?:[-–—]|\bto\b|\buntil\b|\bthrough\b|\bthru\b)'
+        if re.search(sep_re + r'\s*$', before) or re.search(r'^\s*' + sep_re, after):
             return True
     return False
 

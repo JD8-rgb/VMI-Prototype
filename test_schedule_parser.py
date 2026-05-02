@@ -957,6 +957,14 @@ def curated_must_pass() -> List[Case]:
              expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
              expected_confidence="low",
              must_pass=True),
+        # Year token in prose (e.g. '2026') must NOT trigger HHMM half-hour
+        # false positive. Pre-fix: '2026' matched HHMM regex (h=20, m=26)
+        # and downgraded the whole parse.
+        Case("must_73a_year_token_no_falsepos", "continuous_range",
+             "Note: 2026 is a leap year. Mon-Fri 6am-4pm",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
 
         # ── Single-letter day lists (must_76 … must_78) ─────────────────────
         # Lists like 'M W F' / 'M,W,F' / 'M/T/W/Th/F' expand to comma-
