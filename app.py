@@ -17,8 +17,8 @@ import streamlit as st
 import plotly.graph_objects as go
 
 from alerts import (
-    get_all_alerts, simulate_consume, is_running_at,
-    find_lowest_in, find_other_in, SAFETY_STOCK_LBS,
+    get_all_alerts, simulate_consume, simulate_delivery_no_alert,
+    is_running_at, SAFETY_STOCK_LBS,
     LEAD_TIME_HOURS, LATE_TRUCK_HOURS, PROJECTION_WINDOW_HOURS,
     PLANT_STATE_MISMATCH_HOURS,
 )
@@ -166,21 +166,10 @@ def _advance(data, hours, session_start_utc=None):
                 simulate_consume(tanks, p, r["lbs_per_hour"] * seg)
 
     def _deliver(t):
-        tgt = find_lowest_in(tanks, t["product"])
-        if not tgt:
-            return
-        tank  = tanks[tgt]
-        space = tank["max_capacity_lbs"] - tank["current_level_lbs"]
-        pour  = min(t["quantity_lbs"], space)
-        tank["current_level_lbs"] = round(tank["current_level_lbs"] + pour, 1)
-        ov = t["quantity_lbs"] - pour
-        if ov > 0:
-            other = find_other_in(tanks, t["product"], tgt)
-            if other:
-                ot = tanks[other]
-                ot["current_level_lbs"] = round(
-                    ot["current_level_lbs"] + min(ov, ot["max_capacity_lbs"] - ot["current_level_lbs"]), 1
-                )
+        # Delegate to the shared simulator so app, advance_time.py,
+        # projection, and planner all behave identically. Previously this
+        # was a parallel copy that could (and did) drift.
+        simulate_delivery_no_alert(tanks, t)
         log.append(f"  Delivered {t['sap_order']} — {t['product']} {t['quantity_lbs']:,} lbs")
         done.append(t["sap_order"])
 
