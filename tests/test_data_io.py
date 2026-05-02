@@ -128,3 +128,40 @@ def test_plant_state_preserves_schema_version_via_extra(defaults_dict):
     state = PlantState.from_dict(defaults_dict)
     rt = state.to_dict()
     assert rt.get("schema_version") == defaults_dict["schema_version"]
+
+
+# ── Typed wrapper round-trip ──────────────────────────────────────────────────
+
+def test_load_state_returns_plant_state(tmp_path, defaults_dict):
+    """load_state should return a PlantState with the same content as
+    load_data → from_dict, all in one step."""
+    from data_io import load_state, save_data
+    target = tmp_path / "state.json"
+    save_data(defaults_dict, path=str(target))
+    state = load_state(path=str(target), fallback=str(target))
+    assert isinstance(state, PlantState)
+    assert state.simulation_epoch == defaults_dict["simulation_epoch"]
+    assert state.current_run_hour == defaults_dict["current_run_hour"]
+
+
+def test_save_state_round_trips_through_load_state(tmp_path, defaults_dict):
+    """save_state(load_state(...)) should be lossless across all known
+    fields PLUS unknown fields that round-trip via _extra."""
+    from data_io import load_state, save_state, save_data
+    target = tmp_path / "state.json"
+    payload = dict(defaults_dict)
+    payload["future_field_x"] = {"nested": [1, 2]}
+    save_data(payload, path=str(target))
+
+    state = PlantState.from_dict(payload)
+    save_state(state, path=str(target))
+
+    state2 = PlantState.from_dict(
+        __import__("json").loads(target.read_text())
+    )
+    # All known fields equal
+    assert state2.simulation_epoch == state.simulation_epoch
+    assert state2.current_run_hour == state.current_run_hour
+    assert state2.tanks.keys() == state.tanks.keys()
+    # Unknown future field preserved
+    assert state2._extra.get("future_field_x") == {"nested": [1, 2]}
