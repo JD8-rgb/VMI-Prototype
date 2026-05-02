@@ -908,7 +908,13 @@ def run_llm(case: Case, api_key: str, throttle: float = 0.0) -> CaseResult:
 
 def run_combined(case: Case, api_key: str) -> CaseResult:
     try:
-        entries, confidence, notes = _silent(parse_schedule, case.input, api_key)
+        # Mirror run_regex(): pass now_dt so date-token cases anchor to the
+        # case's intended reference week, not real wall-clock time. Without
+        # this, dates like "4/20" silently fall outside the target window
+        # and the case fails as low-confidence.
+        entries, confidence, notes = _silent(
+            parse_schedule, case.input, api_key, now_dt=case.now_dt
+        )
     except Exception as e:
         return CaseResult(case, [], "low", [], False, error=f"exception: {e!r}")
     return CaseResult(case, entries, confidence, notes,
