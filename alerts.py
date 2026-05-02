@@ -73,12 +73,21 @@ def get_combined_usable(data, product):
     )
 
 
-def get_inbound_total(data, product):
-    return sum(
-        t["quantity_lbs"]
-        for t in data["scheduled_trucks"]
-        if t["product"] == product
-    )
+def get_inbound_total(data, product, within_hours=None):
+    """Total scheduled inbound lbs for a product.
+
+    within_hours : if provided, only count trucks arriving in the next
+                   `within_hours` (relative to current_run_hour). This
+                   matters for lead-time checks: a truck arriving 5 days
+                   from now should not mask a shortage in the next 48h.
+                   None = legacy behavior (count everything).
+    """
+    trucks = [t for t in data["scheduled_trucks"] if t["product"] == product]
+    if within_hours is not None:
+        current = data["current_run_hour"]
+        horizon = current + within_hours
+        trucks = [t for t in trucks if current < t["arrival_run_hour"] <= horizon]
+    return sum(t["quantity_lbs"] for t in trucks)
 
 
 def get_scheduled_run_hours_in_window(data, start, end):
@@ -94,7 +103,10 @@ def get_scheduled_run_hours_in_window(data, start, end):
 def check_lead_time(data, product):
     rate = get_lbs_per_hour(data, product)
     usable = get_combined_usable(data, product)
-    inbound = get_inbound_total(data, product)
+    # Only count trucks arriving inside the lead-time window. A truck
+    # scheduled days past LEAD_TIME_HOURS does NOT cover near-term demand,
+    # so summing all inbound was masking real shortages.
+    inbound = get_inbound_total(data, product, within_hours=LEAD_TIME_HOURS)
     total_supply = usable + inbound
     current = data["current_run_hour"]
     scheduled_hours = get_scheduled_run_hours_in_window(
