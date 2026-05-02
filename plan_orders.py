@@ -31,8 +31,10 @@ from alerts import (
     simulate_consume, simulate_delivery_no_alert,
     is_running_at, get_combined_level_from_tanks,
     find_lowest_in, find_other_in,
+    _as_state,    # polymorphic dict/PlantState shim
 )
 from config import DEFAULT_CONFIG, PlantConfig
+from state import PlantState
 
 # Back-compat re-exports — deprecated in favor of passing PlantConfig.
 LEAD_TIME_HOURS       = DEFAULT_CONFIG.lead_time_hours
@@ -59,8 +61,9 @@ def get_target_for_week(week_run_hours, cfg: PlantConfig = DEFAULT_CONFIG):
 
 def get_target_week_bounds(data):
     """Return (start, end) run-hours for the next Mon-Sun week."""
-    current  = data["current_run_hour"]
-    now_dt   = run_hour_to_dt(data, current)
+    state = _as_state(data)
+    current  = state.current_run_hour
+    now_dt   = run_hour_to_dt(state, current)
     days_until_monday = (7 - now_dt.weekday()) % 7
     if days_until_monday == 0:
         days_until_monday = 7
@@ -69,16 +72,17 @@ def get_target_week_bounds(data):
     )
     next_sunday_end = next_monday + timedelta(days=7)
     return (
-        dt_to_run_hour(data, next_monday),
-        dt_to_run_hour(data, next_sunday_end),
+        dt_to_run_hour(state, next_monday),
+        dt_to_run_hour(state, next_sunday_end),
     )
 
 
 def get_run_hours_in_window(data, start, end):
+    state = _as_state(data)
     total = 0
-    for window in data["run_schedule"]:
-        ws = max(window["start_hour"], start)
-        we = min(window["end_hour"], end)
+    for window in state.run_schedule:
+        ws = max(window.start_hour, start)
+        we = min(window.end_hour, end)
         if we > ws:
             total += we - ws
     return total
@@ -124,17 +128,18 @@ def is_valid_delivery_slot(data, run_hour, week_start, cfg: PlantConfig = DEFAUL
       - Falls inside an active run window
     Does NOT check for conflicts or overfill — those are checked separately.
     """
-    current = data["current_run_hour"]
+    state = _as_state(data)
+    current = state.current_run_hour
     if run_hour < current + cfg.lead_time_hours:
         return False
     if run_hour < week_start:
         return False
-    dt = run_hour_to_dt(data, run_hour)
+    dt = run_hour_to_dt(state, run_hour)
     if dt.weekday() >= 5:                  # Sat=5, Sun=6
         return False
     if dt.hour not in cfg.delivery_slots:
         return False
-    if not is_running_at(data, run_hour):
+    if not is_running_at(state, run_hour):
         return False
     return True
 
@@ -146,27 +151,42 @@ def is_valid_delivery_slot(data, run_hour, week_start, cfg: PlantConfig = DEFAUL
 def _project_tanks_to_hour(data, product, target_hour, product_trucks):
     """
     Copy tanks, then simulate consumption + deliveries for product up to
-    target_hour. Returns the advanced tanks dict.
+    target_hour. Returns the advanced tanks dict (still dict-of-dicts
+    shape because the simulator hasn't migrated yet).
+
+    `product_trucks` may be a list of Truck dataclasses OR raw dicts; we
+    normalize per-truck below since this is called with a mix during
+    Streamlit's planning loop.
     """
-    tanks   = copy.deepcopy(data["tanks"])
-    rates   = data["consumption_rates"]
-    current = data["current_run_hour"]
+    state = _as_state(data)
+    tanks   = copy.deepcopy(state.to_dict()["tanks"])
+    rates   = state.consumption_rates
+    current = state.current_run_hour
+
+    def _truck_arrival(t):
+        return t.arrival_run_hour if hasattr(t, "arrival_run_hour") else t["arrival_run_hour"]
+
+    def _truck_product(t):
+        return t.product if hasattr(t, "product") else t["product"]
+
+    def _truck_to_dict(t):
+        return t.to_dict() if hasattr(t, "to_dict") else t
 
     pending = sorted(
         [t for t in product_trucks
-         if t["product"] == product
-         and current < t["arrival_run_hour"] <= target_hour],
-        key=lambda t: t["arrival_run_hour"],
+         if _truck_product(t) == product
+         and current < _truck_arrival(t) <= target_hour],
+        key=_truck_arrival,
     )
     truck_idx = 0
     hour      = current
     while hour < target_hour:
         next_hour = hour + 1
-        if is_running_at(data, hour):
-            simulate_consume(tanks, product, rates[product]["lbs_per_hour"])
+        if is_running_at(state, hour):
+            simulate_consume(tanks, product, rates[product].lbs_per_hour)
         while (truck_idx < len(pending)
-               and pending[truck_idx]["arrival_run_hour"] <= next_hour):
-            simulate_delivery_no_alert(tanks, pending[truck_idx])
+               and _truck_arrival(pending[truck_idx]) <= next_hour):
+            simulate_delivery_no_alert(tanks, _truck_to_dict(pending[truck_idx]))
             truck_idx += 1
         hour = next_hour
     return tanks
@@ -181,8 +201,9 @@ def _would_overfill(data, product, slot_rh, product_trucks):
     The planner treats overfill as a hard constraint: it is preferable to
     let levels drop (even below safety stock) rather than to overfill a tank.
     """
-    tanks    = _project_tanks_to_hour(data, product, slot_rh, product_trucks)
-    quantity = data["truck_quantities"][product]
+    state    = _as_state(data)
+    tanks    = _project_tanks_to_hour(state, product, slot_rh, product_trucks)
+    quantity = state.truck_quantities[product]
 
     target_name = find_lowest_in(tanks, product)
     if target_name is None:
@@ -212,6 +233,14 @@ def _would_overfill(data, product, slot_rh, product_trucks):
 # Slot finders
 # ---------------------------------------------------------------------------
 
+def _truck_arrival_rh(t):
+    return t.arrival_run_hour if hasattr(t, "arrival_run_hour") else t["arrival_run_hour"]
+
+
+def _truck_product_name(t):
+    return t.product if hasattr(t, "product") else t["product"]
+
+
 def find_latest_valid_slot(
     data, product, latest_hour, earliest_hour, week_start, week_end, all_trucks
 ):
@@ -221,14 +250,16 @@ def find_latest_valid_slot(
       - is not already booked by any product (conflict avoidance)
       - would not overfill the product's tanks
 
-    Returns None if no such slot exists.
+    Returns None if no such slot exists. `all_trucks` may contain
+    dataclasses or raw dicts; both are handled.
     """
-    booked        = {t["arrival_run_hour"] for t in all_trucks}
-    product_trucks = [t for t in all_trucks if t["product"] == product]
+    state = _as_state(data)
+    booked        = {_truck_arrival_rh(t) for t in all_trucks}
+    product_trucks = [t for t in all_trucks if _truck_product_name(t) == product]
 
     candidates = [
-        rh for rh in _all_slot_run_hours(data, week_start, week_end)
-        if is_valid_delivery_slot(data, rh, week_start)
+        rh for rh in _all_slot_run_hours(state, week_start, week_end)
+        if is_valid_delivery_slot(state, rh, week_start)
         and rh <= latest_hour
         and rh >= earliest_hour
     ]
@@ -236,7 +267,7 @@ def find_latest_valid_slot(
     for slot in reversed(candidates):        # latest first
         if slot in booked:
             continue
-        if _would_overfill(data, product, slot, product_trucks):
+        if _would_overfill(state, product, slot, product_trucks):
             continue
         return slot
     return None
@@ -250,20 +281,22 @@ def find_earliest_valid_slot(data, product, from_hour, to_hour, all_trucks):
       - would not overfill
 
     Used as a fallback when the breach precedes the first run window.
-    Returns None if no such slot exists.
+    Returns None if no such slot exists. `all_trucks` may contain
+    dataclasses or raw dicts; both are handled.
     """
-    booked        = {t["arrival_run_hour"] for t in all_trucks}
-    product_trucks = [t for t in all_trucks if t["product"] == product]
+    state = _as_state(data)
+    booked        = {_truck_arrival_rh(t) for t in all_trucks}
+    product_trucks = [t for t in all_trucks if _truck_product_name(t) == product]
 
     candidates = [
-        rh for rh in _all_slot_run_hours(data, from_hour, to_hour)
-        if is_valid_delivery_slot(data, rh, from_hour)
+        rh for rh in _all_slot_run_hours(state, from_hour, to_hour)
+        if is_valid_delivery_slot(state, rh, from_hour)
     ]
 
     for slot in sorted(candidates):          # earliest first
         if slot in booked:
             continue
-        if _would_overfill(data, product, slot, product_trucks):
+        if _would_overfill(state, product, slot, product_trucks):
             continue
         return slot
     return None
@@ -280,29 +313,42 @@ def find_first_breach_in_target_week(
     Walk hour by hour from current to week_end, simulating consumption and
     deliveries. Return the first hour AT OR AFTER max(week_start, breach_floor)
     where combined level drops below target.  Return None if no such breach.
+
+    `extra_trucks` may be a list of Truck dataclasses OR raw dicts; we
+    normalize per-truck below.
     """
-    tanks   = copy.deepcopy(data["tanks"])
-    rates   = data["consumption_rates"]
-    current = data["current_run_hour"]
+    state   = _as_state(data)
+    tanks   = copy.deepcopy(state.to_dict()["tanks"])
+    rates   = state.consumption_rates
+    current = state.current_run_hour
     check_from = max(week_start, breach_floor) if breach_floor is not None else week_start
 
-    all_trucks = list(data["scheduled_trucks"]) + list(extra_trucks)
+    def _truck_arrival(t):
+        return t.arrival_run_hour if hasattr(t, "arrival_run_hour") else t["arrival_run_hour"]
+
+    def _truck_product(t):
+        return t.product if hasattr(t, "product") else t["product"]
+
+    def _truck_to_dict(t):
+        return t.to_dict() if hasattr(t, "to_dict") else t
+
+    all_trucks = list(state.scheduled_trucks) + list(extra_trucks)
     pending    = sorted(
         [t for t in all_trucks
-         if t["product"] == product
-         and current < t["arrival_run_hour"] <= week_end],
-        key=lambda t: t["arrival_run_hour"],
+         if _truck_product(t) == product
+         and current < _truck_arrival(t) <= week_end],
+        key=_truck_arrival,
     )
     truck_idx = 0
 
     hour = current
     while hour < week_end:
         next_hour = hour + 1
-        if is_running_at(data, hour):
-            simulate_consume(tanks, product, rates[product]["lbs_per_hour"])
+        if is_running_at(state, hour):
+            simulate_consume(tanks, product, rates[product].lbs_per_hour)
         while (truck_idx < len(pending)
-               and pending[truck_idx]["arrival_run_hour"] <= next_hour):
-            simulate_delivery_no_alert(tanks, pending[truck_idx])
+               and _truck_arrival(pending[truck_idx]) <= next_hour):
+            simulate_delivery_no_alert(tanks, _truck_to_dict(pending[truck_idx]))
             truck_idx += 1
         level = get_combined_level_from_tanks(tanks, product)
         if next_hour >= check_from and level < target:
@@ -315,15 +361,22 @@ def find_first_breach_in_target_week(
 # Main planner
 # ---------------------------------------------------------------------------
 
+def _truck_as_dict(t):
+    """Normalize Truck dataclass or raw dict to dict shape (used by slot
+    finders which still operate on dict-of-dicts trucks)."""
+    return t.to_dict() if hasattr(t, "to_dict") else dict(t)
+
+
 def plan_for_product(data, product, target, week_start, week_end, extra_trucks,
                      cfg: PlantConfig = DEFAULT_CONFIG):
+    state       = _as_state(data)
     new_trucks  = []
-    current     = data["current_run_hour"]
+    current     = state.current_run_hour
     breach_floor = None
 
     for iteration in range(MAX_ITERATIONS):
         breach_hour = find_first_breach_in_target_week(
-            data, product, target, week_start, week_end,
+            state, product, target, week_start, week_end,
             extra_trucks + new_trucks,
             breach_floor=breach_floor,
         )
@@ -332,20 +385,20 @@ def plan_for_product(data, product, target, week_start, week_end, extra_trucks,
 
         earliest  = current + cfg.lead_time_hours
         all_trucks = (
-            list(data["scheduled_trucks"])
-            + list(extra_trucks)
-            + list(new_trucks)
+            [_truck_as_dict(t) for t in state.scheduled_trucks]
+            + [_truck_as_dict(t) for t in extra_trucks]
+            + [_truck_as_dict(t) for t in new_trucks]
         )
 
         slot = find_latest_valid_slot(
-            data, product, breach_hour, earliest, week_start, week_end, all_trucks
+            state, product, breach_hour, earliest, week_start, week_end, all_trucks
         )
 
         if slot is None:
             # Breach falls before the first scheduled run window, or all valid
             # slots are booked / would overfill — try earliest available slot.
             slot = find_earliest_valid_slot(
-                data, product, week_start, week_end, all_trucks
+                state, product, week_start, week_end, all_trucks
             )
             if slot is None:
                 print(
@@ -357,10 +410,10 @@ def plan_for_product(data, product, target, week_start, week_end, extra_trucks,
             breach_floor = slot + 1
             print(
                 f"  {product}: Level depleted at week start — "
-                f"placing at earliest valid slot {format_run_hour(data, slot)}"
+                f"placing at earliest valid slot {format_run_hour(state, slot)}"
             )
 
-        quantity  = data["truck_quantities"][product]
+        quantity  = state.truck_quantities[product]
         new_truck = {
             "sap_order":      None,
             "product":        product,
