@@ -251,7 +251,7 @@ def simulate_consume(tanks, product, lbs):
         if not product_tanks:
             return
         drawable_tanks = [(n, i) for n, i in product_tanks
-                          if i["current_level_lbs"] > i["heel_lbs"]]
+                          if i["current_level_lbs"] > i.get("heel_lbs", 0)]
         if not drawable_tanks:
             # All tanks at or below heel — nothing left to draw
             return
@@ -263,12 +263,13 @@ def simulate_consume(tanks, product, lbs):
             i["status"] = "standby"
         draw_tank["status"] = "draw"
 
-        drawable = draw_tank["current_level_lbs"] - draw_tank["heel_lbs"]
+        heel = draw_tank.get("heel_lbs", 0)
+        drawable = draw_tank["current_level_lbs"] - heel
         if remaining <= drawable:
             draw_tank["current_level_lbs"] -= remaining
             remaining = 0
         else:
-            draw_tank["current_level_lbs"] = draw_tank["heel_lbs"]
+            draw_tank["current_level_lbs"] = heel
             remaining -= drawable
             # Loop iterates and picks the next-lowest above-heel tank.
 
@@ -293,7 +294,11 @@ def simulate_delivery(tanks, truck, data=None):
     if not product_tanks:
         return None
     sample = product_tanks[0][1]
-    single_tank_usable = sample["max_capacity_lbs"] - sample["heel_lbs"]
+    # Defensive .get on heel_lbs to match plan_orders._would_overfill,
+    # which uses the same default. A tank dict missing the heel_lbs key
+    # is treated as zero-heel rather than crashing — keeps the overfill
+    # check parity between the planner and the alert path.
+    single_tank_usable = sample["max_capacity_lbs"] - sample.get("heel_lbs", 0)
     expected_overflow = quantity > single_tank_usable
 
     target_name = find_lowest_in(tanks, product)
@@ -389,7 +394,7 @@ def _refresh_draw_status(tanks, product):
     if not product_tanks:
         return
     drawable = [(n, i) for n, i in product_tanks
-                if i["current_level_lbs"] > i["heel_lbs"]]
+                if i["current_level_lbs"] > i.get("heel_lbs", 0)]
     pool = drawable if drawable else product_tanks
     draw_name, _ = min(pool, key=lambda p: p[1]["current_level_lbs"])
     for n, i in product_tanks:
