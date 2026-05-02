@@ -105,6 +105,34 @@ class PlantConfig:
         fraction   = (week_run_hours - self.target_low_run_hours) / span_hours
         return self.target_low_lbs + fraction * span_lbs
 
+    def __post_init__(self) -> None:
+        # sap_order_format MUST contain a {n} placeholder. Without it,
+        # every truck would receive the same SAP string and collide on
+        # sap_history dedup. Validate at construction so a misconfigured
+        # customer file fails fast rather than silently shipping
+        # duplicate order numbers.
+        try:
+            sample = self.sap_order_format.format(n=1)
+        except (IndexError, KeyError, ValueError) as e:
+            raise ValueError(
+                f"PlantConfig.sap_order_format {self.sap_order_format!r} "
+                f"is not a valid Python format string: {e}"
+            ) from None
+        if sample == self.sap_order_format.format(n=2):
+            raise ValueError(
+                f"PlantConfig.sap_order_format {self.sap_order_format!r} "
+                f"does not include a {{n}} placeholder — every order would "
+                f"receive the same string. Use e.g. 'SAP{{n:05d}}'."
+            )
+
+        # target curve must be non-degenerate
+        if self.target_low_run_hours >= self.target_high_run_hours:
+            raise ValueError(
+                f"PlantConfig: target_low_run_hours "
+                f"({self.target_low_run_hours}) must be < "
+                f"target_high_run_hours ({self.target_high_run_hours})."
+            )
+
 
 # The default config matches the historic module-globals exactly, so
 # existing callers (which don't pass `cfg=`) see no behavior change.

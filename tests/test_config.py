@@ -56,3 +56,35 @@ def test_per_customer_overrides_compose():
     assert customer.late_truck_hours == 6
     # DEFAULT_CONFIG unchanged
     assert DEFAULT_CONFIG.lead_time_hours == 48
+
+
+# ── __post_init__ validation ──────────────────────────────────────────────────
+
+def test_sap_order_format_must_contain_n_placeholder():
+    """A format string without {n} would issue identical SAPs for every
+    truck. PlantConfig must reject this at construction."""
+    with pytest.raises(ValueError) as exc:
+        PlantConfig(sap_order_format="SAP-CONSTANT")
+    assert "{n}" in str(exc.value) or "placeholder" in str(exc.value)
+
+
+def test_sap_order_format_garbage_rejected():
+    """Malformed format strings (unbalanced braces, etc.) must surface
+    a clear error."""
+    with pytest.raises(ValueError):
+        PlantConfig(sap_order_format="SAP{{n:05d}")  # extra brace
+
+
+def test_target_curve_inverted_range_rejected():
+    """target_low_run_hours >= target_high_run_hours would divide-by-zero
+    (or produce nonsense interpolation). Reject at construction."""
+    with pytest.raises(ValueError):
+        PlantConfig(target_low_run_hours=100, target_high_run_hours=50)
+    with pytest.raises(ValueError):
+        PlantConfig(target_low_run_hours=100, target_high_run_hours=100)
+
+
+def test_valid_custom_format_accepted():
+    """Sanity: legitimate overrides still construct cleanly."""
+    cfg = PlantConfig(sap_order_format="ORD-{n:08d}", sap_order_seed=1000)
+    assert cfg.sap_order_format.format(n=42) == "ORD-00000042"
