@@ -460,7 +460,7 @@ $ py3 -m mypy --ignore-missing-imports alerts.py plan_orders.py \
 
 ## Continued after the initial summary
 
-After the first end-of-run summary commit, four more commits landed
+After the first end-of-run summary commit, additional commits landed
 to extend coverage and tighten the handoff surface:
 
 | Commit | What |
@@ -469,7 +469,17 @@ to extend coverage and tighten the handoff surface:
 | `90aba4d` | End-to-end demo-flow integration tests (4 cases) walking load → plan → commit SAP → advance time → drain → alert against both the defaults customer and the example_customer. Includes a negative-control test that fails if the planner ever becomes a no-op. |
 | `7fa3277` | `customers.load_customer` hardening: id validation rejects path traversal / wildcards / control chars / over-length; `list_customers()` helper for tenant selectors; fail-fast on unknown config_overrides keys. 18 new test cases. |
 | `2b53d5b` | `SCHEMA.md` — authoritative on-disk reference for `data.json`. Every top-level key, every nested object shape, alert log entry shape, plus a PostgreSQL DDL sketch for `MIGRATION_GUIDE.md` § 3. |
+| `f019bde` | email_hooks dedup + alert_log contract tests (10 cases). Network fully mocked; covers hash determinism, send-once-per-alert dedup, hash pruning on clear-and-refire, log-append-before-send semantics, retry-on-send-failure semantics, no-recipient skip-but-log behavior. |
+| `818c912` | time_utils.parse_time_input + helper tests (14 cases). Closes the zero-coverage gap on the CLI `when` parser including the implausible-magnitude defense ("20260415" date typo → ValueError, not 2,300-year clock advance). |
+| `c0d37f7` | pdf_generator smoke tests (4 cases). PDF-magic-header check on defaults customer and on the 3-product example_customer; defensive empty-list case. |
+| `94dc877` | apply_schedule_to_data behavior contracts (7 cases). Replace mode, merge mode, empty-entries safety net, dry_run preservation. now_dt pinned for determinism. |
+| `82826eb` | data_io typed-wrapper tests for load_state / save_state. Lossless round-trip across known + _extra fields. |
 
 Updated test surface:
-* 156 pytest cases (was 134 at first summary).
-* mypy default-mode clean across the seven algorithm-core source files; mypy `--strict` clean on data_io / state / config (the leaf modules).
+* **193 pytest cases** (was 134 at first summary).
+* Coverage now spans every algorithm path, the customer loader (with
+  path-traversal hardening), the email dedup logic (with mocked SMTP),
+  the PDF builder, time_utils parsing, the apply_schedule writer, and
+  the typed wrappers in data_io.
+* mypy default-mode clean across the seven algorithm-core source files;
+  mypy `--strict` clean on data_io / state / config (the leaf modules).
