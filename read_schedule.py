@@ -1114,16 +1114,22 @@ def _entry_weekdays_covered(entries):
     """
     covered = set()
     for weekday, start_h, end_h in entries:
+        weekday = int(weekday) % 7
         if end_h <= start_h:
-            covered.add(int(weekday) % 7)
+            covered.add(weekday)
             continue
-        start_day = int(start_h) // 24
-        # End is exclusive in entry semantics ("ends at Fri 04:00" → end_h=100,
-        # last hour really used = 99 → day 4 = Fri). (end_h - 1) // 24 gives the
-        # final touched day inclusively.
-        end_day = int(end_h - 1) // 24
-        for d in range(start_day, end_day + 1):
-            covered.add(d % 7)
+        # `start_h` and `end_h` are HOURS WITHIN THE START DAY (start_h is
+        # 0..24, end_h may exceed 24 for overnight/multi-day windows).
+        # The previous version used `start_h // 24` as if these were
+        # absolute hours-since-Monday, which collapsed Mon/Tue/Wed
+        # 06:00-16:00 to a single covered day {Mon} and weakened both the
+        # LLM-rescue gating and the invented-day defense.
+        # Now: start day = `weekday`, then add one more day for every
+        # 24-hour spillover beyond the start day. (end_h - 1) // 24 gives
+        # the inclusive day-offset of the last touched day.
+        last_day_offset = max(0, (int(end_h) - 1) // 24)
+        for offset in range(0, last_day_offset + 1):
+            covered.add((weekday + offset) % 7)
     return covered
 
 
