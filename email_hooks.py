@@ -191,6 +191,16 @@ def send_friday_reminder_if_needed(data, now_dt=None):
             Pass the sim clock datetime when calling from the Streamlit app
             so the reminder fires relative to sim time, not wall-clock time.
             Leave as None for Windows Task Scheduler (real-time) use.
+
+    Per-week dedup: a `last_reminder_sent_for_week` key in `data` records
+    the target_monday for the most recent reminder we sent. Without this,
+    advancing the Streamlit sim clock from Fri 11 AM through Fri 3 PM
+    would call this function twice (once per hourly trigger), and Anna
+    would receive two identical emails. The dedup is week-scoped so when
+    a new week's reminder is genuinely due, it fires.
+
+    The dedup record is updated only AFTER a successful send_mail — a
+    transient SMTP failure must not block the next attempt.
     """
     config  = load_config()
     contact = config.get("anna_email", "")
@@ -210,12 +220,23 @@ def send_friday_reminder_if_needed(data, now_dt=None):
         logger.info(f"Schedule already received for week of {target_monday} — no reminder sent.")
         return
 
+    # Per-week dedup against repeated calls within the same Friday
+    # window (Streamlit's hourly trigger loop calls this once per
+    # advanced sim hour).
+    last_sent = data.get("last_reminder_sent_for_week")
+    if last_sent == target_monday:
+        logger.info(f"Reminder already sent this week for {target_monday} — skipping duplicate.")
+        return
+
     try:
         OutlookClient(config).send_mail(
             _to(config, contact),
             "Schedule request",
             "Hi,\n\nCan you please share next week's run schedule?\n\nThank you.",
         )
+        # Record AFTER successful send so a transient SMTP failure
+        # doesn't permanently block this week's reminder.
+        data["last_reminder_sent_for_week"] = target_monday
         logger.info(f"Reminder sent to {contact} for week of {target_monday}.")
     except Exception as e:
         logger.warning(f"reminder email failed — {e}")
