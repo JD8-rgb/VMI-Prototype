@@ -18,12 +18,16 @@ next LEAD_TIME_HOURS of scheduled run time.
 
 import copy
 from time_utils import format_run_hour
+from config import DEFAULT_CONFIG, PlantConfig
 
-LEAD_TIME_HOURS = 48
-LATE_TRUCK_HOURS = 3    # alert if truck is this many hours past its arrival time
-SAFETY_STOCK_LBS = 10000
-PROJECTION_WINDOW_HOURS = 168
-PLANT_STATE_MISMATCH_HOURS = 3   # alert if plant state is off-schedule this many hrs
+# Back-compat re-exports — deprecated in favor of passing a PlantConfig
+# instance to algorithm functions. Existing callers that import these
+# constants directly continue to work unchanged.
+LEAD_TIME_HOURS            = DEFAULT_CONFIG.lead_time_hours
+LATE_TRUCK_HOURS           = DEFAULT_CONFIG.late_truck_hours
+SAFETY_STOCK_LBS           = DEFAULT_CONFIG.safety_stock_lbs
+PROJECTION_WINDOW_HOURS    = DEFAULT_CONFIG.projection_window_hours
+PLANT_STATE_MISMATCH_HOURS = DEFAULT_CONFIG.plant_state_mismatch_hours
 
 
 # ---------------------------------------------------------------------------
@@ -107,17 +111,17 @@ def get_scheduled_run_hours_in_window(data, start, end):
     return total
 
 
-def check_lead_time(data, product):
+def check_lead_time(data, product, cfg: PlantConfig = DEFAULT_CONFIG):
     rate = get_lbs_per_hour(data, product)
     usable = get_combined_usable(data, product)
     # Only count trucks arriving inside the lead-time window. A truck
-    # scheduled days past LEAD_TIME_HOURS does NOT cover near-term demand,
+    # scheduled days past lead_time_hours does NOT cover near-term demand,
     # so summing all inbound was masking real shortages.
-    inbound = get_inbound_total(data, product, within_hours=LEAD_TIME_HOURS)
+    inbound = get_inbound_total(data, product, within_hours=cfg.lead_time_hours)
     total_supply = usable + inbound
     current = data["current_run_hour"]
     scheduled_hours = get_scheduled_run_hours_in_window(
-        data, current, current + LEAD_TIME_HOURS
+        data, current, current + cfg.lead_time_hours
     )
     if scheduled_hours == 0:
         return None
@@ -125,7 +129,7 @@ def check_lead_time(data, product):
     if total_supply < demand:
         text = (f"WARNING: {product} supply {total_supply:,.0f} lbs "
                 f"(usable {usable:,.0f} + inbound {inbound:,.0f}) "
-                f"won't cover next {LEAD_TIME_HOURS}h of scheduled run time "
+                f"won't cover next {cfg.lead_time_hours:g}h of scheduled run time "
                 f"({scheduled_hours:.0f} run-hrs = {demand:,.0f} lbs). "
                 f"Order another truck.")
         return _alert(text, type="lead_time", severity="warning",
@@ -328,7 +332,7 @@ def _refresh_draw_status(tanks, product):
         i["status"] = "draw" if n == draw_name else "standby"
 
 
-def run_projection(data):
+def run_projection(data, cfg: PlantConfig = DEFAULT_CONFIG):
     """
     Walk forward 1 hour at a time. At each step:
       - if running, consume per-product
@@ -342,7 +346,7 @@ def run_projection(data):
     rates = data["consumption_rates"]
     products = list(rates.keys())
     current = data["current_run_hour"]
-    end = current + PROJECTION_WINDOW_HOURS
+    end = current + cfg.projection_window_hours
 
     pending = sorted(
         [t for t in data["scheduled_trucks"]
@@ -371,10 +375,10 @@ def run_projection(data):
 
         for product in products:
             level = get_combined_level_from_tanks(tanks, product)
-            if level < SAFETY_STOCK_LBS and product not in seen_safety:
+            if level < cfg.safety_stock_lbs and product not in seen_safety:
                 text = (
                     f"RED FLAG: {product} projected to drop to {level:,.0f} lbs "
-                    f"at {format_run_hour(data, next_hour)} — below {SAFETY_STOCK_LBS:,} lb "
+                    f"at {format_run_hour(data, next_hour)} — below {cfg.safety_stock_lbs:,.0f} lb "
                     f"safety stock. Add trucks or check the schedule."
                 )
                 alerts.append(_alert(
@@ -389,8 +393,8 @@ def run_projection(data):
     return alerts
 
 
-def check_late_trucks(data):
-    """Return alert dicts for any truck >= LATE_TRUCK_HOURS past its arrival time."""
+def check_late_trucks(data, cfg: PlantConfig = DEFAULT_CONFIG):
+    """Return alert dicts for any truck >= cfg.late_truck_hours past its arrival time."""
     current = data["current_run_hour"]
     alerts = []
     for truck in data["scheduled_trucks"]:
@@ -398,7 +402,7 @@ def check_late_trucks(data):
         # Inclusive (>=) so the documented "3+ hours" threshold actually
         # fires at exactly 3.0 hours. Was `>` which silently waited until
         # 3.0001 hours.
-        if overdue >= LATE_TRUCK_HOURS:
+        if overdue >= cfg.late_truck_hours:
             text = (
                 f"LATE TRUCK: {truck['sap_order']} ({truck['product']}, "
                 f"{truck['quantity_lbs']:,} lbs) was due "
@@ -457,12 +461,12 @@ def check_schedule_alerts(data):
     return alerts
 
 
-def check_plant_state_mismatch(data):
+def check_plant_state_mismatch(data, cfg: PlantConfig = DEFAULT_CONFIG):
     """
     Compare actual plant running state (from real-time telemetry) against the
     scheduled state. Fires a RED alert if the two diverge for more than
-    PLANT_STATE_MISMATCH_HOURS — e.g. the plant is running when the schedule
-    says it's down, or down when the schedule says it's running.
+    cfg.plant_state_mismatch_hours — e.g. the plant is running when the
+    schedule says it's down, or down when the schedule says it's running.
 
     In the production tool this reads live telemetry from the plant historian.
     The simulation assumes perfect schedule adherence, so this check only
@@ -481,7 +485,7 @@ def check_plant_state_mismatch(data):
     since  = override.get("since_hour", 0)
     current = data["current_run_hour"]
     duration = current - since
-    if duration < PLANT_STATE_MISMATCH_HOURS:
+    if duration < cfg.plant_state_mismatch_hours:
         return []
     scheduled_state = "running" if is_running_at(data, current) else "down"
     if actual == scheduled_state:
@@ -494,19 +498,22 @@ def check_plant_state_mismatch(data):
     )]
 
 
-def get_all_alerts(data):
+def get_all_alerts(data, cfg: PlantConfig = DEFAULT_CONFIG):
     """
     Aggregate every active alert. Returns a list of alert dicts (see `_alert`).
     Consumers read ``a["text"]`` for the human-readable body; the other fields
     power the persistent alert log in data.json.
+
+    `cfg` is threaded through every downstream check so per-customer
+    overrides apply consistently to the entire alert evaluation.
     """
     alerts = []
     for product in data["consumption_rates"].keys():
-        lead_alert = check_lead_time(data, product)
+        lead_alert = check_lead_time(data, product, cfg=cfg)
         if lead_alert:
             alerts.append(lead_alert)
-    alerts.extend(run_projection(data))
-    alerts.extend(check_late_trucks(data))
+    alerts.extend(run_projection(data, cfg=cfg))
+    alerts.extend(check_late_trucks(data, cfg=cfg))
     alerts.extend(check_schedule_alerts(data))
-    alerts.extend(check_plant_state_mismatch(data))
+    alerts.extend(check_plant_state_mismatch(data, cfg=cfg))
     return alerts

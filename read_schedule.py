@@ -35,7 +35,12 @@ DRY_RUN   = "--dry-run" in sys.argv
 # Used as a post-parse sanity cap: any schedule totaling more than this (or
 # any single window longer than this) is physically impossible and almost
 # always signals quoted-history leakage from a forwarded reply chain.
-PLANT_MAX_HOURS = 118
+#
+# Sourced from PlantConfig so per-customer limits can be configured without
+# editing this module. Back-compat re-export kept for anything that still
+# imports the constant directly (e.g. test_schedule_parser.py).
+from config import DEFAULT_CONFIG as _DEFAULT_PLANT_CONFIG, PlantConfig
+PLANT_MAX_HOURS = _DEFAULT_PLANT_CONFIG.plant_max_hours
 
 # ── Day name lookup ───────────────────────────────────────────────────────────
 # Include plural forms ("Mondays") and common short forms. The regex parser

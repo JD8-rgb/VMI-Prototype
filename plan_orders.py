@@ -32,13 +32,15 @@ from alerts import (
     is_running_at, get_combined_level_from_tanks,
     find_lowest_in, find_other_in,
 )
+from config import DEFAULT_CONFIG, PlantConfig
 
-LEAD_TIME_HOURS      = 48
-DELIVERY_SLOTS       = [6, 8, 14]   # allowed delivery hours: 06:00, 08:00, 14:00
-TARGET_LOW_RUN_HOURS  = 28
-TARGET_HIGH_RUN_HOURS = 118
-TARGET_LOW_LBS        = 15000
-TARGET_HIGH_LBS       = 27000
+# Back-compat re-exports — deprecated in favor of passing PlantConfig.
+LEAD_TIME_HOURS       = DEFAULT_CONFIG.lead_time_hours
+DELIVERY_SLOTS        = list(DEFAULT_CONFIG.delivery_slots)
+TARGET_LOW_RUN_HOURS  = DEFAULT_CONFIG.target_low_run_hours
+TARGET_HIGH_RUN_HOURS = DEFAULT_CONFIG.target_high_run_hours
+TARGET_LOW_LBS        = DEFAULT_CONFIG.target_low_lbs
+TARGET_HIGH_LBS       = DEFAULT_CONFIG.target_high_lbs
 MAX_ITERATIONS        = 50
 
 
@@ -46,15 +48,13 @@ MAX_ITERATIONS        = 50
 # Target calculation
 # ---------------------------------------------------------------------------
 
-def get_target_for_week(week_run_hours):
-    if week_run_hours <= TARGET_LOW_RUN_HOURS:
-        return TARGET_LOW_LBS
-    if week_run_hours >= TARGET_HIGH_RUN_HOURS:
-        return TARGET_HIGH_LBS
-    span_hours = TARGET_HIGH_RUN_HOURS - TARGET_LOW_RUN_HOURS
-    span_lbs   = TARGET_HIGH_LBS - TARGET_LOW_LBS
-    fraction   = (week_run_hours - TARGET_LOW_RUN_HOURS) / span_hours
-    return TARGET_LOW_LBS + fraction * span_lbs
+def get_target_for_week(week_run_hours, cfg: PlantConfig = DEFAULT_CONFIG):
+    """Reorder target for a week given its scheduled run hours.
+
+    Delegates to PlantConfig.target_for_week so per-customer curves can
+    be swapped in by passing a different cfg.
+    """
+    return cfg.target_for_week(week_run_hours)
 
 
 def get_target_week_bounds(data):
@@ -88,10 +88,10 @@ def get_run_hours_in_window(data, start, end):
 # Slot generation
 # ---------------------------------------------------------------------------
 
-def _all_slot_run_hours(data, range_start, range_end):
+def _all_slot_run_hours(data, range_start, range_end, cfg: PlantConfig = DEFAULT_CONFIG):
     """
-    Return all run-hours for the three allowed delivery slots (06:00, 08:00,
-    14:00) on Mon-Fri days within [range_start, range_end]. Ascending order.
+    Return all run-hours for the configured delivery slots on Mon-Fri days
+    within [range_start, range_end]. Ascending order.
     """
     slots    = []
     start_dt = run_hour_to_dt(data, range_start).replace(
@@ -101,7 +101,7 @@ def _all_slot_run_hours(data, range_start, range_end):
     day      = start_dt
     while day < end_dt:
         if day.weekday() < 5:              # Mon–Fri only
-            for h in DELIVERY_SLOTS:
+            for h in cfg.delivery_slots:
                 slot_dt = day.replace(hour=h)
                 rh      = dt_to_run_hour(data, slot_dt)
                 if range_start <= rh <= range_end:
@@ -114,25 +114,25 @@ def _all_slot_run_hours(data, range_start, range_end):
 # Slot validation
 # ---------------------------------------------------------------------------
 
-def is_valid_delivery_slot(data, run_hour, week_start):
+def is_valid_delivery_slot(data, run_hour, week_start, cfg: PlantConfig = DEFAULT_CONFIG):
     """
     Return True if run_hour meets all base delivery constraints:
-      - >= 48 h lead time
+      - >= cfg.lead_time_hours
       - >= week_start
       - Mon–Fri
-      - Hour is one of DELIVERY_SLOTS (06, 08, 14)
+      - Hour is one of cfg.delivery_slots
       - Falls inside an active run window
     Does NOT check for conflicts or overfill — those are checked separately.
     """
     current = data["current_run_hour"]
-    if run_hour < current + LEAD_TIME_HOURS:
+    if run_hour < current + cfg.lead_time_hours:
         return False
     if run_hour < week_start:
         return False
     dt = run_hour_to_dt(data, run_hour)
     if dt.weekday() >= 5:                  # Sat=5, Sun=6
         return False
-    if dt.hour not in DELIVERY_SLOTS:
+    if dt.hour not in cfg.delivery_slots:
         return False
     if not is_running_at(data, run_hour):
         return False
@@ -315,7 +315,8 @@ def find_first_breach_in_target_week(
 # Main planner
 # ---------------------------------------------------------------------------
 
-def plan_for_product(data, product, target, week_start, week_end, extra_trucks):
+def plan_for_product(data, product, target, week_start, week_end, extra_trucks,
+                     cfg: PlantConfig = DEFAULT_CONFIG):
     new_trucks  = []
     current     = data["current_run_hour"]
     breach_floor = None
@@ -329,7 +330,7 @@ def plan_for_product(data, product, target, week_start, week_end, extra_trucks):
         if breach_hour is None:
             return new_trucks
 
-        earliest  = current + LEAD_TIME_HOURS
+        earliest  = current + cfg.lead_time_hours
         all_trucks = (
             list(data["scheduled_trucks"])
             + list(extra_trucks)
