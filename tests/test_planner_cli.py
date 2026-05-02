@@ -36,3 +36,24 @@ def test_help_exits_cleanly():
     with pytest.raises(SystemExit) as exc:
         _parse_args(["--help"])
     assert exc.value.code == 0
+
+
+def test_customer_flag():
+    args = _parse_args(["--customer", "example_customer"])
+    assert args.customer == "example_customer"
+
+
+def test_customer_flag_eq_form():
+    args = _parse_args(["--customer=example_customer"])
+    assert args.customer == "example_customer"
+
+
+def test_customer_default_none():
+    assert _parse_args([]).customer is None
+
+
+def test_customer_and_sap_start_combine():
+    """Both flags can coexist for read-only customer planning runs."""
+    args = _parse_args(["--customer=example_customer", "--sap-start=ORD-0001"])
+    assert args.customer == "example_customer"
+    assert args.sap_start == "ORD-0001"

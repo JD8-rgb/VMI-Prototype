@@ -464,6 +464,12 @@ def _parse_args(argv=None):
     --sap-start lets cron / scheduled-task callers run the planner
     headlessly. When omitted, main() still prompts via input() for
     backward compatibility with the old interactive flow.
+
+    --customer points at a per-customer config bundle in customers/.
+    When given, the planner loads that customer's PlantConfig +
+    state instead of the default data.json + DEFAULT_CONFIG. Writes
+    are NOT persisted back to the customer file by this CLI; this
+    flag is a read-only "plan against this customer" mode.
     """
     import argparse
     p = argparse.ArgumentParser(
@@ -478,6 +484,15 @@ def _parse_args(argv=None):
               "given, the planner runs without prompting — required "
               "for cron / unattended automation."),
     )
+    p.add_argument(
+        "--customer",
+        dest="customer",
+        default=None,
+        help=("Plan against a specific customer's PlantConfig + state "
+              "from customers/<id>.json instead of data.json. "
+              "Read-only — proposed trucks are not saved back to the "
+              "customer file."),
+    )
     return p.parse_args(argv)
 
 
@@ -489,11 +504,18 @@ def main(argv=None):
     # handler is already attached (e.g. when run from a test harness).
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO, format="%(message)s")
-    data = _load_data()
+
+    if args.customer is not None:
+        from customers import load_customer
+        cfg, data = load_customer(args.customer)
+        print(f"(Loaded customer: {args.customer})")
+    else:
+        cfg = DEFAULT_CONFIG
+        data = _load_data()
 
     week_start, week_end = get_target_week_bounds(data)
     week_run_hours = get_run_hours_in_window(data, week_start, week_end)
-    target = get_target_for_week(week_run_hours)
+    target = get_target_for_week(week_run_hours, cfg=cfg)
 
     print("=" * 60)
     print("ORDER PLANNER")
@@ -513,7 +535,8 @@ def main(argv=None):
     for product in data["consumption_rates"].keys():
         print(f"--- Planning {product} ---")
         new = plan_for_product(
-            data, product, target, week_start, week_end, all_new_trucks
+            data, product, target, week_start, week_end, all_new_trucks,
+            cfg=cfg,
         )
         all_new_trucks.extend(new)
         if not new:
@@ -525,6 +548,17 @@ def main(argv=None):
         return
 
     print(f"Planner proposes {len(all_new_trucks)} new truck(s).")
+    if args.customer is not None:
+        # --customer is a read-only mode; don't write back to data.json
+        # or the customer file. Just print the plan and exit so the
+        # caller can decide whether to commit.
+        print()
+        print("Read-only mode (--customer). Proposed trucks:")
+        all_new_trucks.sort(key=lambda t: t["arrival_run_hour"])
+        for t in all_new_trucks:
+            print(f"  {t['product']:25s}  qty={t['quantity_lbs']:>6,}  "
+                   f"arrival={format_run_hour(data, t['arrival_run_hour'])}")
+        return
     if args.sap_start is not None:
         sap_start_str = args.sap_start.strip()
         print(f"Using --sap-start={sap_start_str}")
