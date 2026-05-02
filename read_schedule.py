@@ -650,9 +650,17 @@ def _strip_stale_context(text):
             removed.append(m.group(0).strip())
         text = new_text
 
+    # Clause boundary set: . ; newline OR the contrast conjunction "but"
+    # (consuming trailing whitespace/colon/comma so the post-but live
+    # content starts clean). The "but" boundary is what protects
+    # "Old plan was X but Y" / "Was supposed to send Friday but: Y" from
+    # losing the live Y side. \b word-boundaries prevent matching inside
+    # words like "rebut" / "button".
+    _BOUNDARY_RE = re.compile(r'[.;\n]|\bbut\b[\s:,]*', re.IGNORECASE)
+
     def _next_boundary(s, start):
-        m = re.search(r'[.;\n]', s[start:])
-        return start + m.end() if m else len(s)
+        m = _BOUNDARY_RE.search(s, start)
+        return m.end() if m else len(s)
 
     # Repeatedly find the EARLIEST stale marker (label or inline) and snip
     # through the next clause boundary. Repeat until no markers remain.

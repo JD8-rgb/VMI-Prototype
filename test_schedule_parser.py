@@ -934,6 +934,28 @@ def curated_must_pass() -> List[Case]:
              expected_confidence="low",
              must_pass=True),
 
+        # ── 'but' clause boundary in stale strip (must_67a … must_67c) ──────
+        # Pre-fix: the stale-context strip extended through the next
+        # `.;\n` boundary, swallowing the live schedule on the post-"but"
+        # side. Now `but` (anchored on word boundaries, case-insensitive,
+        # consuming any trailing punctuation/whitespace) is also a clause
+        # boundary, so the live schedule survives.
+        Case("must_67a_old_plan_was_but", "single_day_simple",
+             "Old plan was Mon-Wed 6am-4pm but Thu-Fri 6am-4pm",
+             expected=[(3, 6, 16), (4, 6, 16)],
+             expected_confidence="low",
+             must_pass=True),
+        Case("must_67b_was_supposed_but", "continuous_range",
+             "Was supposed to send Friday but Mon-Fri 6am-4pm",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+        Case("must_67c_was_supposed_but_colon", "continuous_range",
+             "Was supposed to send Friday but: Mon-Fri 6am-4pm",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+
         # ── Range + day-off subtraction (must_68 … must_70) ─────────────────
         # 'Mon-Fri 6am-4pm; Wed off' must NOT include Wed. The off marker
         # in a separate segment was previously ignored by the in-segment
