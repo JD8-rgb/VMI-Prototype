@@ -617,6 +617,21 @@ _STALE_INLINE_RE = re.compile(
     r')\b'
 )
 
+# "Changed from X to Y" pre-pass strip: keep Y, drop X. Hoisted out of
+# _strip_stale_context so the regex compiles once at module load instead
+# of on every parser invocation.
+_CHANGED_FROM_TO_RE = re.compile(
+    r'(?i)\bchanged\s+from\b[^.;\n]*?\bto\b\s*'
+)
+
+# Clause boundary set used to terminate a stale-context strip: . ; newline
+# OR the contrast conjunction "but" (consuming any trailing whitespace /
+# colon / comma so the post-but live content starts clean). The "but"
+# boundary protects "Old plan was X but Y" / "Was supposed to send Friday
+# but: Y" from losing the live Y side. \b word-boundaries prevent
+# matching inside "rebut" / "button".
+_STALE_BOUNDARY_RE = re.compile(r'[.;\n]|\bbut\b[\s:,]*', re.IGNORECASE)
+
 
 def _strip_stale_context(text):
     """
@@ -645,9 +660,6 @@ def _strip_stale_context(text):
     # new-schedule side (Y) is left in place for the broad parser to
     # extract. Done BEFORE the broad strip so the inline-marker pattern
     # below doesn't see the "changed from" anymore.
-    _CHANGED_FROM_TO_RE = re.compile(
-        r'(?i)\bchanged\s+from\b[^.;\n]*?\bto\b\s*'
-    )
     new_text, count = _CHANGED_FROM_TO_RE.subn('', text)
     if count:
         # Record what was removed (best-effort: capture the whole match
@@ -656,16 +668,8 @@ def _strip_stale_context(text):
             removed.append(m.group(0).strip())
         text = new_text
 
-    # Clause boundary set: . ; newline OR the contrast conjunction "but"
-    # (consuming trailing whitespace/colon/comma so the post-but live
-    # content starts clean). The "but" boundary is what protects
-    # "Old plan was X but Y" / "Was supposed to send Friday but: Y" from
-    # losing the live Y side. \b word-boundaries prevent matching inside
-    # words like "rebut" / "button".
-    _BOUNDARY_RE = re.compile(r'[.;\n]|\bbut\b[\s:,]*', re.IGNORECASE)
-
     def _next_boundary(s, start):
-        m = _BOUNDARY_RE.search(s, start)
+        m = _STALE_BOUNDARY_RE.search(s, start)
         return m.end() if m else len(s)
 
     # Repeatedly find the EARLIEST stale marker (label or inline) and snip
