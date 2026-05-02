@@ -1391,9 +1391,21 @@ def apply_schedule_to_data(data, entries, dry_run=False, now_dt=None):
     Remove existing run windows that fall in next week, then add new ones.
 
     entries : list of (weekday_int, start_hour_int, end_hour_int)
-    Returns updated data dict (not saved — caller must save).
+    Returns (data, removed, new_windows). Data not saved — caller must save.
+
+    Safety: if `entries` is empty, this is a no-op. We do NOT remove
+    existing target-week windows and do NOT mark the week as received.
+    Otherwise a low-confidence "Apply Anyway" with zero parsed entries
+    would erase the previously-applied schedule AND silence the
+    missing-schedule reminder workflow.
     """
     week_start_rh, week_end_rh, next_monday = _next_week_bounds(data, now_dt=now_dt)
+
+    if not entries:
+        print("[schedule] apply_schedule_to_data: entries is empty — "
+              "leaving existing run_schedule untouched and NOT marking the "
+              "week as received.")
+        return data, 0, []
 
     # Remove windows whose start falls in the target week
     before = len(data["run_schedule"])
