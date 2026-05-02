@@ -944,6 +944,20 @@ def curated_must_pass() -> List[Case]:
              expected_confidence="high",
              must_pass=True),
 
+        # ── HHMM half-hour detection (must_72 … must_73) ────────────────────
+        # The colon detector caught '6:30am-4:30pm' but missed military
+        # 4-digit '0630-1630'. Both forms now force LOW.
+        Case("must_72_hhmm_half_hour", "continuous_range",
+             "Mon-Fri 0630-1630",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="low",
+             must_pass=True),
+        Case("must_73_hhmm_half_hour_one_side", "continuous_range",
+             "Mon-Fri 0600-1630",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="low",
+             must_pass=True),
+
         # ── Set-based completeness gating (must_71) ─────────────────────────
         # 'Mon ..., Tues TBD, Wed-Fri ...' — the count of covered weekdays
         # (Mon, Wed, Thu, Fri = 4) accidentally equals the count of mentioned

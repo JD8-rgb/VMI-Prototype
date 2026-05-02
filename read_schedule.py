@@ -128,19 +128,33 @@ _PRODUCT_PREFIX_RE = re.compile(
     r'(?im)^\s*product\s+[A-Za-z0-9]+\s*:'
 )
 
-# Any HH:MM time token where MM is non-zero. The parser silently truncates
-# minutes to integer hours, which would shift a 6:30am-4:30pm schedule into
-# 6am-4pm — a real misrepresentation. Force LOW until the parser supports
-# fractional hours natively. Trailing `am`/`pm` is allowed (no `\b` after
-# the minutes since `\b` between digits and letters fails).
-_NONZERO_MINUTES_RE = re.compile(r'(?<!\d)\d{1,2}:[0-5]\d(?!\d)')
+# Any time token with non-zero minutes. The parser silently truncates
+# minutes to integer hours, which would shift a 6:30am-4:30pm schedule
+# (or military 0630-1630) into 6am-4pm — a real misrepresentation.
+# Force LOW until the parser supports fractional hours natively.
+#
+# Two forms covered:
+#   _NONZERO_MINUTES_COLON_RE — HH:MM (and HH.MM in some emails)
+#   _NONZERO_MINUTES_HHMM_RE  — 4-digit military HHMM with no separator
+# Trailing `am`/`pm` is allowed (no `\b` after the minutes since `\b`
+# between digits and letters fails).
+_NONZERO_MINUTES_COLON_RE = re.compile(r'(?<!\d)\d{1,2}[:.][0-5]\d(?!\d)')
+_NONZERO_MINUTES_HHMM_RE  = re.compile(r'(?<!\d)([0-2]\d)([0-5]\d)(?!\d)')
 
 
 def _has_nonzero_minutes(text):
-    for m in _NONZERO_MINUTES_RE.finditer(text):
-        # Strip leading "HH:" and check minutes
-        mins = int(m.group(0).split(":")[1])
+    for m in _NONZERO_MINUTES_COLON_RE.finditer(text):
+        # "6:30" → minutes = 30. Use the last two chars after the
+        # separator so both ":" and "." are handled.
+        mins = int(m.group(0)[-2:])
         if mins != 0:
+            return True
+    for m in _NONZERO_MINUTES_HHMM_RE.finditer(text):
+        # 0630 → hours=06, minutes=30. Hours must be a valid hour (≤23)
+        # to avoid matching things like '4900' (year, count).
+        h = int(m.group(1))
+        mins = int(m.group(2))
+        if h <= 23 and mins != 0:
             return True
     return False
 
