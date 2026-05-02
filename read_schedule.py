@@ -1238,6 +1238,37 @@ def parse_schedule_text(text, now_dt=None):
             forced_low = True
             break
 
+    # ── Range + day-off subtraction ────────────────────────────────────────
+    # Catch the dangerous fail-open pattern: a multi-day range creates an
+    # entry for every weekday, then a SEPARATE segment marks one of those
+    # days off (e.g. "Mon-Fri 6am-4pm; Wed off"). The off-marker logic in
+    # _single_day_window only fires when an off marker is in the SAME
+    # segment as the day name, so it can't subtract from a sibling
+    # range-segment's entries. Do that subtraction here.
+    _DAY_OFF_RE = re.compile(
+        r'(?i)\b(' + '|'.join(_DAY_KEYS_SORTED) + r')\b'
+        r'\s+(?:is\s+)?(?:off|no\s*run|shutdown|n/a|none|down)\b'
+    )
+    off_weekdays = {
+        _DAY_MAP[m.group(1).lower()]
+        for m in _DAY_OFF_RE.finditer(cleaned)
+    }
+    if off_weekdays:
+        before_count = len(entries)
+        entries = [(wd, sh, eh) for (wd, sh, eh) in entries
+                   if wd not in off_weekdays]
+        removed = before_count - len(entries)
+        if removed:
+            removed_names = sorted(_DAY_ABBREV[d] for d in off_weekdays
+                                   if d not in {e[0] for e in entries})
+            notes.append(
+                f"  Removed {removed} entry/entries for day(s) marked off "
+                f"in a separate segment: {', '.join(removed_names)}."
+            )
+            # Recompute effective_days so the high/low gate reflects the
+            # post-subtraction count.
+            effective_days = len({e[0] for e in entries})
+
     # ── Final danger checks: extract entries best-effort, then force LOW
     # so the operator must confirm before applying. Each check inspects the
     # CLEANED text (not raw text) so stale-context / quoted history can't

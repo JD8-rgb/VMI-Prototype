@@ -863,12 +863,15 @@ def curated_must_pass() -> List[Case]:
         # precision. Entries are extracted best-effort, but confidence is
         # forced LOW so the operator must confirm.
 
-        # Range exception: parser doesn't model "Mon-Fri except Wed", so the
-        # extracted Mon..Fri entries would be wrong. Force low.
+        # Range exception: 'Mon-Fri ... except Wed down'. Two protections
+        # fire: (1) the range+day-off subtraction removes Wed from the
+        # extracted entries, and (2) the EXCEPTION_RE detector still
+        # forces LOW so the operator confirms the result. Defense in
+        # depth — even if one mechanism missed, the other holds.
         Case("must_61_except_range_exception", "continuous_range",
              "Mon-Fri 6am-4pm except Wed down",
-             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
-             expected_confidence="low",   # extracted but flagged
+             expected=[(0, 6, 16), (1, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="low",
              must_pass=True),
         # `excluding` variant of the same pattern.
         Case("must_62_excluding_variant", "continuous_range",
@@ -919,6 +922,26 @@ def curated_must_pass() -> List[Case]:
              "We changed from Mon-Wed 6am-4pm. Now closed.",
              expected=[],
              expected_confidence="low",
+             must_pass=True),
+
+        # ── Range + day-off subtraction (must_68 … must_70) ─────────────────
+        # 'Mon-Fri 6am-4pm; Wed off' must NOT include Wed. The off marker
+        # in a separate segment was previously ignored by the in-segment
+        # off-marker logic, leaving a wrong-high parse with a Wed entry.
+        Case("must_68_range_then_day_off", "continuous_range",
+             "Mon-Fri 6am-4pm; Wed off",
+             expected=[(0, 6, 16), (1, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+        Case("must_69_range_then_no_run", "continuous_range",
+             "Mon-Fri 6am-4pm; Wed no run",
+             expected=[(0, 6, 16), (1, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+        Case("must_70_range_then_shutdown", "continuous_range",
+             "Mon-Fri 6am-4pm; Wednesday shutdown",
+             expected=[(0, 6, 16), (1, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
              must_pass=True),
     ]
 
