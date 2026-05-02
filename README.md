@@ -12,19 +12,19 @@ This prototype demonstrates how an AI-driven VMI tool would handle that workload
 
 ## What it does
 
-- Ingests live tank telemetry every hour
-- Parses schedule emails with an LLM (handles any natural-language format)
-- Projects 7-day levels and auto-places EDI orders
+- Simulates hourly tank consumption against an advanceable sim clock
+- Parses schedule emails with a regex-first parser plus optional LLM rescue (common formats supported; safe-fail on anything ambiguous)
+- Projects 10-day tank levels and recommends truck orders
 - Fires live alerts before problems happen
 - Scales reorder targets dynamically with projected weekly run hours
 
 ## Workflow
 
-1. Hourly telemetry update triggers a fresh projection
-2. Microsoft Graph checks the inbox for new schedules
-3. LLM parses the schedule email into run windows
+1. Sim-clock advance triggers a fresh projection
+2. IMAP checks the inbox for new schedules (Microsoft Graph in production)
+3. Parser converts the schedule email into run windows
 4. Planner projects demand against dynamic targets
-5. Load-entry PDF built and order placed via EDI
+5. Load-entry PDF built; demo emits a simulated SAP order number (real SAP/EDI integration is production scope)
 
 ## Live alerts
 
@@ -77,7 +77,9 @@ ANTHROPIC_API_KEY = "sk-ant-..."
 
 ## Prototype vs. production
 
-This repo is the **simulation layer**: an advanceable clock drives hourly consumption, emails flow over IMAP, and SAP/EDI integrations are stubbed. The core logic — projection, alerts, planner, LLM schedule parsing, dynamic targets — is real and production-ready. The product sheet describes the production integration layer that wraps it.
+This repo is the **simulation + decision-support layer**. An advanceable clock drives hourly consumption, emails flow over IMAP/SMTP, schedule parsing runs locally (regex-first plus optional LLM rescue), and SAP order numbers are assigned in-process. State lives in `data.json` and per-session Streamlit memory.
+
+The **production targets** described in the product sheet — Microsoft Graph for email, durable database with audit log, SAP order validation + EDI 855/856 acknowledgement loop, RBAC, secrets manager, monitoring — are not in this repo. Treat the parser, planner, alerting, and projection logic as *promising core algorithms with a working demo wrapper*, not as production-ready integration code.
 
 ## License
 
