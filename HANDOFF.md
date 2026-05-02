@@ -448,8 +448,28 @@ $ py3 test_schedule_parser.py --regex-only
 ... OVERALL: PASS  (1466/1467 generated, 87/87 must-pass)
 
 $ py3 -m pytest tests/
-... 134 passed in 0.95s
+... 156 passed in 0.97s
 
 $ py3 tank_status.py
 ... TANK STATUS REPORT renders normally
+
+$ py3 -m mypy --ignore-missing-imports alerts.py plan_orders.py \
+       projection.py state.py config.py data_io.py time_utils.py
+... Success: no issues found in 7 source files
 ```
+
+## Continued after the initial summary
+
+After the first end-of-run summary commit, four more commits landed
+to extend coverage and tighten the handoff surface:
+
+| Commit | What |
+|---|---|
+| `7761bb7` | Type-hint cleanup. data_io fully typed; default mypy clean across the algorithm core; strict mypy clean on data_io / state / config. |
+| `90aba4d` | End-to-end demo-flow integration tests (4 cases) walking load → plan → commit SAP → advance time → drain → alert against both the defaults customer and the example_customer. Includes a negative-control test that fails if the planner ever becomes a no-op. |
+| `7fa3277` | `customers.load_customer` hardening: id validation rejects path traversal / wildcards / control chars / over-length; `list_customers()` helper for tenant selectors; fail-fast on unknown config_overrides keys. 18 new test cases. |
+| `2b53d5b` | `SCHEMA.md` — authoritative on-disk reference for `data.json`. Every top-level key, every nested object shape, alert log entry shape, plus a PostgreSQL DDL sketch for `MIGRATION_GUIDE.md` § 3. |
+
+Updated test surface:
+* 156 pytest cases (was 134 at first summary).
+* mypy default-mode clean across the seven algorithm-core source files; mypy `--strict` clean on data_io / state / config (the leaf modules).
