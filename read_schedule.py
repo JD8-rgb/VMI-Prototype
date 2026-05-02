@@ -1638,18 +1638,27 @@ def _next_week_bounds(data, now_dt=None):
 _next_week_bounds_real = _next_week_bounds
 
 
-def apply_schedule_to_data(data, entries, dry_run=False, now_dt=None):
+def apply_schedule_to_data(data, entries, dry_run=False, now_dt=None,
+                           mode="replace"):
     """
-    Remove existing run windows that fall in next week, then add new ones.
+    Apply parsed schedule entries to data["run_schedule"] for the next week.
 
     entries : list of (weekday_int, start_hour_int, end_hour_int)
+    mode    : "replace" (default) — remove all target-week windows, add the
+              new ones, mark schedule_received_for_week.
+              "merge"             — keep existing target-week windows for
+              days NOT in `entries`; only ADD windows for days that are in
+              `entries`. Do NOT mark schedule_received_for_week (the
+              missing-schedule reminder will still fire). Use this for
+              low-confidence parses that the operator force-applied: the
+              parse is partial, so we treat it as additive rather than
+              authoritative.
+
     Returns (data, removed, new_windows). Data not saved — caller must save.
 
-    Safety: if `entries` is empty, this is a no-op. We do NOT remove
-    existing target-week windows and do NOT mark the week as received.
-    Otherwise a low-confidence "Apply Anyway" with zero parsed entries
-    would erase the previously-applied schedule AND silence the
-    missing-schedule reminder workflow.
+    Safety: if `entries` is empty, this is a no-op regardless of mode. We
+    do NOT remove existing target-week windows and do NOT mark the week as
+    received.
     """
     week_start_rh, week_end_rh, next_monday = _next_week_bounds(data, now_dt=now_dt)
 
@@ -1659,13 +1668,30 @@ def apply_schedule_to_data(data, entries, dry_run=False, now_dt=None):
               "week as received.")
         return data, 0, []
 
-    # Remove windows whose start falls in the target week
-    before = len(data["run_schedule"])
-    data["run_schedule"] = [
-        w for w in data["run_schedule"]
-        if not (week_start_rh <= w["start_hour"] < week_end_rh)
-    ]
-    removed = before - len(data["run_schedule"])
+    if mode == "merge":
+        # Additive merge: keep existing target-week windows for days NOT
+        # covered by `entries`. Only the parsed days are written; the
+        # operator's prior schedule for other days remains intact, and the
+        # week is NOT marked received (so the missing-schedule reminder
+        # still fires until a HIGH-confidence parse lands).
+        new_weekdays = {wd for wd, _, _ in entries}
+        def _window_weekday(w):
+            return time_utils.run_hour_to_dt(data, w["start_hour"]).weekday()
+        before = len(data["run_schedule"])
+        data["run_schedule"] = [
+            w for w in data["run_schedule"]
+            if not (week_start_rh <= w["start_hour"] < week_end_rh)
+            or _window_weekday(w) not in new_weekdays
+        ]
+        removed = before - len(data["run_schedule"])
+    else:
+        # Replace: remove ALL windows whose start falls in the target week.
+        before = len(data["run_schedule"])
+        data["run_schedule"] = [
+            w for w in data["run_schedule"]
+            if not (week_start_rh <= w["start_hour"] < week_end_rh)
+        ]
+        removed = before - len(data["run_schedule"])
 
     new_windows = []
     for weekday, start_h, end_h in sorted(entries):
@@ -1680,8 +1706,11 @@ def apply_schedule_to_data(data, entries, dry_run=False, now_dt=None):
     if not dry_run:
         data["run_schedule"].extend(new_windows)
         data["run_schedule"].sort(key=lambda w: w["start_hour"])
-        # Mark schedule received for the target week
-        data["schedule_received_for_week"] = next_monday.date().isoformat()
+        # Only "replace" mode marks the week as received. "merge" keeps the
+        # missing-schedule reminder live so the operator is still nudged
+        # to send a complete schedule.
+        if mode == "replace":
+            data["schedule_received_for_week"] = next_monday.date().isoformat()
 
     return data, removed, new_windows
 

@@ -1144,9 +1144,29 @@ with sp_col:
         btn_lbl = "✅ Apply to Schedule" if confidence == "high" else "⚠️ Apply Anyway"
         if st.button(btn_lbl, use_container_width=True):
             sim_now = run_hour_to_dt(data, data["current_run_hour"])
-            data, removed, added = apply_schedule_to_data(data, entries, now_dt=sim_now)
+            # HIGH confidence → full replace + mark week received.
+            # LOW confidence "Apply Anyway" → additive merge: only the
+            # parsed days overwrite, other days' existing windows stay,
+            # and the week is NOT marked received (so the missing-schedule
+            # reminder keeps firing). Prevents a partial parse from
+            # silently wiping a complete week.
+            apply_mode = "replace" if confidence == "high" else "merge"
+            data, removed, added = apply_schedule_to_data(
+                data, entries, now_dt=sim_now, mode=apply_mode
+            )
             st.session_state.parse_result = None
-            st.success(f"Applied: {removed} old window(s) removed, {len(added)} new added.")
+            if apply_mode == "merge":
+                st.warning(
+                    f"Low-confidence merge: {len(added)} day(s) updated, "
+                    f"{removed} old window(s) replaced. Other days kept. "
+                    f"Schedule NOT marked received — please re-send a "
+                    f"complete schedule when possible."
+                )
+            else:
+                st.success(
+                    f"Applied: {removed} old window(s) removed, "
+                    f"{len(added)} new added."
+                )
             st.rerun()
 
 # ── Right: Auto-Planner ───────────────────────────────────────────────────────
