@@ -19,6 +19,7 @@ next LEAD_TIME_HOURS of scheduled run time.
 import copy
 from time_utils import format_run_hour
 from config import DEFAULT_CONFIG, PlantConfig
+from state import PlantState
 
 # Back-compat re-exports — deprecated in favor of passing a PlantConfig
 # instance to algorithm functions. Existing callers that import these
@@ -28,6 +29,24 @@ LATE_TRUCK_HOURS           = DEFAULT_CONFIG.late_truck_hours
 SAFETY_STOCK_LBS           = DEFAULT_CONFIG.safety_stock_lbs
 PROJECTION_WINDOW_HOURS    = DEFAULT_CONFIG.projection_window_hours
 PLANT_STATE_MISMATCH_HOURS = DEFAULT_CONFIG.plant_state_mismatch_hours
+
+
+def _as_state(data_or_state) -> PlantState:
+    """Polymorphic entry shim for the dict→dataclass migration.
+
+    Every public function in this module accepts either the legacy
+    `data` dict (loaded from data.json) OR a `PlantState` dataclass.
+    Internal code uses attribute access throughout. New code SHOULD
+    pass PlantState; old code (app.py, advance_time.py, the CLI
+    scripts) keeps working without changes.
+
+    The conversion is shallow-cheap: PlantState.from_dict walks the
+    top-level keys once. For hot loops, callers that already have a
+    PlantState should pass it directly to avoid the per-call walk.
+    """
+    if isinstance(data_or_state, PlantState):
+        return data_or_state
+    return PlantState.from_dict(data_or_state)
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +85,8 @@ def _alert(text, type, severity, direction,
 
 
 def get_lbs_per_hour(data, product):
-    return data["consumption_rates"][product]["lbs_per_hour"]
+    state = _as_state(data)
+    return state.consumption_rates[product].lbs_per_hour
 
 
 def get_combined_usable(data, product):
@@ -77,11 +97,7 @@ def get_combined_usable(data, product):
     heel) would contribute -1,000 and falsely shrink reported usable
     inventory.
     """
-    return sum(
-        max(0, info["current_level_lbs"] - info["heel_lbs"])
-        for info in data["tanks"].values()
-        if info["product"] == product
-    )
+    return _as_state(data).combined_usable_lbs(product)
 
 
 def get_inbound_total(data, product, within_hours=None):
@@ -93,35 +109,38 @@ def get_inbound_total(data, product, within_hours=None):
                    from now should not mask a shortage in the next 48h.
                    None = legacy behavior (count everything).
     """
-    trucks = [t for t in data["scheduled_trucks"] if t["product"] == product]
+    state = _as_state(data)
+    trucks = [t for t in state.scheduled_trucks if t.product == product]
     if within_hours is not None:
-        current = data["current_run_hour"]
+        current = state.current_run_hour
         horizon = current + within_hours
-        trucks = [t for t in trucks if current < t["arrival_run_hour"] <= horizon]
-    return sum(t["quantity_lbs"] for t in trucks)
+        trucks = [t for t in trucks if current < t.arrival_run_hour <= horizon]
+    return sum(t.quantity_lbs for t in trucks)
 
 
 def get_scheduled_run_hours_in_window(data, start, end):
+    state = _as_state(data)
     total = 0
-    for window in data["run_schedule"]:
-        ws = max(window["start_hour"], start)
-        we = min(window["end_hour"], end)
+    for window in state.run_schedule:
+        ws = max(window.start_hour, start)
+        we = min(window.end_hour, end)
         if we > ws:
             total += we - ws
     return total
 
 
 def check_lead_time(data, product, cfg: PlantConfig = DEFAULT_CONFIG):
-    rate = get_lbs_per_hour(data, product)
-    usable = get_combined_usable(data, product)
+    state = _as_state(data)
+    rate = state.consumption_rates[product].lbs_per_hour
+    usable = state.combined_usable_lbs(product)
     # Only count trucks arriving inside the lead-time window. A truck
     # scheduled days past lead_time_hours does NOT cover near-term demand,
     # so summing all inbound was masking real shortages.
-    inbound = get_inbound_total(data, product, within_hours=cfg.lead_time_hours)
+    inbound = get_inbound_total(state, product, within_hours=cfg.lead_time_hours)
     total_supply = usable + inbound
-    current = data["current_run_hour"]
+    current = state.current_run_hour
     scheduled_hours = get_scheduled_run_hours_in_window(
-        data, current, current + cfg.lead_time_hours
+        state, current, current + cfg.lead_time_hours
     )
     if scheduled_hours == 0:
         return None
@@ -140,8 +159,9 @@ def check_lead_time(data, product, cfg: PlantConfig = DEFAULT_CONFIG):
 
 def is_running_at(data, hour):
     """True if the plant is scheduled to be running at this hour."""
-    for window in data["run_schedule"]:
-        if window["start_hour"] <= hour < window["end_hour"]:
+    state = _as_state(data)
+    for window in state.run_schedule:
+        if window.start_hour <= hour < window.end_hour:
             return True
     return False
 
@@ -341,17 +361,23 @@ def run_projection(data, cfg: PlantConfig = DEFAULT_CONFIG):
 
     Returns a list of alert dicts (see `_alert`). Duplicate safety-stock
     alerts for the same product are suppressed within a single projection.
+
+    Caller can pass a `data` dict (legacy) or a `PlantState`.
     """
-    tanks = copy.deepcopy(data["tanks"])
-    rates = data["consumption_rates"]
-    products = list(rates.keys())
-    current = data["current_run_hour"]
+    state = _as_state(data)
+    # Convert state.tanks (Dict[str, TankState]) → dict-of-dicts here
+    # because simulate_consume/simulate_delivery still operate on the
+    # legacy shape. That migration is its own pass (the mutation
+    # functions need the deeper "return new tanks" refactor).
+    tanks = copy.deepcopy(state.to_dict()["tanks"])
+    products = list(state.consumption_rates.keys())
+    current = state.current_run_hour
     end = current + cfg.projection_window_hours
 
     pending = sorted(
-        [t for t in data["scheduled_trucks"]
-         if current < t["arrival_run_hour"] <= end],
-        key=lambda t: t["arrival_run_hour"]
+        [t for t in state.scheduled_trucks
+         if current < t.arrival_run_hour <= end],
+        key=lambda t: t.arrival_run_hour,
     )
     truck_idx = 0
 
@@ -362,13 +388,13 @@ def run_projection(data, cfg: PlantConfig = DEFAULT_CONFIG):
     while hour < end:
         next_hour = hour + 1
 
-        if is_running_at(data, hour):
+        if is_running_at(state, hour):
             for product in products:
-                simulate_consume(tanks, product, rates[product]["lbs_per_hour"])
+                simulate_consume(tanks, product, state.consumption_rates[product].lbs_per_hour)
 
-        while truck_idx < len(pending) and pending[truck_idx]["arrival_run_hour"] <= next_hour:
+        while truck_idx < len(pending) and pending[truck_idx].arrival_run_hour <= next_hour:
             truck = pending[truck_idx]
-            alert = simulate_delivery(tanks, truck, data=data)
+            alert = simulate_delivery(tanks, truck.to_dict(), data=state)
             if alert:
                 alerts.append(alert)
             truck_idx += 1
@@ -378,7 +404,7 @@ def run_projection(data, cfg: PlantConfig = DEFAULT_CONFIG):
             if level < cfg.safety_stock_lbs and product not in seen_safety:
                 text = (
                     f"RED FLAG: {product} projected to drop to {level:,.0f} lbs "
-                    f"at {format_run_hour(data, next_hour)} — below {cfg.safety_stock_lbs:,.0f} lb "
+                    f"at {format_run_hour(state, next_hour)} — below {cfg.safety_stock_lbs:,.0f} lb "
                     f"safety stock. Add trucks or check the schedule."
                 )
                 alerts.append(_alert(
@@ -395,23 +421,24 @@ def run_projection(data, cfg: PlantConfig = DEFAULT_CONFIG):
 
 def check_late_trucks(data, cfg: PlantConfig = DEFAULT_CONFIG):
     """Return alert dicts for any truck >= cfg.late_truck_hours past its arrival time."""
-    current = data["current_run_hour"]
+    state = _as_state(data)
+    current = state.current_run_hour
     alerts = []
-    for truck in data["scheduled_trucks"]:
-        overdue = current - truck["arrival_run_hour"]
+    for truck in state.scheduled_trucks:
+        overdue = current - truck.arrival_run_hour
         # Inclusive (>=) so the documented "3+ hours" threshold actually
         # fires at exactly 3.0 hours. Was `>` which silently waited until
         # 3.0001 hours.
         if overdue >= cfg.late_truck_hours:
             text = (
-                f"LATE TRUCK: {truck['sap_order']} ({truck['product']}, "
-                f"{truck['quantity_lbs']:,} lbs) was due "
-                f"{format_run_hour(data, truck['arrival_run_hour'])} — "
+                f"LATE TRUCK: {truck.sap_order} ({truck.product}, "
+                f"{truck.quantity_lbs:,} lbs) was due "
+                f"{format_run_hour(state, truck.arrival_run_hour)} — "
                 f"{overdue:.0f} hrs overdue. Please verify delivery."
             )
             alerts.append(_alert(
                 text, type="late_truck", severity="warning",
-                direction="too_low", product=truck.get("product"),
+                direction="too_low", product=truck.product,
             ))
     return alerts
 
@@ -424,11 +451,11 @@ def check_schedule_alerts(data):
     3. Friday 3 PM+: no schedule received yet for next week (replaces #2).
     """
     from datetime import datetime, timedelta
+    state = _as_state(data)
     alerts = []
 
     # ── Low-confidence parse ──────────────────────────────────────────────────
-    issue = data.get("schedule_parse_issue")
-    if issue:
+    if state.schedule_parse_issue:
         alerts.append(_alert(
             "WARNING: Schedule email received but could not be parsed — "
             "enter the schedule manually using the Schedule Parser.",
@@ -436,13 +463,13 @@ def check_schedule_alerts(data):
         ))
 
     # ── Friday schedule deadline alerts ──────────────────────────────────────
-    epoch   = datetime.fromisoformat(data["simulation_epoch"])
-    sim_now = epoch + timedelta(hours=data["current_run_hour"])
+    epoch   = datetime.fromisoformat(state.simulation_epoch)
+    sim_now = epoch + timedelta(hours=state.current_run_hour)
     if sim_now.weekday() == 4 and sim_now.hour >= 11:   # Friday, 11 AM or later
         days_ahead = (7 - sim_now.weekday()) % 7 or 7
         next_mon   = (sim_now + timedelta(days=days_ahead)).date().isoformat()
         next_mon_display = next_mon[5:].replace("-", "/").lstrip("0")  # "04/27" → "4/27"
-        if data.get("schedule_received_for_week") != next_mon:
+        if state.schedule_received_for_week != next_mon:
             if sim_now.hour >= 15:
                 # 3 PM or later — critical: missed the deadline
                 alerts.append(_alert(
@@ -478,16 +505,17 @@ def check_plant_state_mismatch(data, cfg: PlantConfig = DEFAULT_CONFIG):
             "since_hour": float   # run-hour when this state began
         }
     """
-    override = data.get("plant_state_override")
+    state = _as_state(data)
+    override = state.plant_state_override
     if not override:
         return []
     actual = override.get("actual")
     since  = override.get("since_hour", 0)
-    current = data["current_run_hour"]
+    current = state.current_run_hour
     duration = current - since
     if duration < cfg.plant_state_mismatch_hours:
         return []
-    scheduled_state = "running" if is_running_at(data, current) else "down"
+    scheduled_state = "running" if is_running_at(state, current) else "down"
     if actual == scheduled_state:
         return []
     return [_alert(
@@ -506,14 +534,19 @@ def get_all_alerts(data, cfg: PlantConfig = DEFAULT_CONFIG):
 
     `cfg` is threaded through every downstream check so per-customer
     overrides apply consistently to the entire alert evaluation.
+
+    Caller can pass a `data` dict (legacy) or a `PlantState` (new). The
+    state object is computed once at entry and reused across every
+    downstream call to avoid the per-check conversion cost.
     """
+    state = _as_state(data)
     alerts = []
-    for product in data["consumption_rates"].keys():
-        lead_alert = check_lead_time(data, product, cfg=cfg)
+    for product in state.consumption_rates.keys():
+        lead_alert = check_lead_time(state, product, cfg=cfg)
         if lead_alert:
             alerts.append(lead_alert)
-    alerts.extend(run_projection(data, cfg=cfg))
-    alerts.extend(check_late_trucks(data, cfg=cfg))
-    alerts.extend(check_schedule_alerts(data))
-    alerts.extend(check_plant_state_mismatch(data, cfg=cfg))
+    alerts.extend(run_projection(state, cfg=cfg))
+    alerts.extend(check_late_trucks(state, cfg=cfg))
+    alerts.extend(check_schedule_alerts(state))
+    alerts.extend(check_plant_state_mismatch(state, cfg=cfg))
     return alerts

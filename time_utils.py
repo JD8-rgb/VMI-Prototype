@@ -14,9 +14,19 @@ from datetime import datetime, timedelta
 DISPLAY_FORMAT = "%a %Y-%m-%d %H:%M"  # e.g. "Mon 2026-04-20 08:00"
 
 
+def _epoch_str(data_or_state):
+    """Pull the simulation_epoch ISO string from either a raw dict or a
+    PlantState dataclass. Polymorphic so the same time helpers work
+    during the dataclass migration without requiring every caller to
+    convert at the call site."""
+    if hasattr(data_or_state, "simulation_epoch"):
+        return data_or_state.simulation_epoch
+    return data_or_state["simulation_epoch"]
+
+
 def get_epoch(data):
     """Return the simulation epoch as a datetime object."""
-    return datetime.fromisoformat(data["simulation_epoch"])
+    return datetime.fromisoformat(_epoch_str(data))
 
 
 def run_hour_to_dt(data, run_hour):
