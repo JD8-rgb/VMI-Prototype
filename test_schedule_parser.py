@@ -856,6 +856,40 @@ def curated_must_pass() -> List[Case]:
              expected=[(3, 12, 23)],
              expected_confidence="low",   # single day -> below high threshold
              must_pass=True),
+
+        # ── Defensive force-low (must_61 … must_64) ─────────────────────────
+        # Patterns that would otherwise parse HIGH but where the operator's
+        # intent is genuinely ambiguous OR the parser is throwing away
+        # precision. Entries are extracted best-effort, but confidence is
+        # forced LOW so the operator must confirm.
+
+        # Range exception: parser doesn't model "Mon-Fri except Wed", so the
+        # extracted Mon..Fri entries would be wrong. Force low.
+        Case("must_61_except_range_exception", "continuous_range",
+             "Mon-Fri 6am-4pm except Wed down",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="low",   # extracted but flagged
+             must_pass=True),
+        # `excluding` variant of the same pattern.
+        Case("must_62_excluding_variant", "continuous_range",
+             "Mon-Fri 6am-4pm excluding Wed",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="low",
+             must_pass=True),
+        # Half-hour times — parser truncates minutes silently. Force low so
+        # the operator confirms the rounded windows.
+        Case("must_63_half_hour_minutes", "continuous_range",
+             "Mon-Fri 6:30am-4:30pm",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="low",
+             must_pass=True),
+        # Mixed half-hour: only one side has :30, but minute truncation still
+        # silently shifts the schedule. Force low.
+        Case("must_64_half_hour_one_side", "continuous_range",
+             "Mon-Fri 6am-4:30pm",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="low",
+             must_pass=True),
     ]
 
 

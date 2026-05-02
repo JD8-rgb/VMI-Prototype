@@ -95,6 +95,46 @@ _LETTER_DAY_RANGE_RE = re.compile(
 )
 _LETTER_TO_DAY_NAME = {"M": "Mon", "T": "Tue", "W": "Wed", "Th": "Thu", "F": "Fri"}
 
+# ── Force-low danger patterns ─────────────────────────────────────────────────
+#
+# These detect inputs the parser CAN match (so they'd otherwise be HIGH
+# confidence) but where the operator's intent is genuinely ambiguous or
+# the parser is silently throwing away precision. In all of these cases we
+# extract whatever entries we can, but force confidence to LOW with a note
+# so the operator must explicitly confirm.
+
+# Range-modifying exception phrases. These specifically signal an
+# exception TO a previously-stated range (e.g. "Mon-Fri except Wed"),
+# which the parser does not model — it would extract Mon-Fri as 5 days
+# and ignore the exception.
+#
+# NOTE: Day-level off markers (`Tue off`, `Wed shutdown`, `Thu no run`)
+# are already handled correctly by the segment-level off-marker logic
+# in _single_day_window. Keeping `_EXCEPTION_RE` narrow to range-only
+# phrases avoids double-handling and false-low on those well-modeled
+# cases.
+_EXCEPTION_RE = re.compile(
+    r'(?i)\b(?:except(?:\s+for)?|excluding|but\s+not|'
+    r'with\s+the\s+exception\s+of)\b'
+)
+
+# Any HH:MM time token where MM is non-zero. The parser silently truncates
+# minutes to integer hours, which would shift a 6:30am-4:30pm schedule into
+# 6am-4pm — a real misrepresentation. Force LOW until the parser supports
+# fractional hours natively. Trailing `am`/`pm` is allowed (no `\b` after
+# the minutes since `\b` between digits and letters fails).
+_NONZERO_MINUTES_RE = re.compile(r'(?<!\d)\d{1,2}:[0-5]\d(?!\d)')
+
+
+def _has_nonzero_minutes(text):
+    for m in _NONZERO_MINUTES_RE.finditer(text):
+        # Strip leading "HH:" and check minutes
+        mins = int(m.group(0).split(":")[1])
+        if mins != 0:
+            return True
+    return False
+
+
 # `6 to 4` / `6:00-4:00` etc. with NO am/pm context, both numbers in [1,12],
 # and start > end → assume 12-hour clock with start AM, end PM. Rewrites to
 # `6am to 4pm` so the existing time parser handles it. The :00 suffix is
@@ -1167,6 +1207,22 @@ def parse_schedule_text(text, now_dt=None):
             )
             forced_low = True
             break
+
+    # ── Final danger checks: extract entries best-effort, then force LOW
+    # so the operator must confirm before applying. Each check inspects the
+    # CLEANED text (not raw text) so stale-context / quoted history can't
+    # falsely trigger the guard.
+    if _EXCEPTION_RE.search(cleaned):
+        notes.append("  Exception/exclusion phrase ('except', 'down', "
+                     "'no run', 'shutdown', 'maintenance') near schedule "
+                     "— forcing low confidence so operator can confirm "
+                     "which days actually run.")
+        forced_low = True
+    if _has_nonzero_minutes(cleaned):
+        notes.append("  Half-hour times detected (parser truncates to "
+                     "integer hours) — forcing low confidence so operator "
+                     "can confirm the rounded windows.")
+        forced_low = True
 
     confidence = "high" if (effective_days >= 3 and not forced_low) else "low"
     return entries, confidence, notes
