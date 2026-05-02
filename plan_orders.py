@@ -449,8 +449,8 @@ def main():
               f"{truck['quantity_lbs']:,} lbs | "
               f"{format_run_hour(data, truck['arrival_run_hour'])}")
 
-    with open("data.json", "w") as f:
-        json.dump(data, f, indent=2)
+    from data_io import save_data
+    save_data(data)
 
     print()
     print(f"Added {len(all_new_trucks)} truck(s). Data saved.")

@@ -41,8 +41,8 @@ with open(_src) as f:
 previous = data.get("schedule_received_for_week")
 data["schedule_received_for_week"] = target.isoformat()
 
-with open(DATA_PATH, "w") as f:
-    json.dump(data, f, indent=2)
+from data_io import save_data
+save_data(data, DATA_PATH)
 
 print(f"Schedule marked as received for week of {target.isoformat()}.")
 if previous:

@@ -53,8 +53,8 @@ new_window = {
 data["run_schedule"].append(new_window)
 data["run_schedule"].sort(key=lambda w: w["start_hour"])
 
-with open("data.json", "w") as f:
-    json.dump(data, f, indent=2)
+from data_io import save_data
+save_data(data)
 
 duration = end - start
 print(f"Added run window ({duration} hrs) {label}")

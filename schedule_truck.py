@@ -55,8 +55,8 @@ new_truck = {
 
 data["scheduled_trucks"].append(new_truck)
 
-with open("data.json", "w") as f:
-    json.dump(data, f, indent=2)
+from data_io import save_data
+save_data(data)
 
 print(f"Scheduled: {sap_order} | {product} | {quantity:,} lbs")
 print(f"  arrives: {format_run_hour(data, arrival)}")

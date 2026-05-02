@@ -168,8 +168,8 @@ data["current_run_hour"] = end_hour
 
 data = email_hooks.send_alert_emails_if_new(data)
 
-with open("data.json", "w") as f:
-    json.dump(data, f, indent=2)
+from data_io import save_data
+save_data(data)
 
 print(f"\nClock now at {format_run_hour(data, end_hour)}.")
 print(f"Delivered {len(delivered_sap_orders)} trucks. {len(data['scheduled_trucks'])} remaining.")

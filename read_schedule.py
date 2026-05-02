@@ -2268,8 +2268,8 @@ if __name__ == "__main__":
     # Without saving on low_confidence, scheduled-task runs would re-send
     # the unreadable-email alert every tick because the dedup set is lost.
     if result in ("applied", "low_confidence") and not DRY_RUN:
-        with open(DATA_PATH, "w") as f:
-            json.dump(data, f, indent=2)
+        from data_io import save_data
+        save_data(data)
         print(f"[schedule] data.json saved (result={result}).")
     elif result == "not_found":
         print("[schedule] No schedule found — consider running check_reminder.py.")

@@ -87,8 +87,8 @@ result = fetch_and_apply_schedule(data)
 
 if result == "applied":
     # Schedule was found and applied — save and done
-    with open(DATA_PATH, "w") as f:
-        json.dump(data, f, indent=2)
+    from data_io import save_data
+    save_data(data, DATA_PATH)
     print("[reminder] Schedule applied from Anna's email. No reminder needed.")
     sys.exit(0)
 
