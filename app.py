@@ -109,7 +109,46 @@ def _defaults():
     return tmpl
 
 
-if "data"           not in st.session_state: st.session_state.data           = _defaults()
+# Bridge Streamlit session state to the data.json file used by CLI
+# scripts. Without this, the web app and CLI scripts each hold their
+# own copy of the schedule/tank state and silently disagree.
+#
+#   - On session start (`data` not yet in session_state): if data.json
+#     exists, load it; otherwise fall back to the re-anchored template.
+#   - On every rerun: if data.json's mtime advanced beyond what the
+#     session has seen (i.e. a CLI script mutated it externally), drop
+#     the in-memory copy and reload.
+#   - At the bottom of every rerun (handled near the end of this file),
+#     persist the current state back to data.json so CLI scripts see
+#     Streamlit-side changes.
+import os as _os_state
+from data_io import load_data as _load_data_state, save_data as _save_data_state
+
+_DATA_FILE   = "data.json"
+_disk_mtime  = _os_state.path.getmtime(_DATA_FILE) if _os_state.path.exists(_DATA_FILE) else None
+
+def _initial_state():
+    """Pick up data.json if present; otherwise re-anchored defaults template."""
+    if _os_state.path.exists(_DATA_FILE):
+        try:
+            return _load_data_state(_DATA_FILE)
+        except Exception:
+            pass
+    return _defaults()
+
+if "data" not in st.session_state:
+    st.session_state.data = _initial_state()
+    st.session_state._disk_mtime_seen = _disk_mtime
+elif _disk_mtime is not None and _disk_mtime != st.session_state.get("_disk_mtime_seen"):
+    # data.json changed under us (CLI mutation, manual edit, etc.).
+    # Reload so the dashboard reflects the on-disk truth.
+    try:
+        st.session_state.data = _load_data_state(_DATA_FILE)
+        st.session_state._disk_mtime_seen = _disk_mtime
+        st.toast("data.json changed externally — reloaded.", icon="🔄")
+    except Exception as _reload_err:
+        st.warning(f"data.json changed externally but reload failed: {_reload_err}")
+
 if "planned_trucks" not in st.session_state: st.session_state.planned_trucks = []
 if "plan_reasoning" not in st.session_state: st.session_state.plan_reasoning = []
 if "plan_log"       not in st.session_state: st.session_state.plan_log       = []
@@ -1610,3 +1649,18 @@ if st.session_state.pdf_bytes:
     )
     st.download_button("⬇️ Download PDF", data=st.session_state.pdf_bytes,
                        file_name="cs_load_entry.pdf", mime="application/pdf")
+
+
+# ── Persist Streamlit-side mutations to data.json ─────────────────────────────
+# Streamlit reruns the entire script on every interaction. Persist the
+# current state at the end of each rerun so CLI scripts and a restarted
+# session see the same truth. Update _disk_mtime_seen so the reload
+# detector at the top of the next rerun doesn't ping-pong on our own
+# write. Save errors are surfaced as a warning rather than crashing the
+# UI — the operator can still see the dashboard even if disk is full.
+try:
+    _save_data_state(st.session_state.data, _DATA_FILE)
+    if _os_state.path.exists(_DATA_FILE):
+        st.session_state._disk_mtime_seen = _os_state.path.getmtime(_DATA_FILE)
+except Exception as _persist_err:
+    st.warning(f"Could not persist data.json: {_persist_err}")
