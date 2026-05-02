@@ -130,8 +130,16 @@ _EXCEPTION_RE = re.compile(
 # per-product schedules, so silently flattening would lose half the
 # intent. Force LOW so the operator knows the input doesn't match the
 # parser's model.
+#
+# We DON'T want to fire on prose like 'Product strategy: ...' or
+# 'Product update: ...'. Heuristic: the token after 'Product' must look
+# like an actual product name — a single uppercase letter (Product U),
+# a single letter+digit (Product M1), or a short alphanumeric code
+# (Product XY1). Generic English words ('strategy', 'update', 'plan',
+# 'idea', 'roadmap', etc.) won't match because they're too long for
+# the bounded character class.
 _PRODUCT_PREFIX_RE = re.compile(
-    r'(?im)^\s*product\s+[A-Za-z0-9]+\s*:'
+    r'(?im)^\s*product\s+([A-Z][A-Z0-9]?[0-9]?)\s*:'
 )
 
 # Any time token with non-zero minutes. The parser silently truncates

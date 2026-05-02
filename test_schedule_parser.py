@@ -907,6 +907,16 @@ def curated_must_pass() -> List[Case]:
              expected_confidence="low",
              must_pass=True),
 
+        # 'Product strategy:' / 'Product update:' / etc. — generic English
+        # words after 'Product' are NOT product names. Pre-fix: any
+        # 'Product <word>:' triggered the product-specific guard and
+        # forced LOW. Post-fix: only short product codes trigger.
+        Case("must_65a_product_strategy_no_falsepos", "continuous_range",
+             "Product strategy: Mon-Fri 6am-4pm",
+             expected=[(0, 6, 16), (1, 6, 16), (2, 6, 16), (3, 6, 16), (4, 6, 16)],
+             expected_confidence="high",
+             must_pass=True),
+
         # ── Stale-context targeted recovery (must_66 … must_67) ─────────────
         # "Changed from X to Y": the broad stale-context strip used to
         # remove BOTH halves; the targeted pre-pass now strips only
