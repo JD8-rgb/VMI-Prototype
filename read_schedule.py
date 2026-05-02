@@ -1737,9 +1737,14 @@ if __name__ == "__main__":
 
     result = fetch_and_apply_schedule(data, dry_run=DRY_RUN)
 
-    if result == "applied" and not DRY_RUN:
+    # Save on either branch that mutated `data`:
+    #   "applied"        — new run_schedule + schedule_received_for_week
+    #   "low_confidence" — schedule_alerted_ids (dedup set) was updated
+    # Without saving on low_confidence, scheduled-task runs would re-send
+    # the unreadable-email alert every tick because the dedup set is lost.
+    if result in ("applied", "low_confidence") and not DRY_RUN:
         with open(DATA_PATH, "w") as f:
             json.dump(data, f, indent=2)
-        print("[schedule] data.json saved.")
+        print(f"[schedule] data.json saved (result={result}).")
     elif result == "not_found":
         print("[schedule] No schedule found — consider running check_reminder.py.")
