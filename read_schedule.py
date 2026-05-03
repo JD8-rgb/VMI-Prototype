@@ -2233,6 +2233,26 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
             # HIGH parse supersedes whatever was sitting in the
             # confirm panel.
             data.pop("pending_low_confidence_parse", None)
+            # Phase 6 — stash the HIGH parse so the operator can still
+            # eyeball the email + parse output even though the schedule
+            # auto-applied. Optional acknowledgement; doesn't change
+            # behavior. Cleared by operator clicking Acknowledge or by
+            # the next HIGH parse landing.
+            if best_msg:
+                data["last_applied_parse_review"] = {
+                    "email_id":   best_msg.get("id"),
+                    "sender":     best_msg.get("sender", ""),
+                    "subject":    best_msg.get("subject", ""),
+                    "body":       (best_msg.get("body", "") or "")[:5000],
+                    "entries":    [list(e) for e in (best_entries or [])],
+                    "confidence": "high",
+                    "applied":    True,
+                    "notes":      list(best_notes or []),
+                    "fetched_at": _dt_arr.now().isoformat(),
+                    "week_str":   week_str,
+                    "windows_applied": len(new_windows),
+                    "windows_replaced": removed,
+                }
         for w in new_windows:
             print(f"  {w['label']}: {time_utils.format_run_hour(data, w['start_hour'])} → {time_utils.format_run_hour(data, w['end_hour'])}")
         return "applied"

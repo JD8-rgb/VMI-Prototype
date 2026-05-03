@@ -1449,6 +1449,96 @@ if _pending_lc:
 
     st.divider()
 
+# ── Last applied HIGH-confidence parse review (Phase 6) ──────────────────────
+#
+# When the IMAP fetch lands a HIGH-confidence parse, the schedule
+# auto-applies AND we stash the email + parsed entries for operator
+# review. Acknowledgement is optional; the schedule has already gone
+# through. This gives the operator visibility into what was applied
+# without having to dig through email or run the parser manually.
+
+_applied_review = data.get("last_applied_parse_review")
+if _applied_review:
+    with st.container(border=True):
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:0.6rem;'
+            f'margin-bottom:0.4rem;">'
+            f'{_chip_html("✓ APPLIED — HIGH CONFIDENCE", "success")}'
+            f'<span style="color:#475569;font-size:0.85rem;">'
+            f'{_applied_review.get("windows_applied", 0)} window(s) for '
+            f'week of {_applied_review.get("week_str", "?")} '
+            f'({_applied_review.get("windows_replaced", 0)} old replaced)'
+            f'</span></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"**From:** `{_applied_review.get('sender', '?')}` · "
+            f"**Subject:** {_applied_review.get('subject', '(none)')}"
+        )
+        _ar_left, _ar_right = st.columns([1, 1])
+        with _ar_left:
+            st.markdown("**Original email body:**")
+            st.text_area(
+                "Email body (read-only)",
+                value=_applied_review.get("body", ""),
+                height=150,
+                disabled=True,
+                key="ar_body_view",
+                label_visibility="collapsed",
+            )
+        with _ar_right:
+            st.markdown("**Parsed run windows:**")
+            DAYS_AR = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+            _ar_entries = _applied_review.get("entries") or []
+            _ar_rows = [
+                {"Day": DAYS_AR[int(e[0])],
+                  "Start": int(e[1]), "End": int(e[2])}
+                for e in _ar_entries
+            ]
+            st.dataframe(_ar_rows, use_container_width=True, hide_index=True)
+            if _applied_review.get("notes"):
+                with st.expander("Parser notes (HIGH confidence rationale)"):
+                    for _n in _applied_review["notes"]:
+                        st.markdown(f"- {_n.strip()}")
+
+        _ar_b1, _ar_b2, _ar_b3 = st.columns([2, 2, 5])
+        with _ar_b1:
+            if st.button("✓ Acknowledge",
+                          type="primary",
+                          use_container_width=True,
+                          key="ar_ack_btn",
+                          help="Confirm you've reviewed the auto-applied "
+                               "schedule. Clears the panel."):
+                _email_id_for_audit = _applied_review.get("email_id")
+                st.session_state.data.pop("last_applied_parse_review", None)
+                _audit.record(st.session_state.data, "applied_parse_ack",
+                                details={"email_id": _email_id_for_audit})
+                _save_data_state(st.session_state.data, _DATA_FILE)
+                st.rerun()
+        with _ar_b2:
+            if st.button("✕ Dismiss",
+                          use_container_width=True,
+                          key="ar_dismiss_btn",
+                          help="Hide the panel without acknowledging. "
+                               "Same effect as Acknowledge for the schedule "
+                               "(it's already applied) — different audit "
+                               "intent."):
+                _email_id_for_audit = _applied_review.get("email_id")
+                st.session_state.data.pop("last_applied_parse_review", None)
+                _audit.record(st.session_state.data,
+                                "applied_parse_dismiss",
+                                details={"email_id": _email_id_for_audit})
+                _save_data_state(st.session_state.data, _DATA_FILE)
+                st.rerun()
+        with _ar_b3:
+            st.caption(
+                "💡 Schedule already applied. Acknowledge / Dismiss "
+                "just clears the panel — both are recorded in the "
+                "operator audit log for compliance."
+            )
+
+    st.divider()
+
 # ── Schedule Parser | Auto-Planner (side by side) ────────────────────────────
 
 sp_col, ap_col = st.columns([2, 3])
