@@ -1415,81 +1415,15 @@ else:
 
 st.divider()
 
-# ── Next-Week Forecast (Phase 8) ─────────────────────────────────────────────
+# ── Trendline Charts with inline tank status ──────────────────────────────────
 #
-# Weighted seasonal forecast for the upcoming week, derived from the
-# customer's last 4 weeks of run_schedule history (40/30/20/10
-# weighting, week-level outlier filter, holiday gating). Auto-renders
-# every page rerun; manual "Refresh forecast" button is available.
-
-st.subheader("🔮 Next-Week Forecast")
+# 12-day projection comes BEFORE the next-week forecast panel. Operators
+# read this top-down; the projection chart is the primary "what's about
+# to happen" visual, with a per-day forecast table beneath as a smaller
+# sanity-check artifact.
 
 from forecast import forecast as _forecast, build_augmented_data as _build_augmented_data
 from plan_orders import get_target_week_bounds as _gtwb
-
-_fc_week_start, _fc_week_end = _gtwb(data)
-_fc_result = _forecast(data, target_week_start_run_hour=_fc_week_start)
-
-_fc_total_lbs    = sum(p.weekly_lbs       for p in _fc_result.products)
-_fc_total_hours  = (_fc_result.products[0].weekly_run_hours
-                      if _fc_result.products else 0.0)
-_fc_total_trucks = sum(p.suggested_trucks for p in _fc_result.products)
-
-_fc_m1, _fc_m2, _fc_m3, _fc_m4 = st.columns(4)
-with _fc_m1:
-    st.metric("Predicted run hours",
-              f"{_fc_total_hours:,.0f} h",
-              help="Weighted average of the customer's last 4 weeks "
-                   "(40/30/20/10 by recency), with down-week outliers "
-                   "excluded and holidays zeroed.")
-with _fc_m2:
-    st.metric("Predicted consumption",
-              f"{_fc_total_lbs:,.0f} lbs",
-              help="Sum of per-product weekly_run_hours × lbs/hour.")
-with _fc_m3:
-    st.metric("Suggested truck count",
-              f"{_fc_total_trucks}",
-              help="ceil(weekly_lbs / truck_size) per product.")
-with _fc_m4:
-    if st.button("↻ Refresh forecast",
-                  use_container_width=True,
-                  key="fc_refresh_btn",
-                  help="Recompute the weighted seasonal forecast. "
-                       "(Auto-renders on every page change too.)"):
-        st.rerun()
-
-# Per-product per-day breakdown
-_DAY_NAMES_FC = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-_fc_rows = []
-for _p in _fc_result.products:
-    for _dow in range(7):
-        _b = _p.by_weekday.get(_dow, {"run_hours": 0, "lbs": 0})
-        if _b["run_hours"] > 0 or _b["lbs"] > 0:
-            _fc_rows.append({
-                "Product":   _p.product,
-                "Day":       _DAY_NAMES_FC[_dow],
-                "Run hours": f"{_b['run_hours']:.1f}",
-                "Lbs":       f"{_b['lbs']:,.0f}",
-            })
-if _fc_rows:
-    st.dataframe(_fc_rows, use_container_width=True, hide_index=True)
-else:
-    st.caption("No predicted run hours this week.")
-
-# Forecast notes (fallback warnings, holiday exclusions, etc.)
-if _fc_result.notes:
-    with st.expander("Forecast notes & method", expanded=False):
-        st.caption(
-            f"Engine: **{_fc_result.engine_name}** · "
-            f"lookback: {_fc_result.lookback_weeks} weeks "
-            f"({_fc_result.weeks_used} kept after outlier filter)"
-        )
-        for _n in _fc_result.notes:
-            st.markdown(f"- {_n}")
-
-st.divider()
-
-# ── Trendline Charts with inline tank status ──────────────────────────────────
 
 st.subheader("📈 12-Day Projection")
 # Build a forecast-augmented schedule so the chart can extend past the
@@ -1517,6 +1451,56 @@ with c2:
     t1, t2 = st.columns(2)
     _tank_info(t1, "M-Tank1", data["tanks"]["M-Tank1"])
     _tank_info(t2, "M-Tank2", data["tanks"]["M-Tank2"])
+
+st.divider()
+
+# ── Next-Week Forecast (Phase 8) ─────────────────────────────────────────────
+#
+# Weighted seasonal forecast for the upcoming week, derived from the
+# customer's last 4 weeks of run_schedule history (40/30/20/10
+# weighting, week-level outlier filter, holiday gating). Auto-renders
+# every page rerun; manual "Refresh forecast" button is available.
+
+st.subheader("🔮 Next-Week Forecast")
+
+_fc_week_start, _fc_week_end = _gtwb(data)
+_fc_result = _forecast(data, target_week_start_run_hour=_fc_week_start)
+
+# Per-day predicted run-windows. All products share the plant
+# schedule, so per-weekday run hours are uniform across products —
+# read from the first product. The 12-day projection chart already
+# carries the lbs / truck-count consequences; this table just shows
+# what shape of week the forecaster expects.
+_DAY_NAMES_FC = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_fc_rows = []
+if _fc_result.products:
+    _p0 = _fc_result.products[0]
+    for _dow in range(7):
+        _b = _p0.by_weekday.get(_dow, {"run_hours": 0})
+        _hrs = float(_b.get("run_hours", 0))
+        if _hrs > 0:
+            _fc_rows.append({
+                "Day":       _DAY_NAMES_FC[_dow],
+                "Run hours": f"{_hrs:.1f}",
+            })
+if _fc_rows:
+    st.dataframe(_fc_rows, use_container_width=True, hide_index=True)
+else:
+    st.caption("No predicted run hours this week.")
+if st.button("↻ Refresh forecast", key="fc_refresh_btn",
+              help="Recompute the weighted seasonal forecast."):
+    st.rerun()
+
+# Forecast notes (fallback warnings, holiday exclusions, etc.)
+if _fc_result.notes:
+    with st.expander("Forecast notes & method", expanded=False):
+        st.caption(
+            f"Engine: **{_fc_result.engine_name}** · "
+            f"lookback: {_fc_result.lookback_weeks} weeks "
+            f"({_fc_result.weeks_used} kept after outlier filter)"
+        )
+        for _n in _fc_result.notes:
+            st.markdown(f"- {_n}")
 
 st.divider()
 
