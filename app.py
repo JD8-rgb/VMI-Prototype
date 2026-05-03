@@ -1635,7 +1635,14 @@ st.divider()
 # ── What-If (expander) ────────────────────────────────────────────────────────
 
 with st.expander("🎛️ What-If Scenarios"):
-    st.caption("Explore parameter changes — main dashboard is unaffected.")
+    st.caption(
+        "Mutate hypothetical inputs and preview the projection. The main "
+        "dashboard is unaffected — nothing here is saved. Use this to "
+        "preview a decision (cancel a day, add an extra truck, raise "
+        "the consumption rate) BEFORE committing it for real."
+    )
+
+    # ── Row 1: classic levers — rate + safety threshold ───────────────────
     wi1, wi2 = st.columns(2)
     wi_rate   = wi1.slider("Consumption rate (lbs/hr per product)", 100, 1000,
                             int(st.session_state.what_if_rate), step=10)
@@ -1643,15 +1650,130 @@ with st.expander("🎛️ What-If Scenarios"):
                             int(st.session_state.what_if_safety), step=500)
     st.session_state.what_if_rate   = float(wi_rate)
     st.session_state.what_if_safety = float(wi_safety)
+
+    # ── Row 2: schedule mutations ─────────────────────────────────────────
+    wi3, wi4 = st.columns(2)
+    with wi3:
+        wi_skip = st.multiselect(
+            "Skip these weekdays (cancel runs)",
+            options=["Mon", "Tue", "Wed", "Thu", "Fri"],
+            default=[],
+            help="Drop the run windows for the selected weekdays from the "
+                 "projection. Models 'what if Wednesday is cancelled.'",
+        )
+    with wi4:
+        wi_extra_runs = st.checkbox(
+            "Add weekend runs (Sat + Sun 6am-4pm)",
+            value=False,
+            help="Append Sat + Sun 6-16 windows to the schedule. Models "
+                 "'what if we run weekends to catch up.'",
+        )
+
+    # ── Row 3: hypothetical target sliders ────────────────────────────────
+    wi5, wi6 = st.columns(2)
+    with wi5:
+        wi_low = st.slider(
+            "Hypothetical low target (lbs)",
+            min_value=int(_CFG.tunable_low_min),
+            max_value=int(_CFG.tunable_low_max),
+            value=int((_overrides or {}).get("low", _CFG.target_low_lbs)),
+            step=500,
+            key="wi_low_slider",
+            help="Preview a target-curve adjustment without committing it.",
+        )
+    with wi6:
+        wi_high = st.slider(
+            "Hypothetical high target (lbs)",
+            min_value=int(_CFG.tunable_high_min),
+            max_value=int(_CFG.tunable_high_max),
+            value=int((_overrides or {}).get("high", _CFG.target_high_lbs)),
+            step=500,
+            key="wi_high_slider",
+            help="Preview a target-curve adjustment without committing it.",
+        )
+
+    # ── Row 4: extra hypothetical truck ───────────────────────────────────
+    wi7, wi8, wi9 = st.columns(3)
+    with wi7:
+        _wi_truck_products = list(data.get("consumption_rates", {}).keys()) or ["—"]
+        wi_truck_product = st.selectbox(
+            "Add extra truck — product",
+            options=["(none)"] + _wi_truck_products,
+            index=0,
+            key="wi_truck_product",
+        )
+    with wi8:
+        wi_truck_arrival_h = st.number_input(
+            "Arrival run-hour",
+            min_value=0, max_value=720, value=24, step=1,
+            key="wi_truck_arrival",
+            help="Run-hour at which the hypothetical truck arrives.",
+        )
+    with wi9:
+        wi_truck_qty = st.number_input(
+            "Quantity (lbs)",
+            min_value=0, max_value=80_000, value=33_000, step=1000,
+            key="wi_truck_qty",
+        )
+
+    # ── Build the what-if data dict ───────────────────────────────────────
     wi_data = copy.deepcopy(data)
     for p in wi_data["consumption_rates"]:
         wi_data["consumption_rates"][p]["lbs_per_hour"] = float(wi_rate)
+
+    # Apply skip-days mutation
+    if wi_skip:
+        from time_utils import run_hour_to_dt as _rh2dt_wi
+        _DAY_INDEX = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4}
+        _skip_set = {_DAY_INDEX[d] for d in wi_skip}
+        wi_data["run_schedule"] = [
+            w for w in wi_data["run_schedule"]
+            if _rh2dt_wi(wi_data, w["start_hour"]).weekday() not in _skip_set
+        ]
+
+    # Apply weekend-runs mutation
+    if wi_extra_runs:
+        from time_utils import run_hour_to_dt as _rh2dt_wi2
+        # Find next weekend (Sat = wd 5)
+        _now_wi = _rh2dt_wi2(wi_data, wi_data["current_run_hour"])
+        _days_to_sat = (5 - _now_wi.weekday()) % 7
+        _sat_dt = _now_wi.replace(hour=0, minute=0, second=0,
+                                    microsecond=0) + timedelta(days=_days_to_sat)
+        from time_utils import dt_to_run_hour as _dt2rh_wi
+        for _label, _offset in [("Sat-WI", 0), ("Sun-WI", 1)]:
+            _start_dt = _sat_dt + timedelta(days=_offset, hours=6)
+            _end_dt   = _sat_dt + timedelta(days=_offset, hours=16)
+            wi_data["run_schedule"].append({
+                "start_hour": _dt2rh_wi(wi_data, _start_dt),
+                "end_hour":   _dt2rh_wi(wi_data, _end_dt),
+                "label":      _label,
+            })
+
+    # Apply extra-truck mutation
+    if wi_truck_product != "(none)" and wi_truck_qty > 0:
+        wi_data.setdefault("scheduled_trucks", []).append({
+            "sap_order":        "WHATIF",
+            "product":          wi_truck_product,
+            "quantity_lbs":     int(wi_truck_qty),
+            "arrival_run_hour": float(wi_data["current_run_hour"] + wi_truck_arrival_h),
+        })
+
+    # Apply hypothetical target overrides for the projection chart
+    wi_data["target_overrides"] = {"low": float(wi_low), "high": float(wi_high)}
+
     wi_hist = compute_level_history(wi_data, hours=240)
-    wc1, wc2 = st.columns(2)
-    wc1.plotly_chart(_chart(wi_hist, "Product U", safety=wi_safety),
-                     use_container_width=True, key="wi_u")
-    wc2.plotly_chart(_chart(wi_hist, "Product M", safety=wi_safety),
-                     use_container_width=True, key="wi_m")
+
+    # ── Render: one chart per product so 3+-product customers work ────────
+    _wi_products = list(wi_data.get("consumption_rates", {}).keys())
+    if _wi_products:
+        _wi_chart_cols = st.columns(min(len(_wi_products), 3))
+        for _i, _wi_p in enumerate(_wi_products):
+            with _wi_chart_cols[_i % len(_wi_chart_cols)]:
+                st.plotly_chart(
+                    _chart(wi_hist, _wi_p, safety=wi_safety),
+                    use_container_width=True,
+                    key=f"wi_chart_{_i}",
+                )
 
 # ── Email Configuration (expander) ───────────────────────────────────────────
 
