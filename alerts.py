@@ -575,6 +575,40 @@ def check_plant_state_mismatch(data, cfg: PlantConfig = DEFAULT_CONFIG):
     )]
 
 
+def check_vmi_off(data, cfg: PlantConfig = DEFAULT_CONFIG):
+    """RED weekly alert when the operator has turned VMI automation off.
+
+    Fires every Friday at or after 09:00 sim time, until the operator
+    flips the toggle back on. The point is "you turned this off and
+    forgot" — a one-shot alert is too easy to miss, so this re-fires
+    weekly. The dedup is week-scoped via state.alerted_hashes (the
+    alert text includes the target week so the hash differs by week).
+
+    When VMI automation is enabled (the default), returns [].
+    """
+    state = _as_state(data)
+    if state.vmi_automation_enabled:
+        return []
+
+    from datetime import datetime, timedelta
+    epoch   = datetime.fromisoformat(state.simulation_epoch)
+    sim_now = epoch + timedelta(hours=state.current_run_hour)
+    # Friday weekday() == 4, hour-of-day >= 9
+    if sim_now.weekday() != 4 or sim_now.hour < 9:
+        return []
+
+    # Include the target week in the alert text so weekly re-firings
+    # produce different hashes (alerted_hashes dedup is per-text).
+    days_ahead = (7 - sim_now.weekday()) % 7 or 7
+    next_mon   = (sim_now + timedelta(days=days_ahead)).date().isoformat()
+    return [_alert(
+        f"RED FLAG: VMI automation is OFF for week of {next_mon} — "
+        f"no truck orders will be auto-placed this week. "
+        f"Re-enable in the VMI Controls panel if this is unintended.",
+        type="vmi_off", severity="red_flag", direction="other",
+    )]
+
+
 def get_all_alerts(data, cfg: PlantConfig = DEFAULT_CONFIG):
     """
     Aggregate every active alert. Returns a list of alert dicts (see `_alert`).
@@ -598,4 +632,5 @@ def get_all_alerts(data, cfg: PlantConfig = DEFAULT_CONFIG):
     alerts.extend(check_late_trucks(state, cfg=cfg))
     alerts.extend(check_schedule_alerts(state))
     alerts.extend(check_plant_state_mismatch(state, cfg=cfg))
+    alerts.extend(check_vmi_off(state, cfg=cfg))
     return alerts

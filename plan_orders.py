@@ -411,6 +411,14 @@ def _truck_as_dict(t):
 def plan_for_product(data, product, target, week_start, week_end, extra_trucks,
                      cfg: PlantConfig = DEFAULT_CONFIG):
     state       = _as_state(data)
+    # When the operator has disabled VMI automation, the planner stops
+    # proposing trucks. The Friday 09:00 RED alert (alerts.check_vmi_off)
+    # reminds them weekly. Operator can still manually add trucks via
+    # the schedule_truck CLI / Streamlit form.
+    if not state.vmi_automation_enabled:
+        logger.info("VMI automation disabled — no trucks proposed for %s.",
+                     product)
+        return []
     new_trucks: list[dict] = []
     current     = state.current_run_hour
     breach_floor: float | None = None
