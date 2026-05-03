@@ -409,6 +409,9 @@ dc458ac Add HANDOFF.md for autonomous run (prior session, baseline)
 |---|---|---|
 | P0 — handoff blocker | Mutation refactor of `simulate_*` to pure functions | MIGRATION_GUIDE § 5 |
 | P0 | Move `data_io` from JSON file to PostgreSQL | MIGRATION_GUIDE § 3 |
+| P1 | Schedule-parse "confirm low-confidence" panel | Show email + best-guess parse + 1-click Confirm/Edit. Pairs with the inline editor (already shipped) but adds the email-body display + auto-population of the editor. |
+| P1 | Parser-misses log + triage CLI | Append every LOW-confidence parse to `parser_misses_log.jsonl`. New CLI `triage_parser_misses.py` walks them, lets engineer promote to `must_pass` cases in the test corpus. Closes the regression-test feedback loop. |
+| P1 | Time-series storage for tank levels | Per-tank ring buffer recording `(run_hour, level_lbs)` snapshots every advance_time tick; bounded retention 180d. Unlocks richer dashboard panels (distribution charts, trendlines, the "Suggest new range" suggestion-mode follow-on). |
 | P1 | Replace IMAP/SMTP with Microsoft Graph + change notifications | MIGRATION_GUIDE § 4 |
 | P1 | Add file locking (interim) — recommend skipping in favor of § 3 | MIGRATION_GUIDE § 6 |
 | P1 | Generalize Streamlit UI for arbitrary topology | MIGRATION_GUIDE § 7 |
@@ -419,6 +422,21 @@ dc458ac Add HANDOFF.md for autonomous run (prior session, baseline)
 | P2 | TZ-aware datetime (DST safety) | MIGRATION_GUIDE § 10 |
 | P2 | Finish logging migration in CLI scripts (kept print()s per handoff Working Rule, technical team may revisit) | MIGRATION_GUIDE § 9 |
 | P3 | Per-tenant `email_config.json` (currently single-tenant only) | (no recipe yet) |
+| P3 | LLM rescue prompt caching (Anthropic ephemeral cache) | Skipped in PM brainstorm — only one schedule email per week per customer, 5-min cache TTL never hits. Re-evaluate if multi-customer batch ingest at scale changes the calculus. |
+
+## What just landed in the latest sprint (post-summary work)
+
+Eight new phases from the PM brainstorm session:
+
+| Phase | What |
+|---|---|
+| A | Bounded operator-tunable target-override data model. PlantConfig.tunable_low/high_min/max define the slider window; PlantState.target_overrides holds the operator's current pick. plan_orders.get_target_for_week consults the override. |
+| B | VMI on/off toggle (PlantState.vmi_automation_enabled). plan_for_product short-circuits to [] when disabled. New alerts.check_vmi_off fires every Friday 09:00+ as a RED weekly reminder. |
+| C | Streamlit "🎛️ VMI Controls" panel — sliders + Apply/Reset + on/off toggle, persists week-to-week. |
+| D | Streamlit "📊 VMI Health Dashboard" — 6-month rolling overfill / safety-stock counts, bias indicator, weekly stacked bar (Plotly). Reads alert_log; no time-series needed for the MVP. |
+| E | What-If simulator extended: skip-weekdays multiselect, weekend-runs checkbox, hypothetical target sliders, extra-truck injection. Multi-product chart rendering (was hardcoded to 2). |
+| F | Inline schedule editor — replaced read-only parsed-entries table with st.data_editor. Operator edits Day / Start / End hours per row, adds/removes rows, Apply uses the edited entries. |
+| G | New module anomaly.py with 6 checks (weekly run-hours outlier, novel weekday, holiday-in-window, truck cadence, schedule arrival timing, projected ending drift). All YELLOW warnings via type="anomaly", wired into get_all_alerts. read_schedule appends to schedule_arrival_history (last-16 rolling buffer) on every HIGH-confidence apply. |
 
 ## Assumptions made under "I wasn't sure"
 
