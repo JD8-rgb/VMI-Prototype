@@ -726,46 +726,45 @@ def _tank_info(col, name, info):
     # Wave only renders when fluid_h > 4 (otherwise it'd clip).
     wave_svg = ""
     if fluid_h > 4:
-        wave_svg = f"""
-        <path d="M {tank_left} {fluid_y}
-                  Q {tank_left + tank_w * 0.25} {fluid_y - 2},
-                    {tank_left + tank_w * 0.5} {fluid_y}
-                  T {tank_left + tank_w} {fluid_y}
-                  L {tank_left + tank_w} {tank_top + tank_h}
-                  L {tank_left} {tank_top + tank_h} Z"
-              fill="{fluid_dark}" opacity="0.4"
-              clip-path="url(#clip_{safe_id})">
-            <animateTransform attributeName="transform" type="translate"
-                              values="0,0; -10,0; 0,0" dur="3.5s"
-                              repeatCount="indefinite"/>
-        </path>
-        """
+        # Same dedent rule as the parent SVG — single-line so Streamlit
+        # markdown doesn't render this as a code block.
+        wave_svg = (
+            f'<path d="M {tank_left} {fluid_y} '
+            f'Q {tank_left + tank_w * 0.25} {fluid_y - 2}, '
+            f'{tank_left + tank_w * 0.5} {fluid_y} '
+            f'T {tank_left + tank_w} {fluid_y} '
+            f'L {tank_left + tank_w} {tank_top + tank_h} '
+            f'L {tank_left} {tank_top + tank_h} Z" '
+            f'fill="{fluid_dark}" opacity="0.4" '
+            f'clip-path="url(#clip_{safe_id})">'
+            f'<animateTransform attributeName="transform" type="translate" '
+            f'values="0,0; -10,0; 0,0" dur="3.5s" '
+            f'repeatCount="indefinite"/>'
+            f'</path>'
+        )
 
-    svg = f"""
-    <svg viewBox="0 0 {SVG_W} {SVG_H}" class="vmi-tank-svg"
-         width="60" height="80" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-            <clipPath id="clip_{safe_id}">
-                <rect x="{tank_left}" y="{tank_top}" rx="3" ry="3"
-                      width="{tank_w}" height="{tank_h}"/>
-            </clipPath>
-        </defs>
-        <!-- tank outline -->
-        <rect x="{tank_left}" y="{tank_top}" rx="3" ry="3"
-              width="{tank_w}" height="{tank_h}"
-              fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5"/>
-        <!-- fluid (animated y / height via CSS transition class) -->
-        <rect class="vmi-tank-fluid" x="{tank_left}" y="{fluid_y}"
-              width="{tank_w}" height="{fluid_h}"
-              fill="{fluid_color}" opacity="0.85"
-              clip-path="url(#clip_{safe_id})"/>
-        {wave_svg}
-        <!-- tank cap -->
-        <ellipse cx="{tank_left + tank_w / 2}" cy="{tank_top}"
-                 rx="{tank_w / 2}" ry="2.5"
-                 fill="#E2E8F0" stroke="#CBD5E1" stroke-width="1"/>
-    </svg>
-    """
+    # SVG kept on a single line — Streamlit's markdown rendering
+    # treats lines indented 4+ spaces as a code block, which would
+    # render the SVG markup as TEXT below the tank card. Building
+    # the SVG without leading whitespace dodges that interaction.
+    svg = (
+        f'<svg viewBox="0 0 {SVG_W} {SVG_H}" class="vmi-tank-svg" '
+        f'width="60" height="80" xmlns="http://www.w3.org/2000/svg">'
+        f'<defs><clipPath id="clip_{safe_id}">'
+        f'<rect x="{tank_left}" y="{tank_top}" rx="3" ry="3" '
+        f'width="{tank_w}" height="{tank_h}"/></clipPath></defs>'
+        f'<rect x="{tank_left}" y="{tank_top}" rx="3" ry="3" '
+        f'width="{tank_w}" height="{tank_h}" fill="#F8FAFC" '
+        f'stroke="#CBD5E1" stroke-width="1.5"/>'
+        f'<rect class="vmi-tank-fluid" x="{tank_left}" y="{fluid_y}" '
+        f'width="{tank_w}" height="{fluid_h}" fill="{fluid_color}" '
+        f'opacity="0.85" clip-path="url(#clip_{safe_id})"/>'
+        f'{wave_svg}'
+        f'<ellipse cx="{tank_left + tank_w / 2}" cy="{tank_top}" '
+        f'rx="{tank_w / 2}" ry="2.5" fill="#E2E8F0" stroke="#CBD5E1" '
+        f'stroke-width="1"/>'
+        f'</svg>'
+    )
 
     col.markdown(f"""
     <div class="vmi-tank-card" style="margin-bottom:0.4rem;">
