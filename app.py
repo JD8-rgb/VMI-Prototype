@@ -1824,6 +1824,44 @@ with _info_col:
         st.caption(f"Default curve: low={int(_CFG.target_low_lbs):,} lbs, "
                     f"high={int(_CFG.target_high_lbs):,} lbs")
 
+# ── Customer notes (free-text scratchpad) ─────────────────────────────────────
+st.markdown(
+    "**Customer notes** — free-text context that doesn't fit any "
+    "structured field. Persists across resets via PlantState."
+)
+_existing_notes = data.get("customer_notes", "") or ""
+_notes_text = st.text_area(
+    "Customer notes",
+    value=_existing_notes,
+    height=90,
+    key="customer_notes_input",
+    label_visibility="collapsed",
+    placeholder=("e.g. 'Anna out 4/22-4/26, expect manual schedules' or "
+                  "'switching to weekend shifts in May' or "
+                  "'plant is undergoing minor maintenance Thu morning'"),
+)
+_save_notes_col, _notes_caption_col = st.columns([1, 5])
+with _save_notes_col:
+    if st.button("💾 Save notes",
+                  use_container_width=True,
+                  key="customer_notes_save",
+                  disabled=(_notes_text == _existing_notes),
+                  help="Save the notes to PlantState."):
+        st.session_state.data["customer_notes"] = _notes_text
+        _audit.record(st.session_state.data, "customer_notes_save",
+                       details={"length": len(_notes_text)})
+        _save_data_state(st.session_state.data, _DATA_FILE)
+        st.rerun()
+with _notes_caption_col:
+    if _notes_text == _existing_notes:
+        if _existing_notes:
+            st.caption(f"✓ Saved ({len(_existing_notes)} chars)")
+        else:
+            st.caption("No notes saved.")
+    else:
+        st.caption(f"⚡ Unsaved changes ({len(_notes_text)} chars). "
+                    "Click Save to persist.")
+
 st.divider()
 
 # ── VMI Health Dashboard (6-month alert history) ──────────────────────────────

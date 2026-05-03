@@ -182,6 +182,12 @@ class PlantState:
     # 1000 entries. Each entry: {iso, action, user, details}.
     audit_log:               List[Dict[str, Any]] = field(default_factory=list)
 
+    # Operator-authored free-text scratchpad per customer. Persists
+    # across resets via PlantState round-trip. Use for context that
+    # doesn't fit any structured field — "Anna out 4/22-4/26, expect
+    # manual schedules", "switching to weekend shifts in May", etc.
+    customer_notes:          str = ""
+
     # Catch-all for any future fields added to data.json that this module
     # doesn't know about — preserved verbatim through the round-trip so a
     # newer-schema file isn't lossily mangled when an older code version
@@ -199,7 +205,7 @@ class PlantState:
         "schedule_alerted_ids", "alerted_hashes", "alert_log",
         "sap_history", "plant_state_override",
         "target_overrides", "vmi_automation_enabled", "level_history",
-        "audit_log",
+        "audit_log", "customer_notes",
     ])
 
     @classmethod
@@ -229,6 +235,7 @@ class PlantState:
             vmi_automation_enabled       = d.get("vmi_automation_enabled", True),
             level_history                = list(d.get("level_history", [])),
             audit_log                    = list(d.get("audit_log", [])),
+            customer_notes               = str(d.get("customer_notes") or ""),
             _extra = {k: v for k, v in d.items() if k not in cls._KNOWN_KEYS},
         )
 
@@ -254,6 +261,7 @@ class PlantState:
             "vmi_automation_enabled":       self.vmi_automation_enabled,
             "level_history":                list(self.level_history),
             "audit_log":                    list(self.audit_log),
+            "customer_notes":               str(self.customer_notes or ""),
         }
         # Preserve any unknown future fields verbatim
         for k, v in self._extra.items():
