@@ -120,7 +120,8 @@ class PlantConfig:
     tunable_low_min:  float = 11_000
     tunable_low_max:  float = 19_000
     tunable_high_min: float = 20_000
-    tunable_high_max: float = 30_000
+    tunable_high_max: float = 27_000   # cap at the cfg's default target_high_lbs;
+                                        # 30k was too close to overfill territory
 
     def target_for_week(self, week_run_hours: float) -> float:
         """Linear-interpolated reorder target given scheduled weekly run hours."""

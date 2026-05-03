@@ -17,7 +17,6 @@ from anomaly import (
     check_holiday_in_run_window,
     check_truck_cadence_unusual,
     check_schedule_arrival_unusual,
-    check_projected_ending_unusual,
     get_all_anomalies,
 )
 from config import PlantConfig, DEFAULT_CONFIG
@@ -261,30 +260,7 @@ def test_arrival_silent_with_no_history(defaults_dict):
     assert check_schedule_arrival_unusual(d) == []
 
 
-# ── Check 6: projected ending unusual ───────────────────────────────────────
-
-def test_projected_ending_silent_in_window(defaults_dict):
-    """Defaults customer should project an ending level inside the
-    cfg.tunable_low_min .. tunable_high_max window for the standard
-    projection."""
-    d = copy.deepcopy(defaults_dict)
-    # No flag expected (or both products in-window)
-    alerts = check_projected_ending_unusual(d)
-    # Test passes whether or not it fires — this just confirms it
-    # doesn't crash on the demo defaults
-    assert isinstance(alerts, list)
-
-
-def test_projected_ending_fires_when_drained(defaults_dict):
-    """Force a near-empty starting state → projection drives ending
-    levels well below tunable_low_min → check_projected_ending_unusual
-    flags."""
-    d = copy.deepcopy(defaults_dict)
-    for tank in d["tanks"].values():
-        tank["current_level_lbs"] = tank["heel_lbs"] + 100   # near empty
-    alerts = check_projected_ending_unusual(d)
-    # At least one product should flag as too-low
-    assert any(a["direction"] == "too_low" for a in alerts)
+# Check 6 was removed in P2 — see anomaly.py module docstring for rationale.
 
 
 # ── Aggregator ───────────────────────────────────────────────────────────────

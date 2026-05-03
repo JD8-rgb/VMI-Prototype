@@ -256,7 +256,7 @@ def _render_roster():
                     Customer 1 — Acme Plastics
                 </div>
                 <div style="color:#475569;font-size:0.85rem;margin-top:0.1rem;">
-                    Live demo customer · Mon-Fri shift · 4 tanks · 2 products
+                    Live demo customer · Mon 06:00 → Sat 04:00 shift · 4 tanks · 2 products
                 </div>
                 <div style="margin-top:0.6rem;">{_acme_chip}</div>
                 """,

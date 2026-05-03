@@ -30,13 +30,12 @@ Six checks today:
   check_schedule_arrival_unusual   Schedule arrived at an hour-of-week
                                   the customer doesn't typically use.
                                   Catches accidental stale forward.
-  check_projected_ending_unusual   Predicted end-of-week levels
-                                  outside the operator's tunable
-                                  window — flags drift before it
-                                  becomes an alert.
-
 Anomaly checks are wired into get_all_alerts in alerts.py so they
 flow through the same email distribution.
+
+(check_projected_ending_unusual was removed in P2 — it compared
+per-product combined level against per-tank slider values.
+Redundant with the existing overfill / safety_stock alerts.)
 """
 
 from __future__ import annotations
@@ -297,51 +296,23 @@ def check_schedule_arrival_unusual(data, cfg: PlantConfig = DEFAULT_CONFIG
     return []
 
 
-# ── Check 6: projected ending levels outside override window ────────────────
-
-def check_projected_ending_unusual(data, cfg: PlantConfig = DEFAULT_CONFIG
-                                     ) -> List[Dict[str, Any]]:
-    """If the projected combined level at the end of the projection
-    window falls outside the operator's tunable_low_min .. tunable_high_max
-    band, warn. Catches drift toward overfill / underfill BEFORE the
-    safety_stock or overfill alert fires.
-
-    Uses run_projection's combined-level snapshot at end-of-window —
-    no full time-series needed."""
-    from projection import compute_level_history
-    state = _as_state(data)
-    hist = compute_level_history(state, hours=int(cfg.projection_window_hours),
-                                    cfg=cfg)
-    findings = []
-    for product in state.consumption_rates.keys():
-        ending = sum(
-            hist["tanks"][tname][-1]
-            for tname, tinfo in hist["tanks"].items()
-            if state.tanks[tname].product == product
-        )
-        # Use cfg's reasonable band (tunable_low_min..tunable_high_max)
-        # as the "normal" window. Outside → warn.
-        if ending < cfg.tunable_low_min:
-            findings.append(_alert(
-                f"WARNING: {product} projected ending level "
-                f"({ending:,.0f} lbs) is below the customer's tunable "
-                f"low floor ({int(cfg.tunable_low_min):,} lbs). "
-                f"Drift toward safety-stock breach — check the planner.",
-                type="anomaly", severity="warning",
-                direction="too_low", product=product,
-                level_lbs=float(ending),
-            ))
-        elif ending > cfg.tunable_high_max:
-            findings.append(_alert(
-                f"WARNING: {product} projected ending level "
-                f"({ending:,.0f} lbs) is above the customer's tunable "
-                f"high ceiling ({int(cfg.tunable_high_max):,} lbs). "
-                f"Drift toward overfill — check planner / target sliders.",
-                type="anomaly", severity="warning",
-                direction="too_full", product=product,
-                level_lbs=float(ending),
-            ))
-    return findings
+# ── Check 6 removed (P2) ─────────────────────────────────────────────────────
+#
+# `check_projected_ending_unusual` was comparing the per-product COMBINED
+# ending level against `cfg.tunable_high_max` (a per-tank reorder-target
+# slider value). Apples to oranges — a customer with two tanks of 35k
+# capacity legitimately has 50k+ combined inventory, but the check
+# would flag it as "above the ceiling" because the ceiling was 30k.
+#
+# The signal this anomaly was trying to capture is already covered by:
+#   - alerts.simulate_delivery → emits an "overfill" alert when a truck
+#     would actually exceed combined tank capacity
+#   - alerts.run_projection    → emits a "safety_stock" alert when
+#     combined level drops below cfg.safety_stock_lbs
+#
+# Both fire on the underlying physical condition (capacity / safety
+# stock) rather than the operator's slider window. So the projected-
+# ending anomaly was redundant + miscalibrated. Removed.
 
 
 # ── Aggregator ───────────────────────────────────────────────────────────────
@@ -363,5 +334,4 @@ def get_all_anomalies(data, cfg: PlantConfig = DEFAULT_CONFIG,
     out += check_truck_cadence_unusual(state, cfg=cfg,
                                           proposed_count=proposed_truck_count)
     out += check_schedule_arrival_unusual(state, cfg=cfg)
-    out += check_projected_ending_unusual(state, cfg=cfg)
     return out
