@@ -1952,11 +1952,16 @@ with sp_col:
                 return (wd, h)
 
             def _entry_to_strs(entry):
-                """(weekday, start_h_in_day, end_h_offset) → ('Mon 6am', 'Sat 4am')."""
+                """(weekday, start_h_in_day, end_h_offset) → ('Mon 6am', 'Sat 4am').
+
+                eh is hours-from-start-day-midnight, so eh=24 means "next
+                day 00:00", eh=124 means "5 days + 4h past start". Use
+                divmod so multiples-of-24 collapse to next-day-00:00
+                rather than printing 'Mon 24:00' (which the parser later
+                rejects as invalid hour)."""
                 wd_s, sh, eh = int(entry[0]), int(entry[1]), int(entry[2])
-                day_offset = max(0, (eh - 1) // 24) if eh > sh else 0
+                day_offset, h_e = divmod(eh, 24)
                 wd_e = (wd_s + day_offset) % 7
-                h_e  = eh - day_offset * 24
                 return f"{DAYS[wd_s]} {sh:02d}:00", f"{DAYS[wd_e]} {h_e:02d}:00"
 
             edit_rows = []

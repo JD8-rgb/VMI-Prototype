@@ -40,8 +40,11 @@ _PATTERN_LONG_SHIFTS = [
 _PATTERN_STANDARD = [(d, 6, 22) for d in range(5)]
 
 # Trigger a synthetic delivery when combined product level falls below
-# this. Demo realism, not a planning algorithm.
-_REORDER_THRESHOLD_LBS = 12_000
+# this. ~22k = "one tank near full, second tank pulling close to heel"
+# in the typical 30k/tank topology — matches when a real operator
+# would call the order in. Lower thresholds (e.g. 12k) wait until both
+# tanks are nearly empty, producing flat-line chart segments at heel.
+_REORDER_THRESHOLD_LBS = 22_000
 
 # Each truck arrives 24h after the trigger event — gives the chart a
 # visible "low → delivery → bounce" arc.
@@ -59,13 +62,24 @@ def generate_demo_history(data: Dict[str, Any], weeks: int) -> int:
         return 0
 
     current_rh = float(data.get("current_run_hour", 0.0))
-    start_rh   = current_rh - weeks * 168.0
+    # Snap start to a Monday-midnight boundary so the (dow, sh, eh)
+    # pattern lands on the right weekdays. Without this, opening the
+    # demo on (say) Wed at 12pm would put start_rh at "Wed noon, N
+    # weeks ago", and "Mon 6am-Tue 4pm" would render on Wed evening.
+    # Epoch is always Mon midnight (per _reanchor_to_now), so
+    # run_hour % 168 == 0 ↔ Mon midnight.
+    days_into_week = current_rh % 168.0
+    monday_anchor  = current_rh - days_into_week
+    start_rh       = monday_anchor - weeks * 168.0
 
     # ── 1. Build a synthetic schedule for the past horizon ───────────────
     # Alternate patterns week-by-week so the chart doesn't look like
-    # one repeating shape.
+    # one repeating shape. Cover one extra week past `weeks` so the
+    # current (partial) week — between the last snap-aligned Monday and
+    # `current_rh` — also gets run windows; otherwise the chart shows
+    # several days of flat lines at the right edge.
     synthetic_windows: List[Dict[str, float]] = []
-    for w in range(weeks):
+    for w in range(weeks + 1):
         base = start_rh + w * 168.0
         pattern = _PATTERN_LONG_SHIFTS if w % 2 == 0 else _PATTERN_STANDARD
         for (dow, sh, eh) in pattern:
