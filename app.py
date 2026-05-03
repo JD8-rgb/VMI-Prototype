@@ -1461,7 +1461,31 @@ st.divider()
 # same record in-page so the operator can confirm-and-apply with one click,
 # instead of going to the Schedule Parser and re-pasting the email.
 
-_pending_lc = data.get("pending_low_confidence_parse")
+_pending_lc     = data.get("pending_low_confidence_parse")
+_applied_review_for_mutex = data.get("last_applied_parse_review")
+# Mutex: when both LOW + HIGH panels would render, hide the LOW one
+# with a note pointing the operator at the fresh HIGH parse below.
+# A HIGH parse landing means the schedule is already applied and
+# correct; the older LOW pending is now stale.
+if _pending_lc and _applied_review_for_mutex:
+    with st.container(border=True):
+        st.caption(
+            "ℹ️ A fresh HIGH-confidence parse arrived since this "
+            "LOW-confidence record was created. Review the green panel "
+            "below first; this LOW record will auto-clear when you "
+            "Acknowledge / Dismiss it, OR you can dismiss it directly:"
+        )
+        if st.button("✕ Dismiss stale low-confidence record",
+                      key="lc_stale_dismiss",
+                      use_container_width=True):
+            _email_id = _pending_lc.get("email_id")
+            st.session_state.data.pop("pending_low_confidence_parse", None)
+            _audit.record(st.session_state.data, _audit.A_LC_PARSE_DISMISS,
+                            details={"email_id": _email_id,
+                                      "reason": "superseded_by_high_parse"})
+            _save_data_state(st.session_state.data, _DATA_FILE)
+            st.rerun()
+    _pending_lc = None   # suppress full LOW panel below
 if _pending_lc:
     with st.container(border=True):
         st.subheader("⚠️ Low-confidence schedule needs review")

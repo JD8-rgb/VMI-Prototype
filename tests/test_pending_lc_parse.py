@@ -88,3 +88,32 @@ def test_pending_record_body_truncates_to_5kb():
     huge_body = "x" * 100_000
     truncated = huge_body[:5000]
     assert len(truncated) == 5000
+
+
+# ── Phase 6/J mutex (red-team finding) ──────────────────────────────────────
+#
+# When pending_low_confidence_parse AND last_applied_parse_review are
+# both set, the Streamlit page used to render BOTH panels — operator
+# confusion about which to act on. The mutex collapses the LOW panel
+# to a small "stale, see HIGH below" note when both fields are
+# populated. These tests pin the contract on the data side; the
+# UI rendering itself is exercised manually.
+
+def test_both_panels_can_coexist_in_state(defaults_dict):
+    """Both fields are independent and can be present simultaneously
+    — the mutex is a UI rendering decision, not a data-side
+    invariant. Pin that fact."""
+    d = copy.deepcopy(defaults_dict)
+    d["pending_low_confidence_parse"] = _sample_pending()
+    d["last_applied_parse_review"]    = {
+        "email_id": "msg-456", "sender": "x", "subject": "x",
+        "body": "x", "entries": [], "confidence": "high",
+        "applied": True, "notes": [], "fetched_at": "2026-04-17T10:00",
+        "week_str": "2026-04-20", "windows_applied": 5,
+        "windows_replaced": 0,
+    }
+    # Both round-trip independently; neither field clobbers the other
+    from state import PlantState
+    rt = PlantState.from_dict(d).to_dict()
+    assert "pending_low_confidence_parse" in rt
+    assert "last_applied_parse_review"    in rt
