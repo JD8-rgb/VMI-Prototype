@@ -1415,6 +1415,19 @@ if _pending_lc:
                                       (_pending_lc or {}).get("entries", [])
                                   ]},
                     )
+                    # Phase 7 — feed the correction back into the
+                    # parser-learning loop. Once the customer has
+                    # >= 10 misses with corrections, the LLM rescue
+                    # prompt gets enriched with these examples.
+                    try:
+                        from parser_misses import append_correction \
+                            as _append_correction
+                        _append_correction(
+                            email_id=_email_id_for_audit,
+                            corrected_entries=_final_entries,
+                        )
+                    except Exception:
+                        pass
                     _save_data_state(st.session_state.data, _DATA_FILE)
                     st.success(
                         f"Confirmed: {_a and len(_a)} day(s) applied as merge "
@@ -1513,6 +1526,15 @@ if _applied_review:
                 st.session_state.data.pop("last_applied_parse_review", None)
                 _audit.record(st.session_state.data, "applied_parse_ack",
                                 details={"email_id": _email_id_for_audit})
+                # Phase 7 — operator-acknowledged HIGH parses are
+                # positive signal for the learning loop ("here's what
+                # RIGHT looks like for this customer").
+                try:
+                    from parser_misses import append_validation \
+                        as _append_validation
+                    _append_validation(email_id=_email_id_for_audit)
+                except Exception:
+                    pass
                 _save_data_state(st.session_state.data, _DATA_FILE)
                 st.rerun()
         with _ar_b2:

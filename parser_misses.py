@@ -117,3 +117,73 @@ def clear(log_path: Optional[str] = None) -> None:
             os.remove(path)
         except OSError as e:
             logger.warning("parser_misses: clear failed (%s) — %s", path, e)
+
+
+def append_correction(
+    *,
+    email_id: Optional[str],
+    corrected_entries: list,
+    customer_id: Optional[str] = None,
+    log_path: Optional[str] = None,
+) -> None:
+    """Append a CORRECTION entry: the operator's authoritative final
+    entries for an earlier MISS. The learning loop joins miss to
+    correction by email_id so the LLM rescue prompt gets ground-truth
+    pairs for that customer.
+
+    {
+        "kind":              "correction",
+        "logged_at":         ISO timestamp,
+        "customer_id":       optional,
+        "email_id":          links to the prior MISS entry,
+        "corrected_entries": [(weekday, start, end), ...]
+    }
+    """
+    path = log_path or PARSER_MISSES_LOG_PATH
+    entry = {
+        "kind":              "correction",
+        "logged_at":         datetime.now().isoformat(),
+        "customer_id":       customer_id,
+        "email_id":          email_id,
+        "corrected_entries": [list(e) for e in (corrected_entries or [])],
+    }
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        logger.warning("parser_misses: correction append failed (%s) — %s",
+                         path, e)
+
+
+def append_validation(
+    *,
+    email_id: Optional[str],
+    customer_id: Optional[str] = None,
+    log_path: Optional[str] = None,
+) -> None:
+    """Append a VALIDATION entry: the operator acknowledged a
+    HIGH-confidence parse without edits — strong positive signal
+    that the parser handled this customer's phrasing correctly.
+    Useful for the learning loop as positive few-shot examples
+    ("here's what RIGHT looks like for this customer").
+
+    {
+        "kind":         "validation",
+        "logged_at":    ISO timestamp,
+        "customer_id":  optional,
+        "email_id":     refers to the email the parser handled
+    }
+    """
+    path = log_path or PARSER_MISSES_LOG_PATH
+    entry = {
+        "kind":        "validation",
+        "logged_at":   datetime.now().isoformat(),
+        "customer_id": customer_id,
+        "email_id":    email_id,
+    }
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        logger.warning("parser_misses: validation append failed (%s) — %s",
+                         path, e)

@@ -1518,7 +1518,7 @@ def _entry_weekdays_covered(entries):
     return covered
 
 
-def parse_schedule_llm(text, api_key):
+def parse_schedule_llm(text, api_key, few_shot_prefix=None):
     """
     Use Claude to parse schedule text into run windows.
     Handles arbitrary natural language formats, time-first notation,
@@ -1531,6 +1531,12 @@ def parse_schedule_llm(text, api_key):
 
     Raises LLMParseError with a `stage` tag if anything goes wrong so the
     caller can surface a specific reason (auth / network / JSON / schema).
+
+    `few_shot_prefix` (Phase 7) — when non-None, prepended to the user
+    message. Carries customer-specific past corrections as in-context
+    examples. Built by parser_learning.build_few_shot_prefix once the
+    customer accumulates >= 10 misses. Demo / single-tenant calls
+    leave this None and fall through to the static prompt.
     """
     import json as _json
     try:
@@ -1594,6 +1600,15 @@ def parse_schedule_llm(text, api_key):
         "Return ONLY valid JSON — no explanation, no markdown fences.\n\n"
         f"Schedule text:\n{text}"
     )
+    # Phase 7 — prepend customer-specific few-shot examples when the
+    # learning-loop trigger has fired. Examples are past
+    # miss+correction pairs from this customer's parser_misses log.
+    if few_shot_prefix:
+        prompt = f"{few_shot_prefix}\n\n{prompt}"
+        logger.info(
+            "LLM rescue prompt enriched with customer-specific "
+            "few-shot examples (parser_learning trigger fired)."
+        )
 
     try:
         msg = client.messages.create(
@@ -1644,7 +1659,7 @@ def parse_schedule_llm(text, api_key):
     return entries, confidence, notes
 
 
-def parse_schedule(text, api_key=None, now_dt=None):
+def parse_schedule(text, api_key=None, now_dt=None, customer_id=None):
     """
     REGEX-FIRST strategy:
       1. Run the regex parser (parse_schedule_text). If it returns HIGH
@@ -1663,6 +1678,12 @@ def parse_schedule(text, api_key=None, now_dt=None):
     regex only on low-confidence caused combined to propagate those
     errors. Inverting the priority — regex first — recovers 100% pass
     rate on the synthetic corpus and reserves the LLM for the long tail.
+
+    Phase 7 — `customer_id` enables the per-customer parser learning
+    loop. When set AND the customer has accumulated >=
+    LEARNING_TRIGGER_MISS_COUNT corrections in the parser_misses log,
+    we build a few-shot prefix and pass it to parse_schedule_llm so
+    the model gets nudged toward this customer's specific phrasings.
 
     Always returns (entries, confidence, notes).
     """
@@ -1760,8 +1781,20 @@ def parse_schedule(text, api_key=None, now_dt=None):
         return rx_entries, rx_confidence, [note] + rx_notes
 
     llm_failure_note = None
+    # Phase 7 — build a customer-specific few-shot prefix when the
+    # learning-loop trigger has fired. Falls back to None
+    # (= static prompt) when not enough miss+correction pairs exist.
+    _few_shot = None
     try:
-        llm_entries, llm_confidence, llm_notes = parse_schedule_llm(text, api_key)
+        from parser_learning import build_few_shot_prefix as _bfsp
+        _few_shot = _bfsp(customer_id=customer_id)
+    except Exception:
+        _few_shot = None
+
+    try:
+        llm_entries, llm_confidence, llm_notes = parse_schedule_llm(
+            text, api_key, few_shot_prefix=_few_shot,
+        )
         logger.info(f"LLM rescue returned {llm_confidence} confidence "
               f"({len(llm_entries)} window(s)).")
     except LLMParseError as e:
