@@ -2221,6 +2221,14 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
             # Remember which email we just used so we don't re-apply it next check
             if best_msg:
                 data["schedule_email_id"] = best_msg["id"]
+            # Lightweight event log for anomaly check 5 (schedule arrival
+            # timing). Records the wall-clock instant the schedule was
+            # applied. Bounded to the last 16 entries so the file doesn't
+            # grow unbounded.
+            from datetime import datetime as _dt_arr
+            arrival_log = data.get("schedule_arrival_history", []) or []
+            arrival_log.append(_dt_arr.now().isoformat())
+            data["schedule_arrival_history"] = arrival_log[-16:]
         for w in new_windows:
             print(f"  {w['label']}: {time_utils.format_run_hour(data, w['start_hour'])} → {time_utils.format_run_hour(data, w['end_hour'])}")
         return "applied"

@@ -633,4 +633,8 @@ def get_all_alerts(data, cfg: PlantConfig = DEFAULT_CONFIG):
     alerts.extend(check_schedule_alerts(state))
     alerts.extend(check_plant_state_mismatch(state, cfg=cfg))
     alerts.extend(check_vmi_off(state, cfg=cfg))
+    # Anomaly checks (warnings, not blockers). Imported lazily to avoid
+    # an import cycle (anomaly.py imports from alerts).
+    from anomaly import get_all_anomalies
+    alerts.extend(get_all_anomalies(state, cfg=cfg))
     return alerts
