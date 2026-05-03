@@ -135,11 +135,35 @@ from data_io import load_data as _load_data_state, save_data as _save_data_state
 _DATA_FILE   = "data.json"
 _disk_mtime  = _os_state.path.getmtime(_DATA_FILE) if _os_state.path.exists(_DATA_FILE) else None
 
+def _reanchor_to_now(state):
+    """Re-anchor simulation_epoch + current_run_hour so the displayed
+    sim clock matches wall-clock "now" on every fresh app open.
+
+    Without this, opening the demo on Tuesday after it was last saved
+    last week shows last week's Monday + last week's elapsed hours —
+    confusing for first-time viewers ("why does it say it's Friday?").
+
+    We only touch the two clock fields. Run-schedule windows are stored
+    as offsets from the epoch, so they "follow" the re-anchor and end
+    up pointing at this-week's Mon-Fri (which is what the operator
+    almost always wants for a demo). scheduled_trucks / level_history
+    work the same way.
+    """
+    now = datetime.now(ZoneInfo(APP_TIMEZONE)).replace(tzinfo=None)
+    anchor = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    state["simulation_epoch"] = anchor.strftime("%Y-%m-%dT%H:%M:%S")
+    state["current_run_hour"] = round((now - anchor).total_seconds() / 3600.0, 1)
+    return state
+
+
 def _initial_state():
-    """Pick up data.json if present; otherwise re-anchored defaults template."""
+    """Pick up data.json if present; otherwise re-anchored defaults template.
+    Always re-anchors the sim clock to wall-clock now on session start."""
     if _os_state.path.exists(_DATA_FILE):
         try:
-            return _load_data_state(_DATA_FILE)
+            return _reanchor_to_now(_load_data_state(_DATA_FILE))
         except Exception:
             pass
     return _defaults()
@@ -1802,6 +1826,40 @@ sp_col, ap_col = st.columns([2, 3])
 # ── Left: Schedule Parser ────────────────────────────────────────────────────
 with sp_col:
     st.subheader("📅 Schedule Parser")
+
+    # Demo accelerators — clicking either button stages a sample
+    # schedule text into the editor and immediately runs the parser
+    # so the operator can step through both confidence paths without
+    # typing anything. Useful for showing the LOW-confidence review
+    # flow (front and center for demos).
+    SIM_HIGH_TEXT = (
+        "Monday 6am-10pm, Tuesday 6am-10pm,\n"
+        "Wednesday 6am-2pm, Thursday off,\n"
+        "Friday 6am-2pm"
+    )
+    SIM_LOW_TEXT = "Run all week"
+    sim_hi_btn, sim_lo_btn = st.columns(2)
+    _sim_now_for_seed = run_hour_to_dt(data, data["current_run_hour"])
+    if sim_hi_btn.button("🧪 Simulate HIGH parse", use_container_width=True,
+                          help="Stage a clean Mon-Fri example and parse it."):
+        st.session_state["sched_text"] = SIM_HIGH_TEXT
+        entries, confidence, notes = parse_schedule(
+            SIM_HIGH_TEXT, api_key=_get_anthropic_key(),
+            now_dt=_sim_now_for_seed,
+        )
+        st.session_state.parse_result = (entries, confidence, notes)
+        st.rerun()
+    if sim_lo_btn.button("🧪 Simulate LOW parse", use_container_width=True,
+                          help="Stage an ambiguous 'run all week' example "
+                               "and parse it (LOW-confidence fallback)."):
+        st.session_state["sched_text"] = SIM_LOW_TEXT
+        entries, confidence, notes = parse_schedule(
+            SIM_LOW_TEXT, api_key=_get_anthropic_key(),
+            now_dt=_sim_now_for_seed,
+        )
+        st.session_state.parse_result = (entries, confidence, notes)
+        st.rerun()
+
     sched_text = st.text_area(
         "Paste schedule",
         placeholder=(
