@@ -352,7 +352,7 @@ def _advance(data, hours, session_start_utc=None):
             week_start, week_end = get_target_week_bounds(data)
             week_rh = get_run_hours_in_window(data, week_start, week_end)
             if week_rh > 0:
-                target = get_target_for_week(week_rh)
+                target = get_target_for_week(week_rh, state=data)
                 all_new = []
                 for product in data["consumption_rates"]:
                     plan_cap = _io.StringIO()
@@ -1244,7 +1244,7 @@ with ap_col:
     st.subheader("🤖 Auto-Planner")
     week_start, week_end = get_target_week_bounds(data)
     week_rh    = get_run_hours_in_window(data, week_start, week_end)
-    target_lbs = get_target_for_week(week_rh)
+    target_lbs = get_target_for_week(week_rh, state=data)
 
     ic1, ic2, ic3 = st.columns(3)
     ic1.metric("Plan week starts", format_run_hour(data, week_start).split()[0] + " " +
@@ -1347,6 +1347,99 @@ with ap_col:
                 f"SAP{next_n} through SAP{next_n + len(sorted_t) - 1}."
             )
             st.rerun()
+
+st.divider()
+
+# ── VMI Controls (operator overrides) ─────────────────────────────────────────
+#
+# Bounded reorder-target sliders + automation on/off toggle. Both
+# persist week-to-week via PlantState fields (target_overrides and
+# vmi_automation_enabled). Reset → back to cfg defaults / ON.
+
+from config import DEFAULT_CONFIG as _CFG
+
+st.subheader("🎛️ VMI Controls")
+
+_vmi_on = data.get("vmi_automation_enabled", True)
+_overrides = data.get("target_overrides")
+
+# Top row: status header + on/off toggle
+_status_col, _toggle_col = st.columns([3, 1])
+with _status_col:
+    if _vmi_on:
+        st.markdown("**Automation:** :green[ON] — planner will propose trucks "
+                    "and the schedule auto-applies when received.")
+    else:
+        st.markdown("**Automation:** :red[OFF] — planner is suppressed. "
+                    "A RED alert fires every Friday 9 AM until you turn "
+                    "this back on.")
+with _toggle_col:
+    new_vmi = st.toggle("Automation enabled",
+                          value=_vmi_on,
+                          key="vmi_toggle",
+                          help="When OFF, the planner stops proposing "
+                               "trucks and a weekly Friday RED alert is "
+                               "sent to the distribution list.")
+    if new_vmi != _vmi_on:
+        st.session_state.data["vmi_automation_enabled"] = new_vmi
+        _save_data_state(st.session_state.data, _DATA_FILE)
+        st.rerun()
+
+# Bottom row: target sliders
+st.markdown(
+    "**Reorder targets** — operator-tunable. Set within the customer's "
+    "allowed window; click *Apply* to lock in (persists week-to-week). "
+    "*Reset* clears the override and reverts to the customer's default curve."
+)
+_eff_low  = (_overrides or {}).get("low",  _CFG.target_low_lbs)
+_eff_high = (_overrides or {}).get("high", _CFG.target_high_lbs)
+
+_slider_col_low, _slider_col_high = st.columns(2)
+with _slider_col_low:
+    _new_low = st.slider(
+        f"Low target (lbs) — light-week floor",
+        min_value=int(_CFG.tunable_low_min),
+        max_value=int(_CFG.tunable_low_max),
+        value=int(_eff_low),
+        step=500,
+        key="vmi_low_slider",
+    )
+with _slider_col_high:
+    _new_high = st.slider(
+        f"High target (lbs) — heavy-week ceiling",
+        min_value=int(_CFG.tunable_high_min),
+        max_value=int(_CFG.tunable_high_max),
+        value=int(_eff_high),
+        step=500,
+        key="vmi_high_slider",
+    )
+
+_apply_col, _reset_col, _info_col = st.columns([1, 1, 3])
+with _apply_col:
+    if st.button("✓ Apply", use_container_width=True, key="vmi_apply"):
+        st.session_state.data["target_overrides"] = {
+            "low":  float(_new_low),
+            "high": float(_new_high),
+        }
+        _save_data_state(st.session_state.data, _DATA_FILE)
+        st.rerun()
+with _reset_col:
+    if st.button("↺ Reset",
+                  use_container_width=True,
+                  key="vmi_reset",
+                  disabled=(_overrides is None),
+                  help="Clear the operator override and revert to the "
+                       "customer's default target curve."):
+        st.session_state.data["target_overrides"] = None
+        _save_data_state(st.session_state.data, _DATA_FILE)
+        st.rerun()
+with _info_col:
+    if _overrides is not None:
+        st.caption(f"📌 Override active: low={int(_overrides['low']):,} lbs, "
+                    f"high={int(_overrides['high']):,} lbs (persists week-to-week)")
+    else:
+        st.caption(f"Default curve: low={int(_CFG.target_low_lbs):,} lbs, "
+                    f"high={int(_CFG.target_high_lbs):,} lbs")
 
 st.divider()
 

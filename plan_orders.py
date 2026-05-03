@@ -554,7 +554,7 @@ def main(argv=None):
 
     week_start, week_end = get_target_week_bounds(data)
     week_run_hours = get_run_hours_in_window(data, week_start, week_end)
-    target = get_target_for_week(week_run_hours, cfg=cfg)
+    target = get_target_for_week(week_run_hours, cfg=cfg, state=data)
 
     print("=" * 60)
     print("ORDER PLANNER")
