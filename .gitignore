@@ -15,6 +15,7 @@ venv/
 # Runtime data
 data.json
 *.log
+parser_misses_log.jsonl
 
 # OS
 .DS_Store

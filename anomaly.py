@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import statistics
 from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from alerts import _alert, _as_state
 from config import DEFAULT_CONFIG, PlantConfig
@@ -186,7 +186,7 @@ _DEFAULT_TRUCK_CADENCE_HIGH = 12
 
 
 def check_truck_cadence_unusual(data, cfg: PlantConfig = DEFAULT_CONFIG,
-                                  proposed_count: int = None,
+                                  proposed_count: Optional[int] = None,
                                   ) -> List[Dict[str, Any]]:
     """If the planner proposed an unusually high or low number of
     trucks for the upcoming week, warn. Default thresholds:
@@ -307,7 +307,8 @@ def check_projected_ending_unusual(data, cfg: PlantConfig = DEFAULT_CONFIG
 # ── Aggregator ───────────────────────────────────────────────────────────────
 
 def get_all_anomalies(data, cfg: PlantConfig = DEFAULT_CONFIG,
-                        proposed_truck_count: int = None) -> List[Dict[str, Any]]:
+                        proposed_truck_count: Optional[int] = None
+                        ) -> List[Dict[str, Any]]:
     """Run every anomaly check and return the combined list.
 
     Wired into alerts.get_all_alerts so anomalies flow through the

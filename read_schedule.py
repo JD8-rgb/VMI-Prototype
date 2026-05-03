@@ -2305,10 +2305,26 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
                 "entries":    [list(e) for e in (best_entries or [])],
                 "confidence": best_confidence,
                 "notes":      list(best_notes or []),
-                "fetched_at": _dt_arr_now().isoformat()
-                                 if "_dt_arr_now" in globals()
-                                 else __import__("datetime").datetime.now().isoformat(),
+                "fetched_at": __import__("datetime").datetime.now().isoformat(),
             }
+
+            # Production-misses audit trail (Phase K). Engineering
+            # triages via `python triage_parser_misses.py` and promotes
+            # parseable misses to must_pass test cases.
+            try:
+                from parser_misses import append_miss as _append_miss
+                _append_miss(
+                    email_id=preview_id,
+                    sender=preview_msg.get("sender", ""),
+                    subject=preview_msg.get("subject", ""),
+                    body=preview_msg.get("body", "") or "",
+                    entries=best_entries or [],
+                    confidence=best_confidence,
+                    notes=best_notes or [],
+                )
+            except Exception as _e:
+                # Non-fatal — the parser pipeline must keep running.
+                logger.warning("parser_misses log append failed: %s", _e)
 
         return "low_confidence"
 
