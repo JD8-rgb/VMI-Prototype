@@ -176,6 +176,12 @@ class PlantState:
     # Schema v2 added this field; v1 files migrate to empty list.
     level_history:           List[Dict[str, Any]] = field(default_factory=list)
 
+    # Operator-action audit log. Recorded by audit_log.record() on every
+    # button-press in the Streamlit UI: VMI toggle, target Apply / Reset,
+    # parse confirm / dismiss, advance, quick-fill, etc. Bounded to last
+    # 1000 entries. Each entry: {iso, action, user, details}.
+    audit_log:               List[Dict[str, Any]] = field(default_factory=list)
+
     # Catch-all for any future fields added to data.json that this module
     # doesn't know about — preserved verbatim through the round-trip so a
     # newer-schema file isn't lossily mangled when an older code version
@@ -193,6 +199,7 @@ class PlantState:
         "schedule_alerted_ids", "alerted_hashes", "alert_log",
         "sap_history", "plant_state_override",
         "target_overrides", "vmi_automation_enabled", "level_history",
+        "audit_log",
     ])
 
     @classmethod
@@ -221,6 +228,7 @@ class PlantState:
             target_overrides             = d.get("target_overrides"),
             vmi_automation_enabled       = d.get("vmi_automation_enabled", True),
             level_history                = list(d.get("level_history", [])),
+            audit_log                    = list(d.get("audit_log", [])),
             _extra = {k: v for k, v in d.items() if k not in cls._KNOWN_KEYS},
         )
 
@@ -245,6 +253,7 @@ class PlantState:
             "target_overrides":             self.target_overrides,
             "vmi_automation_enabled":       self.vmi_automation_enabled,
             "level_history":                list(self.level_history),
+            "audit_log":                    list(self.audit_log),
         }
         # Preserve any unknown future fields verbatim
         for k, v in self._extra.items():

@@ -92,6 +92,10 @@ st.set_page_config(page_title="VMI Automation", layout="wide", initial_sidebar_s
 from theme import inject_theme as _inject_theme, chip_html as _chip_html
 _inject_theme(st)
 
+# Operator-action audit log helper. Single-line import keeps the
+# recording call sites short.
+import audit_log as _audit
+
 # ── Session state / defaults ──────────────────────────────────────────────────
 
 def _defaults():
@@ -1181,6 +1185,8 @@ with cr:
         )
         st.session_state.advance_log = log
         st.session_state.email_log.extend(evts)
+        _audit.record(st.session_state.data, _audit.A_ADVANCE,
+                       details={"hours": float(adv_hrs)})
         st.rerun()
     if rst_col.button("🔄 Reset", use_container_width=True):
         from datetime import timezone as _tz_utc
@@ -1205,6 +1211,13 @@ with cr:
         st.session_state.parse_result   = None
         st.session_state.advance_log    = ""
         st.session_state.email_log      = []
+        # Audit log AFTER the reset so the entry survives in the
+        # fresh data dict (the audit_log lives in data; reset wipes
+        # data so we record on the new instance).
+        _audit.record(st.session_state.data, _audit.A_RESET,
+                       details={"wiped": ["run_schedule", "alert_log",
+                                            "level_history",
+                                            "target_overrides"]})
         st.rerun()
     if st.session_state.advance_log:
         with st.expander("Last advance log", expanded=False):
@@ -1390,8 +1403,18 @@ if _pending_lc:
                     )
                     st.session_state.data = data
                     # Clear the pending record on confirm
+                    _email_id_for_audit = (_pending_lc or {}).get("email_id")
                     st.session_state.data.pop("pending_low_confidence_parse",
                                                 None)
+                    _audit.record(
+                        st.session_state.data, _audit.A_LC_PARSE_CONFIRM,
+                        details={"email_id": _email_id_for_audit,
+                                  "entries": _final_entries,
+                                  "edited": _final_entries != [
+                                      tuple(e) for e in
+                                      (_pending_lc or {}).get("entries", [])
+                                  ]},
+                    )
                     _save_data_state(st.session_state.data, _DATA_FILE)
                     st.success(
                         f"Confirmed: {_a and len(_a)} day(s) applied as merge "
@@ -1409,8 +1432,12 @@ if _pending_lc:
                           help="Discard this pending parse without applying. "
                                "Use the Schedule Parser below to manually "
                                "paste a corrected schedule."):
+                _email_id_for_audit = (_pending_lc or {}).get("email_id")
                 st.session_state.data.pop("pending_low_confidence_parse",
                                             None)
+                _audit.record(st.session_state.data,
+                                _audit.A_LC_PARSE_DISMISS,
+                                details={"email_id": _email_id_for_audit})
                 _save_data_state(st.session_state.data, _DATA_FILE)
                 st.rerun()
         with _lc_b3:
@@ -1731,6 +1758,8 @@ with _toggle_col:
                                "sent to the distribution list.")
     if new_vmi != _vmi_on:
         st.session_state.data["vmi_automation_enabled"] = new_vmi
+        _audit.record(st.session_state.data, _audit.A_VMI_TOGGLE,
+                       details={"enabled": bool(new_vmi)})
         _save_data_state(st.session_state.data, _DATA_FILE)
         st.rerun()
 
@@ -1770,6 +1799,9 @@ with _apply_col:
             "low":  float(_new_low),
             "high": float(_new_high),
         }
+        _audit.record(st.session_state.data, _audit.A_TARGET_APPLY,
+                       details={"low": float(_new_low),
+                                "high": float(_new_high)})
         _save_data_state(st.session_state.data, _DATA_FILE)
         st.rerun()
 with _reset_col:
@@ -1780,6 +1812,8 @@ with _reset_col:
                   help="Clear the operator override and revert to the "
                        "customer's default target curve."):
         st.session_state.data["target_overrides"] = None
+        _audit.record(st.session_state.data, _audit.A_TARGET_RESET,
+                       details={"prior": _overrides or {}})
         _save_data_state(st.session_state.data, _DATA_FILE)
         st.rerun()
 with _info_col:
@@ -1946,6 +1980,8 @@ with _qf_col2:
         )
         st.session_state.advance_log = log
         st.session_state.email_log.extend(evts)
+        _audit.record(st.session_state.data, _audit.A_QUICK_FILL,
+                       details={"weeks": int(_qf_weeks)})
         st.rerun()
 
 if _history:
@@ -2187,6 +2223,31 @@ with st.expander("🎛️ What-If Scenarios"):
                     use_container_width=True,
                     key=f"wi_chart_{_i}",
                 )
+
+# ── Operator activity (expander) ─────────────────────────────────────────────
+
+with st.expander("📜 Recent operator activity"):
+    st.caption(
+        "Append-only audit trail of every operator action — "
+        "who did what when, with the action's payload. Compliance "
+        "source-of-truth, retained for the last 1000 entries."
+    )
+    _activity = _audit.recent(data, n=50)
+    if not _activity:
+        st.caption("(no operator actions recorded yet)")
+    else:
+        # Newest first for review
+        _act_rows = []
+        for _e in reversed(_activity):
+            _det = _e.get("details") or {}
+            _det_str = ", ".join(f"{k}={v!r}" for k, v in _det.items())
+            _act_rows.append({
+                "When":    _e.get("iso", "?")[:19].replace("T", " "),
+                "User":    _e.get("user", "?"),
+                "Action":  _e.get("action", "?"),
+                "Details": _det_str,
+            })
+        st.dataframe(_act_rows, use_container_width=True, hide_index=True)
 
 # ── Email Configuration (expander) ───────────────────────────────────────────
 

@@ -1,0 +1,91 @@
+"""
+audit_log.py — operator-action audit trail.
+
+Every operator action (toggle VMI on/off, apply target override,
+reset, dismiss low-confidence parse, confirm parse, advance the
+clock, etc.) gets recorded as a row in data["audit_log"]:
+
+    {
+        "iso":     ISO timestamp of the action,
+        "action":  short action key (e.g. "vmi_toggle_off",
+                                          "target_override_apply"),
+        "user":    operator identifier (default "operator" — the
+                   prototype is single-user, but the field is here so
+                   the technical team can wire it through RBAC),
+        "details": dict of action-specific payload (slider values,
+                   dismissed-parse email_id, etc.)
+    }
+
+Compliance value: this is the source of truth for "who changed what
+when, and why" reviews. Pairs with alert_log (system events) to give
+a complete audit story.
+
+Bounded retention: last 1000 entries. Entries older than that fall
+off the front. For real production scale, the technical team will
+move this to PostgreSQL where the bound goes away (see
+MIGRATION_GUIDE.md § 3).
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Dict, Optional
+
+
+AUDIT_LOG_MAX_ENTRIES = 1000
+
+
+def record(
+    data: Dict[str, Any],
+    action: str,
+    *,
+    user: str = "operator",
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Append one audit entry to data["audit_log"], truncating to
+    AUDIT_LOG_MAX_ENTRIES from the front.
+
+    Idempotent on data without the field — initializes to []. Failures
+    are non-fatal (no I/O happens here; the underlying save is the
+    Streamlit save path).
+    """
+    log = data.get("audit_log")
+    if not isinstance(log, list):
+        log = []
+    entry = {
+        "iso":     datetime.now().isoformat(),
+        "action":  str(action),
+        "user":    str(user),
+        "details": dict(details) if details else {},
+    }
+    log.append(entry)
+    if len(log) > AUDIT_LOG_MAX_ENTRIES:
+        log = log[-AUDIT_LOG_MAX_ENTRIES:]
+    data["audit_log"] = log
+
+
+def recent(data: Dict[str, Any], n: int = 50) -> list:
+    """Return the last `n` audit entries, newest last (reverse-chrono
+    is left to the caller via .reverse() or .[::-1]).
+    """
+    log = data.get("audit_log") or []
+    if not isinstance(log, list):
+        return []
+    return list(log[-n:])
+
+
+# ── Convenience action keys (string constants) ──────────────────────────────
+# Centralizing these prevents typos across recording sites and gives
+# the technical team a single grep target when wiring RBAC.
+
+A_VMI_TOGGLE         = "vmi_toggle"
+A_TARGET_APPLY       = "target_override_apply"
+A_TARGET_RESET       = "target_override_reset"
+A_RESET              = "reset"
+A_ADVANCE            = "advance_clock"
+A_QUICK_FILL         = "quick_fill_history"
+A_LC_PARSE_CONFIRM   = "lc_parse_confirm"
+A_LC_PARSE_DISMISS   = "lc_parse_dismiss"
+A_PLAN               = "plan_orders"
+A_TRUCK_COMMIT       = "truck_commit"
+A_SCHEDULE_APPLY     = "schedule_apply"
