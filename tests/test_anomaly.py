@@ -119,23 +119,112 @@ def test_holiday_in_window_fires_when_window_covers_holiday():
 
 # ── Check 4: truck cadence unusual ───────────────────────────────────────────
 
-def test_truck_cadence_silent_in_normal_range(defaults_dict):
-    """1-12 trucks → no flag."""
+def _multi_week_state_for_cadence(defaults_dict, weeks=4, hours_per_day=16):
+    """Build a state with N weeks of Mon-Fri history so the forecaster
+    has data to predict against. Default 4 weeks × 80h/wk → predicted
+    ~46.7k lbs/wk → 2 Product U trucks + 2 Product M trucks per week
+    (each product separately rounds up)."""
     d = copy.deepcopy(defaults_dict)
+    d["run_schedule"] = []
+    for wk in range(weeks):
+        for dow in range(5):
+            offset = wk * 168 + dow * 24
+            d["run_schedule"].append({
+                "start_hour": 6.0 + offset,
+                "end_hour":   6.0 + offset + hours_per_day,
+                "label":      f"W{wk}-{dow}",
+            })
+    return d
+
+
+def test_truck_cadence_silent_when_no_history(defaults_dict):
+    """Forecaster falls back to baseline with < 2 weeks of history.
+    Anomaly check stays silent rather than flagging against an
+    unreliable baseline."""
+    d = copy.deepcopy(defaults_dict)
+    # Default state has only week-1 schedule; forecaster falls back.
+    assert check_truck_cadence_unusual(d, proposed_count=20) == []
+
+
+def test_truck_cadence_silent_in_band(defaults_dict):
+    """4 weeks of Mon-Fri 16h → forecast ~5 trucks. Proposing 5 is
+    smack in the middle of the ±35% band (with ±2 floor) → no flag."""
+    d = _multi_week_state_for_cadence(defaults_dict, weeks=4)
     assert check_truck_cadence_unusual(d, proposed_count=5) == []
 
 
 def test_truck_cadence_fires_high(defaults_dict):
-    d = copy.deepcopy(defaults_dict)
+    """Customer's forecast says ~5 trucks; operator scheduled 20 →
+    way outside the band. Fires high."""
+    d = _multi_week_state_for_cadence(defaults_dict, weeks=4)
     alerts = check_truck_cadence_unusual(d, proposed_count=20)
     assert len(alerts) == 1
     assert "high" in alerts[0]["text"].lower()
+
+
+def test_truck_cadence_fires_low(defaults_dict):
+    """Customer's forecast says ~5 trucks; operator scheduled 1 →
+    well below the band. Fires low."""
+    d = _multi_week_state_for_cadence(defaults_dict, weeks=4)
+    alerts = check_truck_cadence_unusual(d, proposed_count=1)
+    assert len(alerts) == 1
+    assert "low" in alerts[0]["text"].lower()
+
+
+def test_truck_cadence_min_band_floor_protects_low_volume_customer(defaults_dict):
+    """A low-volume customer (forecast = 1 truck/wk) shouldn't get
+    flagged on every ±1 fluctuation. The min_band floor of 2 expands
+    the band to [0, 3] so 2 or 3 trucks is fine."""
+    # Build a low-volume scenario: tiny consumption rates so
+    # predicted lbs/wk → 1 truck.
+    d = _multi_week_state_for_cadence(defaults_dict, weeks=4,
+                                         hours_per_day=2)
+    # Forecast for this state is small. As long as proposed_count is
+    # within ±2 of predicted, no flag should fire.
+    # Find what the forecaster predicts:
+    from forecast import forecast as _f
+    from plan_orders import get_target_week_bounds as _gtwb
+    ws, _ = _gtwb(d)
+    fc = _f(d, target_week_start_run_hour=ws)
+    predicted = sum(p.suggested_trucks for p in fc.products)
+    # Within band (predicted ± 2): no flag
+    for offset in (0, 1, 2):
+        result = check_truck_cadence_unusual(d, proposed_count=predicted + offset)
+        assert result == [], (f"flagged at predicted+{offset}; floor "
+                                f"should protect low-volume customer")
 
 
 def test_truck_cadence_silent_at_zero(defaults_dict):
     """Zero trucks is 'no schedule yet' — handled by other checks."""
     d = copy.deepcopy(defaults_dict)
     assert check_truck_cadence_unusual(d, proposed_count=0) == []
+
+
+def test_truck_cadence_band_pct_tunable_per_customer(defaults_dict):
+    """Setting cfg.truck_cadence_band_pct = 0.05 makes the band tight;
+    even a small over-schedule fires. Setting = 0.99 makes it permissive;
+    almost nothing fires."""
+    from config import PlantConfig
+    d = _multi_week_state_for_cadence(defaults_dict, weeks=4)
+    from forecast import forecast as _f
+    from plan_orders import get_target_week_bounds as _gtwb
+    ws, _ = _gtwb(d)
+    fc = _f(d, target_week_start_run_hour=ws)
+    predicted = sum(p.suggested_trucks for p in fc.products)
+
+    # Tight band: 1% × predicted, floor 1 → effective band ±1
+    tight_cfg = PlantConfig(truck_cadence_band_pct=0.01,
+                              truck_cadence_min_band=1)
+    # predicted + 5 is well outside ±1 band → must fire
+    assert check_truck_cadence_unusual(d, cfg=tight_cfg,
+                                          proposed_count=predicted + 5)
+
+    # Permissive band: 100% × predicted (band = predicted) → range
+    # [0, 2×predicted]. predicted + 1 is well inside — must NOT fire.
+    permissive_cfg = PlantConfig(truck_cadence_band_pct=1.0,
+                                    truck_cadence_min_band=2)
+    assert check_truck_cadence_unusual(d, cfg=permissive_cfg,
+                                          proposed_count=predicted + 1) == []
 
 
 # ── Check 5: schedule arrival timing unusual ────────────────────────────────

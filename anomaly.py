@@ -179,36 +179,76 @@ def check_holiday_in_run_window(data, cfg: PlantConfig = DEFAULT_CONFIG
 
 # ── Check 4: truck cadence unusual ───────────────────────────────────────────
 
-# Reasonable bounds derived from the demo's typical 5-trucks-per-week.
-# Customers with very different cadences should override these.
-_DEFAULT_TRUCK_CADENCE_LOW  = 1
-_DEFAULT_TRUCK_CADENCE_HIGH = 12
-
-
 def check_truck_cadence_unusual(data, cfg: PlantConfig = DEFAULT_CONFIG,
                                   proposed_count: Optional[int] = None,
                                   ) -> List[Dict[str, Any]]:
-    """If the planner proposed an unusually high or low number of
-    trucks for the upcoming week, warn. Default thresholds:
-    [1, 12]. A customer that normally needs 5 trucks/week and now
-    needs 12 likely has a wrong consumption rate or a runaway
-    schedule.
+    """Compare actual truck count for the upcoming week against the
+    forecaster's prediction. Fires when the actual is outside
+    (predicted ± predicted × cfg.truck_cadence_band_pct), with an
+    absolute floor of cfg.truck_cadence_min_band trucks so low-volume
+    customers don't get false positives on every ±1 fluctuation.
 
-    Pass `proposed_count` from the planner's output. If omitted,
-    the function uses len(scheduled_trucks) as a proxy."""
+    The forecaster (forecast.WeightedSeasonalForecaster) already does
+    the heavy lifting:
+      - 4-week lookback with 40/30/20/10 recency weighting
+      - week-level outlier exclusion (down weeks / shutdowns)
+      - holiday gating
+      - per-product truck count = ceil(predicted lbs / truck size)
+
+    So this check just compares the actual count to the forecaster's
+    output. One source of truth for "typical cadence" — no separate
+    weighted-average implementation here.
+
+    Pass `proposed_count` from the planner; if omitted, uses
+    len(scheduled_trucks) as a proxy.
+
+    Silent (returns []) when:
+      - proposed_count == 0 (no schedule yet — handled elsewhere)
+      - forecaster has < 2 weeks of history (fallback baseline isn't
+        reliable enough to anomaly-flag against)
+    """
     state = _as_state(data)
     if proposed_count is None:
         proposed_count = len(state.scheduled_trucks)
-    if _DEFAULT_TRUCK_CADENCE_LOW <= proposed_count <= _DEFAULT_TRUCK_CADENCE_HIGH:
-        return []
     if proposed_count == 0:
         return []   # zero trucks is "no schedule yet" — handled elsewhere
-    direction = "high" if proposed_count > _DEFAULT_TRUCK_CADENCE_HIGH else "low"
+
+    # Tap the forecaster for the predicted truck count.
+    try:
+        from forecast import forecast as _forecast
+        from plan_orders import get_target_week_bounds as _gtwb
+        week_start, _ = _gtwb(state)
+        fc = _forecast(state, target_week_start_run_hour=week_start, cfg=cfg)
+    except Exception:
+        return []   # forecaster unavailable; don't crash the alert path
+
+    # Skip when the forecaster fell back to baseline (< 2 weeks of
+    # history). A baseline anomaly comparison is too noisy.
+    if any("falling back" in n.lower() for n in fc.notes):
+        return []
+
+    predicted = sum(p.suggested_trucks for p in fc.products)
+    if predicted < 1:
+        return []   # forecaster predicted zero; below the floor of usefulness
+
+    # Compute the band: predicted × pct, floored at min_band.
+    raw_band = predicted * float(cfg.truck_cadence_band_pct)
+    band = max(int(round(raw_band)), int(cfg.truck_cadence_min_band))
+    low  = max(0, predicted - band)
+    high = predicted + band
+
+    if low <= proposed_count <= high:
+        return []
+
+    direction = "high" if proposed_count > high else "low"
+    pct = int(cfg.truck_cadence_band_pct * 100)
     return [_alert(
         f"WARNING: Truck cadence is unusually {direction} "
-        f"({proposed_count} trucks scheduled this week). Typical range "
-        f"is {_DEFAULT_TRUCK_CADENCE_LOW}-{_DEFAULT_TRUCK_CADENCE_HIGH}. "
-        f"Verify consumption rates and run-schedule before committing.",
+        f"({proposed_count} trucks scheduled, vs forecaster's "
+        f"prediction of {predicted}, allowed band [{low}, {high}] "
+        f"= ±{pct}% with min ±{cfg.truck_cadence_min_band}). "
+        f"Verify consumption rates, run-schedule, and any operator-"
+        f"added trucks before committing.",
         type="anomaly", severity="warning", direction="other",
     )]
 

@@ -72,6 +72,22 @@ class PlantConfig:
     Stored as strings rather than `date` objects so the dataclass
     remains JSON-serializable through the customer config file."""
 
+    # ── Anomaly thresholds (tunable per customer) ─────────────────────────
+    truck_cadence_band_pct:    float = 0.35
+    """Tolerance band around the forecaster's predicted weekly truck
+    count. anomaly.check_truck_cadence_unusual fires when the actual
+    truck count is outside (predicted ± predicted * truck_cadence_band_pct).
+    35% default = a customer averaging 8 trucks/wk gets the band
+    [5, 11]; outside that triggers a YELLOW warning. Tune lower for
+    customers with steady cadence, higher for customers with naturally
+    volatile demand."""
+
+    truck_cadence_min_band:    int   = 2
+    """Floor for the anomaly band so low-volume customers (1-3
+    trucks/wk) don't get false positives on every ±1 truck fluctuation.
+    A customer averaging 2 trucks/wk with band_pct=0.35 would have a
+    raw band of ±0.7; the floor expands that to ±2."""
+
     # ── Order numbering ───────────────────────────────────────────────────
     sap_order_format: str = "SAP{n:05d}"
     """Python format string for new SAP order numbers. Must contain a
