@@ -46,7 +46,7 @@ DEFAULTS_PATH = "defaults.json"
 # Migrators MUST mutate the dict in place and only perform structural
 # changes — no side effects (no logging, no file writes, no email).
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 def _migrate_v0_to_v1(data: Dict[str, Any]) -> None:
@@ -57,8 +57,24 @@ def _migrate_v0_to_v1(data: Dict[str, Any]) -> None:
     return
 
 
+def _migrate_v1_to_v2(data: Dict[str, Any]) -> None:
+    """v1 → v2: introduce level_history ring buffer (per-hour tank-level
+    snapshots, bounded to ~180d via advance_time's append-with-truncate).
+    v1 files migrate to an empty list — older sim runs simply have no
+    pre-recorded history; advance_time starts populating from the next
+    tick onward.
+
+    PlantState.from_dict already defaults level_history to []; this
+    migrator is mostly a marker so older code that DOESN'T know about
+    level_history can preserve the field via PlantState._extra. Setting
+    it explicitly here means save_data writes the field on first save
+    after migration, matching the v2 shape."""
+    data.setdefault("level_history", [])
+
+
 _MIGRATIONS: Dict[int, Callable[[Dict[str, Any]], None]] = {
     0: _migrate_v0_to_v1,
+    1: _migrate_v1_to_v2,
 }
 
 

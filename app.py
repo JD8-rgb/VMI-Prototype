@@ -199,6 +199,8 @@ def _advance(data, hours, session_start_utc=None):
     clock   = start
     done    = []
 
+    from level_history import record_level_snapshot as _rls_app
+
     def _consume(seg):
         if seg > 0 and burning:
             for p, r in rates.items():
@@ -212,9 +214,14 @@ def _advance(data, hours, session_start_utc=None):
         log.append(f"  Delivered {t['sap_order']} — {t['product']} {t['quantity_lbs']:,} lbs")
         done.append(t["sap_order"])
 
+    # Anchor snapshot at start so level_history has at least one
+    # entry from this advance.
+    _rls_app(data, clock)
+
     for ev_time, ev_type, payload in events:
         _consume(ev_time - clock)
         clock = ev_time
+        _rls_app(data, clock)
         if   ev_type == "s": burning = True;  log.append(f"Plant running at {format_run_hour(data, ev_time)}")
         elif ev_type == "e": burning = False; log.append(f"Plant stopped at {format_run_hour(data, ev_time)}")
         elif ev_type == "d": _deliver(payload)
@@ -222,6 +229,8 @@ def _advance(data, hours, session_start_utc=None):
 
     data["scheduled_trucks"] = [t for t in data["scheduled_trucks"] if t["sap_order"] not in done]
     data["current_run_hour"] = end
+    # Final snapshot at end of advance.
+    _rls_app(data, end)
     if done:
         log.append(f"{len(done)} truck(s) delivered and removed.")
     log.append(f"Clock now: {format_run_hour(data, end)}")
@@ -1030,6 +1039,13 @@ with cr:
         st.session_state.data["run_schedule"]               = []
         st.session_state.data["schedule_received_for_week"] = None
         st.session_state.data["schedule_parse_issue"]       = None
+        # Per the operator-controls spec: Reset clears the level
+        # history, alert log, target overrides, and turns automation
+        # back ON.
+        st.session_state.data["level_history"]              = []
+        st.session_state.data["alert_log"]                  = []
+        st.session_state.data["target_overrides"]           = None
+        st.session_state.data["vmi_automation_enabled"]     = True
         # Reset the session-start timestamp so any emails already in the inbox
         # are treated as "before the session" and ignored from now on.
         st.session_state.session_start_real_utc             = datetime.now(_tz_utc.utc)
@@ -1606,6 +1622,70 @@ else:
         "The chart will populate as the simulation runs and alerts fire. "
         "Reset clears the log."
     )
+
+# ── Tank-level history chart (powered by level_history ring buffer) ──────────
+
+st.markdown("**Tank levels over time**")
+_history = data.get("level_history", []) or []
+
+# Quick-fill button: programmatically advances the sim clock by N
+# weeks, recording snapshots at every tick. Honest demo data — not
+# synthetic.
+_qf_col1, _qf_col2 = st.columns([3, 1])
+with _qf_col1:
+    st.caption(
+        f"{len(_history)} snapshot(s) recorded. "
+        "Use *Advance* above to add more, or use *Generate demo history* "
+        "to fast-forward through several weeks of real simulation."
+    )
+with _qf_col2:
+    _qf_weeks = st.number_input(
+        "Weeks", min_value=1, max_value=26, value=4, step=1,
+        key="qf_weeks", label_visibility="collapsed",
+    )
+    if st.button("🎬 Generate demo history",
+                  use_container_width=True,
+                  key="qf_btn",
+                  help="Advance the sim clock by the selected number "
+                       "of weeks, recording per-tank snapshots into "
+                       "level_history. Real simulator output — same "
+                       "code path as the Advance button, just batched."):
+        log, evts = _advance(
+            st.session_state.data, float(int(_qf_weeks) * 168),
+            session_start_utc=st.session_state.session_start_real_utc,
+        )
+        st.session_state.advance_log = log
+        st.session_state.email_log.extend(evts)
+        st.rerun()
+
+if _history:
+    import plotly.graph_objects as _go_lvl
+    from level_history import downsample_for_chart as _ds_lvl
+    _decimated = _ds_lvl(_history, max_points=720)
+    _xs = [entry["iso"] for entry in _decimated]
+    _tank_names = sorted(_decimated[0].get("tanks", {}).keys())
+    _fig_lvl = _go_lvl.Figure()
+    # Color palette — distinct, color-blind-safe (Wong-2011)
+    _palette = ["#0072B2", "#E69F00", "#009E73", "#CC79A7",
+                 "#56B4E9", "#D55E00", "#F0E442", "#999999"]
+    for _i, _tn in enumerate(_tank_names):
+        _ys = [entry["tanks"].get(_tn) for entry in _decimated]
+        _fig_lvl.add_trace(_go_lvl.Scatter(
+            x=_xs, y=_ys, mode="lines", name=_tn,
+            line=dict(color=_palette[_i % len(_palette)], width=2),
+        ))
+    _fig_lvl.update_layout(
+        height=300,
+        margin=dict(l=20, r=20, t=10, b=20),
+        legend=dict(orientation="h", y=-0.2),
+        xaxis_title="Time",
+        yaxis_title="lbs",
+        hovermode="x unified",
+    )
+    st.plotly_chart(_fig_lvl, use_container_width=True)
+else:
+    st.caption("No level history yet. Click *Generate demo history* "
+                "or use *Advance* above to start populating the chart.")
 
 st.divider()
 

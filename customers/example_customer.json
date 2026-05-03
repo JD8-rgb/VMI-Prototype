@@ -18,7 +18,7 @@
     ]
   },
   "state": {
-    "schema_version": 1,
+    "schema_version": 2,
     "simulation_epoch": "2026-04-13T00:00:00",
     "current_run_hour": 0.0,
     "tanks": {

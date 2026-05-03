@@ -167,6 +167,15 @@ class PlantState:
     target_overrides:        Optional[Dict[str, float]] = None
     vmi_automation_enabled:  bool                       = True
 
+    # Level-history ring buffer. advance_time appends one entry per
+    # hour tick:
+    #     {"run_hour": float, "iso": str, "tanks": {name: lbs, ...}}
+    # Bounded retention via _LEVEL_HISTORY_MAX (default 4320 entries =
+    # 180 days at 1 entry/hour). Powers the VMI Health Dashboard time
+    # chart and any future bias-detection / suggest-target logic.
+    # Schema v2 added this field; v1 files migrate to empty list.
+    level_history:           List[Dict[str, Any]] = field(default_factory=list)
+
     # Catch-all for any future fields added to data.json that this module
     # doesn't know about — preserved verbatim through the round-trip so a
     # newer-schema file isn't lossily mangled when an older code version
@@ -183,7 +192,7 @@ class PlantState:
         "schedule_parse_issue", "schedule_unreadable_alert_id",
         "schedule_alerted_ids", "alerted_hashes", "alert_log",
         "sap_history", "plant_state_override",
-        "target_overrides", "vmi_automation_enabled",
+        "target_overrides", "vmi_automation_enabled", "level_history",
     ])
 
     @classmethod
@@ -211,6 +220,7 @@ class PlantState:
             plant_state_override         = d.get("plant_state_override"),
             target_overrides             = d.get("target_overrides"),
             vmi_automation_enabled       = d.get("vmi_automation_enabled", True),
+            level_history                = list(d.get("level_history", [])),
             _extra = {k: v for k, v in d.items() if k not in cls._KNOWN_KEYS},
         )
 
@@ -234,6 +244,7 @@ class PlantState:
             "plant_state_override":         self.plant_state_override,
             "target_overrides":             self.target_overrides,
             "vmi_automation_enabled":       self.vmi_automation_enabled,
+            "level_history":                list(self.level_history),
         }
         # Preserve any unknown future fields verbatim
         for k, v in self._extra.items():

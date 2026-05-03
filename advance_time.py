@@ -110,6 +110,13 @@ def main(argv=None):
                     print(f"    {name}: {prev:,.1f} -> {now:,.1f}  "
                           f"(consumed {prev - now:,.1f} lbs, status={tanks[name]['status']})")
 
+    def _snapshot(run_hour):
+        """Record per-tank levels at this tick into level_history.
+        Powers the VMI Health Dashboard chart and any future bias-
+        detection logic."""
+        from level_history import record_level_snapshot as _rls
+        _rls(data, run_hour)
+
     def deliver_truck(truck):
         """Pour truck into the lowest-level tank via shared logic."""
         product = truck["product"]
@@ -160,6 +167,10 @@ def main(argv=None):
 
     print(f"(Plant is {'RUNNING' if burning else 'idle'} at start)")
 
+    # Snapshot at the very start so level_history has an anchor point
+    # even if the operator only advances by a fraction of an hour.
+    _snapshot(clock)
+
     for event in events:
         ev_time, ev_type, payload = event
         seg = ev_time - clock
@@ -170,6 +181,11 @@ def main(argv=None):
             else:
                 print(f"Segment: {format_run_hour(data, clock)} -> {format_run_hour(data, ev_time)} ({seg} hrs, idle)")
             clock = ev_time
+            # Snapshot at the end of every segment so level_history has
+            # entries even on long contiguous segments. With max
+            # segment length ≈ 24h (one run window), the chart sees at
+            # least one point per window edge.
+            _snapshot(clock)
 
         if ev_type == "run_start":
             burning = True
@@ -190,6 +206,9 @@ def main(argv=None):
         else:
             print(f"Segment: {format_run_hour(data, clock)} -> {format_run_hour(data, end_hour)} ({seg} hrs, idle)")
         clock = end_hour
+        # Final snapshot so the latest level appears in level_history
+        # exactly at end_hour (not whatever the prior segment ended on).
+        _snapshot(end_hour)
 
     data["scheduled_trucks"] = [t for t in trucks if t["sap_order"] not in delivered_sap_orders]
     data["current_run_hour"] = end_hour

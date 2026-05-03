@@ -54,8 +54,10 @@ def test_loader_returns_cfg_and_state(customer):
     assert cfg.sap_order_format == "ORD-{n:08d}"
     assert cfg.sap_order_seed == 100_000
     assert "2026-12-25" in cfg.plant_holidays
-    # State sanity
-    assert state_dict["schema_version"] == 1
+    # State sanity — schema_version reflects whatever CURRENT is today;
+    # the loader auto-migrates older customer files forward.
+    from data_io import CURRENT_SCHEMA_VERSION
+    assert state_dict["schema_version"] == CURRENT_SCHEMA_VERSION
     assert len(state_dict["tanks"]) == 6      # 3 + 2 + 1
 
 
