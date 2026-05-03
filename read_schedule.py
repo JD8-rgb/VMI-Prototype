@@ -2229,6 +2229,10 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
             arrival_log = data.get("schedule_arrival_history", []) or []
             arrival_log.append(_dt_arr.now().isoformat())
             data["schedule_arrival_history"] = arrival_log[-16:]
+            # Clear any stale pending low-confidence record — a fresh
+            # HIGH parse supersedes whatever was sitting in the
+            # confirm panel.
+            data.pop("pending_low_confidence_parse", None)
         for w in new_windows:
             print(f"  {w['label']}: {time_utils.format_run_hour(data, w['start_hour'])} → {time_utils.format_run_hour(data, w['end_hour'])}")
         return "applied"
@@ -2286,6 +2290,26 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
                 logger.warning(f"could not send alert — {e}")
         elif dist and preview_id in alerted_set:
             logger.info(f"Alert already sent for this email — suppressing duplicate.")
+
+        # Stash the low-confidence parse so the Streamlit "Confirm
+        # low-confidence parse" panel can show the email body +
+        # best-guess entries to the operator. Cleared when the
+        # operator confirms / dismisses, OR when a HIGH-confidence
+        # parse later applies.
+        if preview_msg:
+            data["pending_low_confidence_parse"] = {
+                "email_id":   preview_id,
+                "sender":     preview_msg.get("sender", ""),
+                "subject":    preview_msg.get("subject", ""),
+                "body":       (preview_msg.get("body", "") or "")[:5000],
+                "entries":    [list(e) for e in (best_entries or [])],
+                "confidence": best_confidence,
+                "notes":      list(best_notes or []),
+                "fetched_at": _dt_arr_now().isoformat()
+                                 if "_dt_arr_now" in globals()
+                                 else __import__("datetime").datetime.now().isoformat(),
+            }
+
         return "low_confidence"
 
 

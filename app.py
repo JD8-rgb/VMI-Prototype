@@ -1132,6 +1132,147 @@ with c2:
 
 st.divider()
 
+# ── Pending low-confidence parse (Phase J) ───────────────────────────────────
+#
+# When fetch_and_apply_schedule lands a low-confidence parse, it stashes
+# the email + best-guess entries into data["pending_low_confidence_parse"]
+# AND sends an email alert (existing behavior). This panel surfaces the
+# same record in-page so the operator can confirm-and-apply with one click,
+# instead of going to the Schedule Parser and re-pasting the email.
+
+_pending_lc = data.get("pending_low_confidence_parse")
+if _pending_lc:
+    with st.container(border=True):
+        st.subheader("⚠️ Low-confidence schedule needs review")
+        st.markdown(
+            f"**From:** `{_pending_lc.get('sender', '?')}` · "
+            f"**Subject:** {_pending_lc.get('subject', '(none)')}"
+        )
+        _lc_left, _lc_right = st.columns([1, 1])
+        with _lc_left:
+            st.markdown("**Original email body:**")
+            st.text_area(
+                "Email body",
+                value=_pending_lc.get("body", ""),
+                height=200,
+                disabled=True,
+                key="lc_body_view",
+                label_visibility="collapsed",
+            )
+        with _lc_right:
+            st.markdown(f"**Parser's best guess** "
+                          f"(confidence: `{_pending_lc.get('confidence', '?')}`):")
+            _lc_entries = _pending_lc.get("entries") or []
+            DAYS_LC = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+            if _lc_entries:
+                _lc_rows = [
+                    {"Day": DAYS_LC[int(e[0])],
+                      "Start": int(e[1]), "End": int(e[2])}
+                    for e in _lc_entries
+                ]
+                _lc_edited = st.data_editor(
+                    _lc_rows,
+                    use_container_width=True,
+                    hide_index=True,
+                    num_rows="dynamic",
+                    column_config={
+                        "Day":   st.column_config.SelectboxColumn(
+                            "Day", options=DAYS_LC, required=True),
+                        "Start": st.column_config.NumberColumn(
+                            "Start hr", min_value=0, max_value=47, step=1),
+                        "End":   st.column_config.NumberColumn(
+                            "End hr", min_value=1, max_value=48, step=1),
+                    },
+                    key="lc_editor",
+                )
+            else:
+                st.info("Parser extracted zero entries. Add rows below "
+                         "or use the Schedule Parser to manually paste "
+                         "the schedule.")
+                _lc_edited = []
+                _lc_edited = st.data_editor(
+                    [{"Day": "Mon", "Start": 6, "End": 16}],
+                    use_container_width=True,
+                    hide_index=True,
+                    num_rows="dynamic",
+                    column_config={
+                        "Day":   st.column_config.SelectboxColumn(
+                            "Day", options=DAYS_LC, required=True),
+                        "Start": st.column_config.NumberColumn(
+                            "Start hr", min_value=0, max_value=47, step=1),
+                        "End":   st.column_config.NumberColumn(
+                            "End hr", min_value=1, max_value=48, step=1),
+                    },
+                    key="lc_editor_empty",
+                )
+            if _pending_lc.get("notes"):
+                with st.expander("Parser notes",
+                                   expanded=(_pending_lc.get("confidence")
+                                              != "high")):
+                    for _n in _pending_lc["notes"]:
+                        st.markdown(f"- {_n.strip()}")
+
+        # Three-button row: confirm-and-apply, dismiss, or do nothing
+        _lc_b1, _lc_b2, _lc_b3 = st.columns([2, 2, 5])
+        with _lc_b1:
+            if st.button("✓ Confirm & apply",
+                          type="primary",
+                          use_container_width=True,
+                          key="lc_confirm_btn",
+                          help="Apply the (possibly edited) entries as a "
+                               "low-confidence merge. Other days' existing "
+                               "windows survive; the week is NOT marked "
+                               "received so reminders keep firing."):
+                # Convert editor rows back to entries tuples
+                _final_entries = []
+                for _row in _lc_edited:
+                    _day = _row.get("Day")
+                    if _day not in DAYS_LC:
+                        continue
+                    _s = int(_row.get("Start", 0) or 0)
+                    _e = int(_row.get("End", 0) or 0)
+                    if _e <= _s:
+                        continue
+                    _final_entries.append((DAYS_LC.index(_day), _s, _e))
+                if _final_entries:
+                    sim_now = run_hour_to_dt(data, data["current_run_hour"])
+                    data, _r, _a = apply_schedule_to_data(
+                        data, _final_entries, now_dt=sim_now, mode="merge"
+                    )
+                    st.session_state.data = data
+                    # Clear the pending record on confirm
+                    st.session_state.data.pop("pending_low_confidence_parse",
+                                                None)
+                    _save_data_state(st.session_state.data, _DATA_FILE)
+                    st.success(
+                        f"Confirmed: {_a and len(_a)} day(s) applied as merge "
+                        f"({_r} old window(s) replaced). Week NOT marked "
+                        f"received — reminders will keep firing."
+                    )
+                    st.rerun()
+                else:
+                    st.warning("No valid entries to apply. Edit the table or "
+                                "use Dismiss.")
+        with _lc_b2:
+            if st.button("✕ Dismiss",
+                          use_container_width=True,
+                          key="lc_dismiss_btn",
+                          help="Discard this pending parse without applying. "
+                               "Use the Schedule Parser below to manually "
+                               "paste a corrected schedule."):
+                st.session_state.data.pop("pending_low_confidence_parse",
+                                            None)
+                _save_data_state(st.session_state.data, _DATA_FILE)
+                st.rerun()
+        with _lc_b3:
+            st.caption(
+                "💡 You can edit the table inline before confirming. "
+                "Confirm uses **merge mode** so other days' existing windows "
+                "are preserved."
+            )
+
+    st.divider()
+
 # ── Schedule Parser | Auto-Planner (side by side) ────────────────────────────
 
 sp_col, ap_col = st.columns([2, 3])
