@@ -607,7 +607,13 @@ def _short_label(dt_str):
         return parts[0]
 
 
-def _chart(hist, product, safety=None):
+def _chart(hist, product, safety=None, cutoff_run_hour=None):
+    """Render per-product projection chart.
+
+    cutoff_run_hour: if provided, x-values <= cutoff are drawn solid
+    (operator-parsed schedule period) and x-values > cutoff are drawn
+    dotted (forecast period). The two segments share a legend entry per
+    tank. None = all-solid (back-compat for non-augmented callers)."""
     if safety is None:
         safety = SAFETY_STOCK_LBS
     prefix = "U-" if product == "Product U" else "M-"
@@ -620,18 +626,69 @@ def _chart(hist, product, safety=None):
     tick_vals = [x_vals[i] for i in tick_idxs]
     tick_text = [_short_label(hist["datetimes"][i]) for i in tick_idxs]
 
+    # Find split index for solid/dotted segments. split_idx is the
+    # first x_vals index strictly greater than cutoff.
+    #   None  → cutoff past chart end, entire chart solid
+    #   0     → cutoff before chart start, entire chart dotted
+    #   else  → solid up to split_idx (inclusive seam), dotted after
+    split_idx = None
+    if cutoff_run_hour is not None and x_vals:
+        for i, x in enumerate(x_vals):
+            if x > cutoff_run_hour:
+                split_idx = i
+                break
+
     fig = go.Figure()
     # Run windows — subtle warm tint so they read as "active" without competing
     for w in hist["run_windows"]:
         fig.add_vrect(x0=w["start_hour"], x1=w["end_hour"],
                       fillcolor="rgba(0,199,169,0.07)", line_width=0)
     for name in tnks:
-        fig.add_trace(go.Scatter(
-            x=x_vals, y=hist["tanks"][name], name=name,
-            line=dict(color=COLORS.get(name, "#888"), width=2.5),
-            customdata=hist["datetimes"],
-            hovertemplate=f"<b>{name}</b><br>%{{customdata}}<br>%{{y:,.0f}} lbs<extra></extra>",
-        ))
+        color = COLORS.get(name, "#888")
+        y_vals = hist["tanks"][name]
+        dts    = hist["datetimes"]
+        if split_idx is None:
+            # Single solid trace — no cutoff or cutoff past chart end
+            fig.add_trace(go.Scatter(
+                x=x_vals, y=y_vals, name=name,
+                line=dict(color=color, width=2.5),
+                customdata=dts,
+                hovertemplate=f"<b>{name}</b><br>%{{customdata}}<br>%{{y:,.0f}} lbs<extra></extra>",
+            ))
+        elif split_idx == 0:
+            # Cutoff before chart start (no future parsed windows) → all dotted
+            fig.add_trace(go.Scatter(
+                x=x_vals, y=y_vals, name=name,
+                line=dict(color=color, width=2.5, dash="dot"),
+                customdata=dts,
+                hovertemplate=f"<b>{name}</b> (forecast)<br>%{{customdata}}<br>%{{y:,.0f}} lbs<extra></extra>",
+            ))
+        else:
+            # Solid up to split_idx, dotted from split_idx-1 onward.
+            # The 1-point overlap at the seam keeps the line continuous.
+            fig.add_trace(go.Scatter(
+                x=x_vals[:split_idx], y=y_vals[:split_idx], name=name,
+                line=dict(color=color, width=2.5),
+                legendgroup=name,
+                customdata=dts[:split_idx],
+                hovertemplate=f"<b>{name}</b><br>%{{customdata}}<br>%{{y:,.0f}} lbs<extra></extra>",
+            ))
+            fig.add_trace(go.Scatter(
+                x=x_vals[split_idx-1:], y=y_vals[split_idx-1:], name=name,
+                line=dict(color=color, width=2.5, dash="dot"),
+                legendgroup=name, showlegend=False,
+                customdata=dts[split_idx-1:],
+                hovertemplate=f"<b>{name}</b> (forecast)<br>%{{customdata}}<br>%{{y:,.0f}} lbs<extra></extra>",
+            ))
+    # Vertical "forecast begins" marker at the cutoff
+    if split_idx is not None and 0 < split_idx < len(x_vals):
+        fig.add_vline(
+            x=cutoff_run_hour,
+            line_dash="dash", line_color="#94A3B8", line_width=1.0,
+            annotation_text="forecast →",
+            annotation_position="top right",
+            annotation_font=dict(size=10, color="#64748B", family="Inter"),
+        )
     # Safety stock — softer rose, smaller annotation
     fig.add_hline(
         y=safety, line_dash="dot", line_color="#F43F5E", line_width=1.2,
@@ -1367,7 +1424,7 @@ st.divider()
 
 st.subheader("🔮 Next-Week Forecast")
 
-from forecast import forecast as _forecast
+from forecast import forecast as _forecast, build_augmented_data as _build_augmented_data
 from plan_orders import get_target_week_bounds as _gtwb
 
 _fc_week_start, _fc_week_end = _gtwb(data)
@@ -1434,18 +1491,29 @@ st.divider()
 
 # ── Trendline Charts with inline tank status ──────────────────────────────────
 
-st.subheader("📈 10-Day Projection")
-hist = compute_level_history(data, hours=240)
+st.subheader("📈 12-Day Projection")
+# Build a forecast-augmented schedule so the chart can extend past the
+# operator-parsed window with a dotted-line forecast period. cutoff
+# = end of last parsed run window (or now if no future windows). Solid
+# line up to cutoff; dotted line beyond.
+_augmented_data, _projection_cutoff = _build_augmented_data(data, hours=288)
+hist = compute_level_history(_augmented_data, hours=288)
 c1, c2 = st.columns(2)
 
 with c1:
-    st.plotly_chart(_chart(hist, "Product U"), use_container_width=True, key="ch_u")
+    st.plotly_chart(
+        _chart(hist, "Product U", cutoff_run_hour=_projection_cutoff),
+        use_container_width=True, key="ch_u",
+    )
     t1, t2 = st.columns(2)
     _tank_info(t1, "U-Tank1", data["tanks"]["U-Tank1"])
     _tank_info(t2, "U-Tank2", data["tanks"]["U-Tank2"])
 
 with c2:
-    st.plotly_chart(_chart(hist, "Product M"), use_container_width=True, key="ch_m")
+    st.plotly_chart(
+        _chart(hist, "Product M", cutoff_run_hour=_projection_cutoff),
+        use_container_width=True, key="ch_m",
+    )
     t1, t2 = st.columns(2)
     _tank_info(t1, "M-Tank1", data["tanks"]["M-Tank1"])
     _tank_info(t2, "M-Tank2", data["tanks"]["M-Tank2"])

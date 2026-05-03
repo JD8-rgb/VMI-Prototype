@@ -294,3 +294,97 @@ def forecast(state, target_week_start_run_hour: float,
     WeightedSeasonalForecaster."""
     engine = WeightedSeasonalForecaster(cfg=cfg)
     return engine.forecast(state, target_week_start_run_hour)
+
+
+# ── Augmented schedule for the integrated 12-day projection ─────────────────
+
+def build_augmented_data(data: Dict[str, Any], cfg: PlantConfig = DEFAULT_CONFIG,
+                          hours: int = 288) -> Tuple[Dict[str, Any], float]:
+    """Extend data["run_schedule"] with forecast-derived run windows for
+    the period beyond the operator's parsed schedule.
+
+    Returns:
+        (augmented_data_dict, cutoff_run_hour)
+
+    The cutoff is the end of the last parsed run window after current
+    sim time. Up to that point, the projection chart draws SOLID lines
+    (we know what's happening from the parsed schedule). Beyond it,
+    DOTTED lines show the forecaster's best guess.
+
+    If there are no parsed run windows after current sim time, cutoff =
+    current_run_hour and the entire chart is dotted.
+
+    For each forecast day in [cutoff, current+hours], emit one window
+    starting at the customer's typical 06:00 weekday start, lasting
+    `forecasted run hours for that weekday`. Holiday / weekend days
+    with zero predicted hours produce no window. End times can exceed
+    24h for continuous-shift customers (matches the 24/5 template).
+    """
+    state = _as_state(data)
+    current = float(state.current_run_hour)
+    end_hour = current + hours
+
+    # Cutoff = end of latest parsed window after now. None means no
+    # future-going windows; cutoff = now.
+    future_window_ends = [
+        float(w.end_hour) for w in state.run_schedule
+        if w.end_hour > current
+    ]
+    cutoff = max(future_window_ends) if future_window_ends else current
+
+    # If the parsed schedule already covers the full chart horizon,
+    # no augmentation needed.
+    if cutoff >= end_hour:
+        return (dict(data) if not isinstance(data, dict)
+                 else {**data}), cutoff
+
+    # Build forecast for the FIRST week beyond cutoff. The forecaster
+    # produces a per-weekday-of-week pattern; we re-use the same
+    # pattern for any subsequent week within the chart horizon.
+    fc = forecast(state, target_week_start_run_hour=cutoff, cfg=cfg)
+
+    # Pull per-weekday run-hours from the first product (all products
+    # share the same plant schedule, so per-weekday hours are uniform).
+    if fc.products:
+        per_dow_hours = {
+            dow: fc.products[0].by_weekday.get(dow, {}).get("run_hours", 0.0)
+            for dow in range(7)
+        }
+    else:
+        per_dow_hours = {dow: 0.0 for dow in range(7)}
+
+    # Walk day-by-day from cutoff to end, emitting forecast windows.
+    # Use run_hour_to_dt for sim-time math (handles arbitrary epoch).
+    from time_utils import run_hour_to_dt, dt_to_run_hour
+    forecast_windows: List[Dict[str, Any]] = []
+    cutoff_dt = run_hour_to_dt(state, cutoff)
+    end_dt    = run_hour_to_dt(state, end_hour)
+    # Start from the next 00:00 boundary at or after cutoff
+    day_dt = cutoff_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    if day_dt < cutoff_dt:
+        day_dt = day_dt + timedelta(days=1)
+
+    while day_dt < end_dt:
+        dow = day_dt.weekday()
+        predicted_h = float(per_dow_hours.get(dow, 0.0))
+        if predicted_h > 0:
+            # Window starts at 06:00 of the predicted day, ends at
+            # 06:00 + predicted_h. End can exceed 24:00 for continuous
+            # shifts (e.g. 18h Mon → continues into Tue 00:00).
+            start_dt = day_dt.replace(hour=6)
+            end_dt_w = start_dt + timedelta(hours=predicted_h)
+            forecast_windows.append({
+                "start_hour": dt_to_run_hour(state, start_dt),
+                "end_hour":   dt_to_run_hour(state, end_dt_w),
+                "label":      f"forecast-{day_dt.date().isoformat()}",
+            })
+        day_dt = day_dt + timedelta(days=1)
+
+    # Build augmented data dict — original run_schedule + forecast windows
+    if isinstance(data, dict):
+        augmented = {**data}
+        augmented["run_schedule"] = list(data.get("run_schedule", [])) + forecast_windows
+    else:
+        augmented = state.to_dict()
+        augmented["run_schedule"] = augmented.get("run_schedule", []) + forecast_windows
+    return augmented, cutoff
