@@ -680,41 +680,121 @@ def _chart(hist, product, safety=None):
 
 
 def _tank_info(col, name, info):
+    """Animated tank-fill card. SVG silhouette of a cylinder with the
+    fluid level animated between renders (CSS transition on the
+    fluid-rect's y / height). Color semantically encodes fill level:
+    red < 20%, amber < 50%, green/teal otherwise. A subtle wave
+    (animated SVG sinusoid) on top of the fluid sells the "real
+    liquid" feel.
+    """
     pct      = info["current_level_lbs"] / info["max_capacity_lbs"]
     pct_clip = max(0.0, min(1.0, pct))
     if pct < 0.2:
-        bar_color, dot_color = "#F43F5E", "#F43F5E"   # critical → red
+        fluid_color, dot_color = "#F43F5E", "#F43F5E"   # critical → red
+        fluid_dark             = "#BE123C"
     elif pct < 0.5:
-        bar_color, dot_color = "#F59E0B", "#F59E0B"   # low → amber
+        fluid_color, dot_color = "#F59E0B", "#F59E0B"   # low → amber
+        fluid_dark             = "#B45309"
     else:
-        bar_color, dot_color = "#00C7A9", "#22C55E"   # healthy → teal/green
+        fluid_color, dot_color = "#0EA5E9", "#22C55E"   # healthy → blue
+        fluid_dark             = "#0369A1"
     is_draw = info["status"] == "draw"
-    badge_bg = "#0F1629" if is_draw else "#F1F5F9"
-    badge_fg = "#FFFFFF" if is_draw else "#64748B"
-    badge_lbl = "DRAW" if is_draw else "STANDBY"
+    chip_kind = "draw" if is_draw else "standby"
+
+    # SVG geometry: 60×80 viewBox, tank silhouette inset 4px on each
+    # side. Fluid fills from the bottom; height encodes fill level.
+    SVG_W, SVG_H = 60, 80
+    INSET_X, INSET_TOP, INSET_BOT = 6, 8, 6
+    tank_left   = INSET_X
+    tank_top    = INSET_TOP
+    tank_w      = SVG_W - 2 * INSET_X
+    tank_h      = SVG_H - INSET_TOP - INSET_BOT
+    fluid_h     = tank_h * pct_clip
+    fluid_y     = tank_top + (tank_h - fluid_h)
+
+    # Unique IDs per tank so multiple inline SVGs don't collide on
+    # gradient / clip-path defs.
+    safe_id = name.replace("-", "_").replace(" ", "_")
+
+    # The wave is two stacked sinusoids that translate-X at different
+    # speeds — pure CSS animation via the keyframes block below.
+    # Wave only renders when fluid_h > 4 (otherwise it'd clip).
+    wave_svg = ""
+    if fluid_h > 4:
+        wave_svg = f"""
+        <path d="M {tank_left} {fluid_y}
+                  Q {tank_left + tank_w * 0.25} {fluid_y - 2},
+                    {tank_left + tank_w * 0.5} {fluid_y}
+                  T {tank_left + tank_w} {fluid_y}
+                  L {tank_left + tank_w} {tank_top + tank_h}
+                  L {tank_left} {tank_top + tank_h} Z"
+              fill="{fluid_dark}" opacity="0.4"
+              clip-path="url(#clip_{safe_id})">
+            <animateTransform attributeName="transform" type="translate"
+                              values="0,0; -10,0; 0,0" dur="3.5s"
+                              repeatCount="indefinite"/>
+        </path>
+        """
+
+    svg = f"""
+    <svg viewBox="0 0 {SVG_W} {SVG_H}" class="vmi-tank-svg"
+         width="60" height="80" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+            <clipPath id="clip_{safe_id}">
+                <rect x="{tank_left}" y="{tank_top}" rx="3" ry="3"
+                      width="{tank_w}" height="{tank_h}"/>
+            </clipPath>
+        </defs>
+        <!-- tank outline -->
+        <rect x="{tank_left}" y="{tank_top}" rx="3" ry="3"
+              width="{tank_w}" height="{tank_h}"
+              fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5"/>
+        <!-- fluid (animated y / height via CSS transition class) -->
+        <rect class="vmi-tank-fluid" x="{tank_left}" y="{fluid_y}"
+              width="{tank_w}" height="{fluid_h}"
+              fill="{fluid_color}" opacity="0.85"
+              clip-path="url(#clip_{safe_id})"/>
+        {wave_svg}
+        <!-- tank cap -->
+        <ellipse cx="{tank_left + tank_w / 2}" cy="{tank_top}"
+                 rx="{tank_w / 2}" ry="2.5"
+                 fill="#E2E8F0" stroke="#CBD5E1" stroke-width="1"/>
+    </svg>
+    """
+
     col.markdown(f"""
-    <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:8px;
-                padding:0.55rem 0.75rem;margin-bottom:0.4rem;
-                font-family:'Inter',sans-serif;">
-        <div style="display:flex;align-items:center;justify-content:space-between;">
-            <div style="display:flex;align-items:center;gap:0.4rem;">
-                <span style="display:inline-block;width:8px;height:8px;border-radius:50%;
-                             background:{dot_color};"></span>
-                <span style="font-weight:600;color:#0F1629;font-size:0.88rem;">{name}</span>
+    <div class="vmi-tank-card" style="margin-bottom:0.4rem;">
+        <div style="display:flex;gap:0.75rem;align-items:flex-start;">
+            <div style="flex:0 0 60px;">{svg}</div>
+            <div style="flex:1 1 auto;min-width:0;">
+                <div style="display:flex;align-items:center;
+                            justify-content:space-between;
+                            gap:0.4rem;">
+                    <div style="display:flex;align-items:center;gap:0.4rem;
+                                min-width:0;">
+                        <span style="display:inline-block;width:8px;
+                                     height:8px;border-radius:50%;
+                                     background:{dot_color};
+                                     flex:0 0 8px;"></span>
+                        <span style="font-weight:600;color:var(--vmi-text-primary);
+                                     font-size:0.88rem;
+                                     overflow:hidden;text-overflow:ellipsis;
+                                     white-space:nowrap;">{name}</span>
+                    </div>
+                    {_chip_html('DRAW' if is_draw else 'STANDBY', chip_kind)}
+                </div>
+                <div style="margin-top:0.35rem;color:var(--vmi-text-secondary);
+                            font-size:0.78rem;">
+                    <span class="vmi-num" style="color:var(--vmi-text-primary);
+                                                  font-size:1.05rem;
+                                                  font-weight:600;">
+                        {info['current_level_lbs']:,.0f}
+                    </span>
+                    <span style="color:var(--vmi-text-muted);font-size:0.72rem;">
+                        / {info['max_capacity_lbs']:,} lbs · {pct*100:.0f}%
+                    </span>
+                </div>
             </div>
-            <span style="background:{badge_bg};color:{badge_fg};font-size:0.62rem;
-                         font-weight:600;letter-spacing:0.06em;padding:2px 7px;
-                         border-radius:4px;">{badge_lbl}</span>
-        </div>
-        <div style="margin-top:0.35rem;color:#64748B;font-size:0.78rem;">
-            <span style="color:#0F1629;font-weight:600;">{info['current_level_lbs']:,.0f}</span>
-            &nbsp;/&nbsp; {info['max_capacity_lbs']:,} lbs
-            &nbsp;·&nbsp; {pct*100:.0f}%
-        </div>
-        <div style="margin-top:0.3rem;height:5px;background:#F1F5F9;border-radius:3px;
-                    overflow:hidden;">
-            <div style="height:100%;width:{pct_clip*100:.1f}%;background:{bar_color};
-                        border-radius:3px;"></div>
         </div>
     </div>
     """, unsafe_allow_html=True)
