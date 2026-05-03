@@ -94,6 +94,18 @@ class PlantConfig:
     target_low_lbs:        float = 15_000
     target_high_lbs:       float = 27_000
 
+    # Operator-tunable target window. The Streamlit "VMI Controls" panel
+    # exposes two sliders bounded by (tunable_low_min..tunable_low_max)
+    # and (tunable_high_min..tunable_high_max). The operator-set values
+    # land in PlantState.target_overrides and override target_low_lbs /
+    # target_high_lbs in the per-week target curve. Bounds keep the
+    # operator from setting nonsense (e.g. low > high, or wildly off
+    # the customer's expected range).
+    tunable_low_min:  float = 11_000
+    tunable_low_max:  float = 19_000
+    tunable_high_min: float = 20_000
+    tunable_high_max: float = 30_000
+
     def target_for_week(self, week_run_hours: float) -> float:
         """Linear-interpolated reorder target given scheduled weekly run hours."""
         if week_run_hours <= self.target_low_run_hours:
@@ -177,6 +189,28 @@ class PlantConfig:
             raise ValueError(
                 f"PlantConfig.sap_order_seed must be >= 0, "
                 f"got {self.sap_order_seed!r}."
+            )
+
+        # ── tunable target bounds must be sane ───────────────────────────
+        # The operator's slider min must be < max (so the slider has a
+        # range), and the low slider's max must not exceed the high
+        # slider's min (so an operator can't set low > high through the
+        # sliders even at their extremes).
+        if self.tunable_low_min >= self.tunable_low_max:
+            raise ValueError(
+                f"PlantConfig.tunable_low_min ({self.tunable_low_min}) "
+                f"must be < tunable_low_max ({self.tunable_low_max})."
+            )
+        if self.tunable_high_min >= self.tunable_high_max:
+            raise ValueError(
+                f"PlantConfig.tunable_high_min ({self.tunable_high_min}) "
+                f"must be < tunable_high_max ({self.tunable_high_max})."
+            )
+        if self.tunable_low_max > self.tunable_high_min:
+            raise ValueError(
+                f"PlantConfig.tunable_low_max ({self.tunable_low_max}) "
+                f"must be <= tunable_high_min ({self.tunable_high_min}) "
+                f"so the operator can't set low > high via the sliders."
             )
 
 

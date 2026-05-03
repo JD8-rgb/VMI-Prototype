@@ -53,12 +53,43 @@ MAX_ITERATIONS        = 50
 # Target calculation
 # ---------------------------------------------------------------------------
 
-def get_target_for_week(week_run_hours, cfg: PlantConfig = DEFAULT_CONFIG):
+def get_target_for_week(week_run_hours, cfg: PlantConfig = DEFAULT_CONFIG,
+                          state=None):
     """Reorder target for a week given its scheduled run hours.
 
-    Delegates to PlantConfig.target_for_week so per-customer curves can
-    be swapped in by passing a different cfg.
+    Consults the operator's `target_overrides` first (set via the
+    Streamlit "VMI Controls" panel and persisted in PlantState). When
+    overrides are present, the target curve uses cfg's run-hour x-axis
+    but the operator's lbs y-values; otherwise falls back to the cfg
+    curve. The override values are clamped to cfg.tunable_* bounds so
+    a stale override that no longer fits the customer's window won't
+    produce nonsense.
     """
+    # Pull override from either dict or PlantState shape (polymorphic
+    # to match the rest of the codebase). None when no override active.
+    overrides = None
+    if state is not None:
+        if hasattr(state, "target_overrides"):
+            overrides = state.target_overrides
+        elif isinstance(state, dict):
+            overrides = state.get("target_overrides")
+
+    if overrides and "low" in overrides and "high" in overrides:
+        low_lbs  = max(cfg.tunable_low_min,
+                        min(cfg.tunable_low_max, float(overrides["low"])))
+        high_lbs = max(cfg.tunable_high_min,
+                        min(cfg.tunable_high_max, float(overrides["high"])))
+        # Same interpolation as PlantConfig.target_for_week, but with
+        # the operator's lbs values substituted.
+        if week_run_hours <= cfg.target_low_run_hours:
+            return low_lbs
+        if week_run_hours >= cfg.target_high_run_hours:
+            return high_lbs
+        span_hours = cfg.target_high_run_hours - cfg.target_low_run_hours
+        span_lbs   = high_lbs - low_lbs
+        fraction   = (week_run_hours - cfg.target_low_run_hours) / span_hours
+        return low_lbs + fraction * span_lbs
+
     return cfg.target_for_week(week_run_hours)
 
 

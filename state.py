@@ -154,6 +154,19 @@ class PlantState:
     sap_history:                  List[str]           = field(default_factory=list)
     plant_state_override:         Optional[Dict[str, Any]] = None
 
+    # Operator-set runtime overrides (set via the Streamlit "VMI Controls"
+    # panel). All persist week-to-week until the operator hits Reset.
+    #
+    # target_overrides : {"low": float, "high": float} or None.
+    #     When set, replaces cfg.target_low_lbs / cfg.target_high_lbs
+    #     in the per-week target curve. Bounded by cfg.tunable_*.
+    # vmi_automation_enabled : True (default) or False.
+    #     When False, the planner's auto-truck-ordering is suppressed
+    #     and check_vmi_off fires a weekly Friday RED alert until the
+    #     operator turns it back on.
+    target_overrides:        Optional[Dict[str, float]] = None
+    vmi_automation_enabled:  bool                       = True
+
     # Catch-all for any future fields added to data.json that this module
     # doesn't know about — preserved verbatim through the round-trip so a
     # newer-schema file isn't lossily mangled when an older code version
@@ -170,6 +183,7 @@ class PlantState:
         "schedule_parse_issue", "schedule_unreadable_alert_id",
         "schedule_alerted_ids", "alerted_hashes", "alert_log",
         "sap_history", "plant_state_override",
+        "target_overrides", "vmi_automation_enabled",
     ])
 
     @classmethod
@@ -195,6 +209,8 @@ class PlantState:
             alert_log                    = list(d.get("alert_log", [])),
             sap_history                  = list(d.get("sap_history", [])),
             plant_state_override         = d.get("plant_state_override"),
+            target_overrides             = d.get("target_overrides"),
+            vmi_automation_enabled       = d.get("vmi_automation_enabled", True),
             _extra = {k: v for k, v in d.items() if k not in cls._KNOWN_KEYS},
         )
 
@@ -216,6 +232,8 @@ class PlantState:
             "alert_log":                    list(self.alert_log),
             "sap_history":                  list(self.sap_history),
             "plant_state_override":         self.plant_state_override,
+            "target_overrides":             self.target_overrides,
+            "vmi_automation_enabled":       self.vmi_automation_enabled,
         }
         # Preserve any unknown future fields verbatim
         for k, v in self._extra.items():
