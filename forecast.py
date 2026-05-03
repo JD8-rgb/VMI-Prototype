@@ -31,8 +31,22 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from alerts import _as_state
 from config import DEFAULT_CONFIG, PlantConfig
+from state import PlantState
+
+
+def _as_state(data_or_state):
+    """Polymorphic dict→PlantState shim, inlined here.
+
+    Was `from alerts import _as_state` originally, but Streamlit Cloud
+    raised an opaque ImportError on the underscore-prefixed import even
+    though the symbol exists in alerts.py. Inlining removes the
+    cross-module dependency at import time. Behavior is identical to
+    alerts._as_state (which keeps its own copy for callers there).
+    """
+    if isinstance(data_or_state, PlantState):
+        return data_or_state
+    return PlantState.from_dict(data_or_state)
 
 
 # ── Tunables (default values; PlantConfig will mirror these in Phase 8b) ────
