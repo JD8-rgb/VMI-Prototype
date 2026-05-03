@@ -35,6 +35,33 @@ from typing import Any, Dict, Optional
 AUDIT_LOG_MAX_ENTRIES = 1000
 
 
+def _coerce_serializable(value: Any) -> Any:
+    """Best-effort coerce a value to something JSON can dump.
+
+    The audit_log is persisted via data_io.save_data → json.dump. A
+    non-serializable details payload (a function, a custom class, a
+    dataclass instance) would raise TypeError at save time, breaking
+    the entire data.json write. Defensive: stringify anything we
+    can't recognize so audit recording never silently kills the save
+    loop.
+
+    Recognized as-is: None, bool, int, float, str.
+    Recognized recursively: list, tuple, dict (keys stringified).
+    Everything else: repr() and stringify, with a marker so reviewers
+    know the value was coerced.
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_coerce_serializable(v) for v in value]
+    if isinstance(value, dict):
+        # Keys stringified — JSON requires string keys
+        return {str(k): _coerce_serializable(v) for k, v in value.items()}
+    # Fallback: repr it. Marker prefix so audit reviewers can see the
+    # value wasn't a primitive.
+    return f"<unserializable:{type(value).__name__}:{value!r}>"
+
+
 def record(
     data: Dict[str, Any],
     action: str,
@@ -48,15 +75,24 @@ def record(
     Idempotent on data without the field — initializes to []. Failures
     are non-fatal (no I/O happens here; the underlying save is the
     Streamlit save path).
+
+    Defensive: details is recursively coerced via _coerce_serializable
+    so a non-JSON-friendly value (function, dataclass instance, etc.)
+    doesn't break data_io.save_data downstream. Coerced values are
+    repr'd and prefixed `<unserializable:...>` so auditors can see
+    something happened.
     """
     log = data.get("audit_log")
     if not isinstance(log, list):
         log = []
+    safe_details = (
+        _coerce_serializable(dict(details)) if details else {}
+    )
     entry = {
         "iso":     datetime.now().isoformat(),
         "action":  str(action),
         "user":    str(user),
-        "details": dict(details) if details else {},
+        "details": safe_details,
     }
     log.append(entry)
     if len(log) > AUDIT_LOG_MAX_ENTRIES:

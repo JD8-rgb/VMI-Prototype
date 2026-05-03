@@ -160,3 +160,73 @@ def test_action_constants_match_string_values():
     assert A_TARGET_APPLY == "target_override_apply"
     assert A_RESET == "reset"
     assert A_ADVANCE == "advance_clock"
+
+
+# ── JSON-serializability gate (red-team finding) ────────────────────────────
+#
+# audit_log is persisted via data_io.save_data → json.dump. A
+# non-JSON-friendly details payload (function, custom class, dataclass)
+# would raise TypeError at save time, breaking the entire data.json
+# write loop. _coerce_serializable defends.
+
+def test_record_handles_function_in_details_without_killing_save():
+    """A function in details was the original red-team failure mode:
+    record() succeeded but the next json.dumps(data) raised TypeError."""
+    import json
+    d = {}
+    record(d, "test_action",
+            details={"a_callable": lambda x: x + 1, "ok_value": 42})
+    # The whole data dict must still be JSON-dumpable
+    json.dumps(d)   # must not raise
+    # The unserializable value was coerced to a string marker
+    coerced = d["audit_log"][0]["details"]["a_callable"]
+    assert isinstance(coerced, str)
+    assert "unserializable" in coerced
+    # Friendly values pass through unchanged
+    assert d["audit_log"][0]["details"]["ok_value"] == 42
+
+
+def test_record_handles_custom_class_in_details():
+    import json
+    class _Custom:
+        def __init__(self, n): self.n = n
+        def __repr__(self):    return f"Custom({self.n})"
+    d = {}
+    record(d, "test", details={"thing": _Custom(7)})
+    json.dumps(d)   # must not raise
+    coerced = d["audit_log"][0]["details"]["thing"]
+    assert "unserializable" in coerced
+    assert "_Custom" in coerced or "Custom" in coerced
+
+
+def test_record_recursively_coerces_nested_structures():
+    """A list containing a function should be coerced item-by-item."""
+    import json
+    d = {}
+    record(d, "test", details={"items": [1, lambda x: x, "ok"]})
+    json.dumps(d)   # must not raise
+    items = d["audit_log"][0]["details"]["items"]
+    assert items[0] == 1
+    assert isinstance(items[1], str)
+    assert "unserializable" in items[1]
+    assert items[2] == "ok"
+
+
+def test_record_stringifies_non_string_dict_keys():
+    """JSON requires string keys; defensive coercion protects."""
+    import json
+    d = {}
+    record(d, "test", details={1: "one", 2: "two"})
+    json.dumps(d)
+    keys = list(d["audit_log"][0]["details"].keys())
+    assert sorted(keys) == ["1", "2"]
+
+
+def test_record_preserves_primitive_details():
+    """Primitives (str/int/float/bool/None) pass through unchanged."""
+    d = {}
+    record(d, "test", details={
+        "s": "hello", "i": 42, "f": 3.14, "b": True, "n": None,
+    })
+    rec = d["audit_log"][0]["details"]
+    assert rec == {"s": "hello", "i": 42, "f": 3.14, "b": True, "n": None}
