@@ -41,13 +41,31 @@ def record_level_snapshot(data: Dict[str, Any], run_hour: float) -> None:
 
     Both data dict + PlantState shape supported via the duck-typed
     dict accessor.
+
+    `iso` is the SIMULATION time corresponding to run_hour (epoch +
+    run_hour). Was wall-clock-now in an earlier version, which made
+    "Generate demo history" (which runs in seconds wall-clock-wise)
+    produce a chart spanning seconds instead of weeks of sim time.
     """
     history = data.get("level_history", [])
     if history is None:
         history = []
+    # Compute sim time from run_hour. Falls back to wall-clock if the
+    # data dict doesn't carry simulation_epoch (defensive — any caller
+    # passing a state dict will have it).
+    epoch_iso = data.get("simulation_epoch")
+    if epoch_iso:
+        try:
+            epoch = datetime.fromisoformat(epoch_iso)
+            from datetime import timedelta as _td
+            sim_iso = (epoch + _td(hours=float(run_hour))).isoformat()
+        except (ValueError, TypeError):
+            sim_iso = datetime.now().isoformat()
+    else:
+        sim_iso = datetime.now().isoformat()
     snapshot = {
         "run_hour": float(run_hour),
-        "iso":      datetime.now().isoformat(),
+        "iso":      sim_iso,
         "tanks":    {
             name: float(info["current_level_lbs"])
             for name, info in data.get("tanks", {}).items()

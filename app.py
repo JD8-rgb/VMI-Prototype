@@ -2333,12 +2333,19 @@ if _history:
             line=dict(color=_palette[_i % len(_palette)], width=2),
         ))
     _fig_lvl.update_layout(
-        height=300,
-        margin=dict(l=20, r=20, t=10, b=20),
-        legend=dict(orientation="h", y=-0.2),
-        xaxis_title="Time",
+        height=450,
+        margin=dict(l=20, r=20, t=10, b=40),
+        legend=dict(orientation="h", y=-0.15),
+        xaxis_title="Sim time",
         yaxis_title="lbs",
         hovermode="x unified",
+        # Explicit daily ticks so a 12-day chart doesn't auto-pick
+        # 5-minute spacing when zoomed in. dtick=86400000 ms = 24 h.
+        xaxis=dict(
+            tickformat="%a %m/%d",
+            dtick=86400000.0,
+            tickangle=-30,
+        ),
     )
     st.plotly_chart(_fig_lvl, use_container_width=True)
 else:
