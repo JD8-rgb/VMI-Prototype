@@ -1185,18 +1185,56 @@ with sp_col:
         )
         if entries:
             DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-            rows = []
+            # Editable table: operator can adjust hours / drop rows
+            # in-place when the parser is almost-but-not-quite right.
+            # On Apply, the edited rows are re-converted back to the
+            # (weekday_int, start_hour_int, end_hour_int) tuple shape
+            # the rest of the pipeline uses.
+            edit_rows = []
             for e in entries:
-                total_h = e[2] - e[1]
-                end_day_n = (e[0] + total_h // 24) % 7 if total_h > 24 else e[0]
-                rows.append({
-                    "Day": DAYS[e[0]],
-                    "Start": f"{e[1]:02d}:00",
-                    "End day": DAYS[end_day_n],
-                    "End": f"{e[2] % 24:02d}:00",
-                    "Hrs": f"{total_h:.0f}",
+                edit_rows.append({
+                    "Day":   DAYS[e[0]],
+                    "Start": int(e[1]),
+                    "End":   int(e[2]),
                 })
-            st.dataframe(rows, use_container_width=True, hide_index=True)
+            edited = st.data_editor(
+                edit_rows,
+                use_container_width=True,
+                hide_index=True,
+                key="parser_entries_editor",
+                num_rows="dynamic",   # operator can add / remove rows
+                column_config={
+                    "Day":   st.column_config.SelectboxColumn(
+                        "Day", options=DAYS, required=True,
+                        help="Weekday for this run window."),
+                    "Start": st.column_config.NumberColumn(
+                        "Start hr", min_value=0, max_value=47, step=1,
+                        help="Start hour (0-23). Use 24+ for windows "
+                             "that cross midnight (e.g. 22 → 30)."),
+                    "End":   st.column_config.NumberColumn(
+                        "End hr", min_value=1, max_value=48, step=1,
+                        help="End hour, exclusive."),
+                },
+            )
+            # Convert edits back to entries tuples for Apply.
+            edited_entries = []
+            for row in edited:
+                day_name = row.get("Day")
+                if day_name not in DAYS:
+                    continue   # skip malformed rows
+                start = int(row.get("Start", 0) or 0)
+                end   = int(row.get("End", 0) or 0)
+                if end <= start:
+                    continue   # skip degenerate windows
+                edited_entries.append((DAYS.index(day_name), start, end))
+            # Stash so the Apply button below uses the edited shape
+            # rather than the original parser output.
+            st.session_state._edited_entries = edited_entries
+            if edited_entries != [(e[0], e[1], e[2]) for e in entries]:
+                st.caption(
+                    f"✏️ Edited: {len(edited_entries)} window(s) "
+                    f"(parser originally extracted {len(entries)})"
+                )
 
         # Show parse notes — critical when confidence is low so the user knows
         # WHY (e.g. "LLM parse failed — API key rejected" or "Thu: day found
@@ -1221,9 +1259,14 @@ with sp_col:
             # reminder keeps firing). Prevents a partial parse from
             # silently wiping a complete week.
             apply_mode = "replace" if confidence == "high" else "merge"
+            # Use the operator-edited entries if the inline editor was
+            # touched; falls back to the original parser output if not.
+            apply_entries = st.session_state.get(
+                "_edited_entries", entries) or entries
             data, removed, added = apply_schedule_to_data(
-                data, entries, now_dt=sim_now, mode=apply_mode
+                data, apply_entries, now_dt=sim_now, mode=apply_mode
             )
+            st.session_state.pop("_edited_entries", None)
             st.session_state.parse_result = None
             if apply_mode == "merge":
                 st.warning(
