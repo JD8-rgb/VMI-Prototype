@@ -1443,6 +1443,129 @@ with _info_col:
 
 st.divider()
 
+# ── VMI Health Dashboard (6-month alert history) ──────────────────────────────
+#
+# Reads alert_log (already populated on every alert fire) and counts
+# overfill ("too high") vs safety_stock ("too low") events over the
+# last 180 days. Operator uses this to decide whether to raise or
+# lower the target sliders above. Counts accumulate over time —
+# resetting data clears them.
+
+st.subheader("📊 VMI Health Dashboard")
+
+from datetime import datetime as _dt_dash, timedelta as _td_dash
+
+_DASH_WINDOW_DAYS = 180   # 6 months
+
+def _alert_log_summary(data, window_days=_DASH_WINDOW_DAYS):
+    """Bucket alert_log entries by week + count by overfill /
+    safety_stock. Returns (overfill_total, safety_total, weekly_buckets)
+    where weekly_buckets is a list of (week_start_iso, overfill_n,
+    safety_n) sorted ascending."""
+    log = data.get("alert_log", []) or []
+    cutoff = _dt_dash.now() - _td_dash(days=window_days)
+    overfill_total = 0
+    safety_total   = 0
+    by_week: dict = {}
+    for entry in log:
+        ts = entry.get("logged_at_iso")
+        if not ts:
+            continue
+        try:
+            dt = _dt_dash.fromisoformat(ts)
+        except ValueError:
+            continue
+        if dt < cutoff:
+            continue
+        # Bucket to Monday of that week (date), ISO string for key
+        monday = (dt - _td_dash(days=dt.weekday())).date().isoformat()
+        bucket = by_week.setdefault(monday, {"overfill": 0, "safety": 0})
+        atype = entry.get("type")
+        if atype == "overfill":
+            overfill_total += 1
+            bucket["overfill"] += 1
+        elif atype == "safety_stock":
+            safety_total += 1
+            bucket["safety"] += 1
+    weekly_buckets = sorted(
+        [(wk, b["overfill"], b["safety"]) for wk, b in by_week.items()]
+    )
+    return overfill_total, safety_total, weekly_buckets
+
+
+_overfill_n, _safety_n, _weekly = _alert_log_summary(data)
+_total_alerts_window = _overfill_n + _safety_n
+
+# Top row: three big-number cards
+_d1, _d2, _d3 = st.columns(3)
+with _d1:
+    st.metric(
+        label=f"🔴 Overfill alerts (last {_DASH_WINDOW_DAYS}d)",
+        value=_overfill_n,
+        help="Times an arriving truck would have exceeded available "
+             "tank capacity. High count → consider lowering the high "
+             "target slider.",
+    )
+with _d2:
+    st.metric(
+        label=f"🟡 Safety-stock alerts (last {_DASH_WINDOW_DAYS}d)",
+        value=_safety_n,
+        help="Times projected combined level dropped below safety "
+             "stock. High count → consider raising the low target slider.",
+    )
+with _d3:
+    if _total_alerts_window == 0:
+        _bias_text = "No alerts in window — running cleanly. 🎉"
+        _bias_color = "normal"
+    else:
+        _overfill_pct = _overfill_n / _total_alerts_window * 100
+        if _overfill_pct >= 65:
+            _bias_text = f"Overfill bias ({_overfill_pct:.0f}%) — running too high"
+            _bias_color = "inverse"
+        elif _overfill_pct <= 35:
+            _bias_text = f"Safety-stock bias ({100 - _overfill_pct:.0f}%) — running too low"
+            _bias_color = "inverse"
+        else:
+            _bias_text = f"Balanced ({_overfill_pct:.0f}% overfill / {100 - _overfill_pct:.0f}% safety)"
+            _bias_color = "normal"
+    st.metric(
+        label="Alert bias",
+        value=_bias_text,
+        help="Bias indicator: which side the alerts are clustering "
+             "on. Use this to decide whether to nudge the target "
+             "sliders above.",
+    )
+
+# Bottom row: weekly stacked bar chart
+if _weekly:
+    import plotly.graph_objects as _go_dash
+    _weeks = [w[0] for w in _weekly]
+    _overfills = [w[1] for w in _weekly]
+    _safeties  = [w[2] for w in _weekly]
+    _fig = _go_dash.Figure(data=[
+        _go_dash.Bar(name="Overfill",     x=_weeks, y=_overfills,
+                      marker_color="#DC2626"),
+        _go_dash.Bar(name="Safety-stock", x=_weeks, y=_safeties,
+                      marker_color="#F59E0B"),
+    ])
+    _fig.update_layout(
+        barmode="stack",
+        height=240,
+        margin=dict(l=20, r=20, t=10, b=20),
+        legend=dict(orientation="h", y=-0.15),
+        xaxis_title="Week of",
+        yaxis_title="Alerts",
+    )
+    st.plotly_chart(_fig, use_container_width=True)
+else:
+    st.caption(
+        f"No alerts logged in the last {_DASH_WINDOW_DAYS} days. "
+        "The chart will populate as the simulation runs and alerts fire. "
+        "Reset clears the log."
+    )
+
+st.divider()
+
 # ── Upcoming Trucks + Add ─────────────────────────────────────────────────────
 
 st.subheader("🚛 Trucks")
