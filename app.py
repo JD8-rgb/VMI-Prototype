@@ -1480,40 +1480,36 @@ st.divider()
 
 # ── Next-Week Forecast (Phase 8) ─────────────────────────────────────────────
 #
-# Weighted seasonal forecast for the upcoming week, derived from the
-# customer's last 4 weeks of run_schedule history (40/30/20/10
-# weighting, week-level outlier filter, holiday gating). Auto-renders
-# every page rerun; manual "Refresh forecast" button is available.
-
-st.subheader("🔮 Next-Week Forecast")
+# Weighted seasonal forecast for the upcoming week, rendered as a
+# single-line caption ("Next week (forecast): Mon 16h · Tue 16h · …").
+# The 12-day projection above is the primary visual; this just prints
+# the shape so it doesn't take up vertical space.
 
 _fc_week_start, _fc_week_end = _gtwb(data)
 _fc_result = _forecast(data, target_week_start_run_hour=_fc_week_start)
 
-# Per-day predicted run-windows. All products share the plant
-# schedule, so per-weekday run hours are uniform across products —
-# read from the first product. The 12-day projection chart already
-# carries the lbs / truck-count consequences; this table just shows
-# what shape of week the forecaster expects.
 _DAY_NAMES_FC = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-_fc_rows = []
+_fc_parts = []
 if _fc_result.products:
     _p0 = _fc_result.products[0]
     for _dow in range(7):
-        _b = _p0.by_weekday.get(_dow, {"run_hours": 0})
-        _hrs = float(_b.get("run_hours", 0))
+        _hrs = float(_p0.by_weekday.get(_dow, {}).get("run_hours", 0))
         if _hrs > 0:
-            _fc_rows.append({
-                "Day":       _DAY_NAMES_FC[_dow],
-                "Run hours": f"{_hrs:.1f}",
-            })
-if _fc_rows:
-    st.dataframe(_fc_rows, use_container_width=True, hide_index=True)
-else:
-    st.caption("No predicted run hours this week.")
-if st.button("↻ Refresh forecast", key="fc_refresh_btn",
-              help="Recompute the weighted seasonal forecast."):
-    st.rerun()
+            _fc_parts.append(f"{_DAY_NAMES_FC[_dow]} {_hrs:.0f}h")
+
+_fc_line_col, _fc_btn_col = st.columns([6, 1])
+with _fc_line_col:
+    if _fc_parts:
+        st.markdown(
+            f"🔮 **Next week (forecast):** {' · '.join(_fc_parts)}"
+        )
+    else:
+        st.caption("🔮 Next week (forecast): no predicted run hours.")
+with _fc_btn_col:
+    if st.button("↻", key="fc_refresh_btn",
+                  help="Recompute the weighted seasonal forecast.",
+                  use_container_width=True):
+        st.rerun()
 
 # Forecast notes (fallback warnings, holiday exclusions, etc.)
 if _fc_result.notes:
@@ -1922,18 +1918,51 @@ with sp_col:
         )
         if entries:
             DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-            # Editable table: operator can adjust hours / drop rows
-            # in-place when the parser is almost-but-not-quite right.
-            # On Apply, the edited rows are re-converted back to the
-            # (weekday_int, start_hour_int, end_hour_int) tuple shape
-            # the rest of the pipeline uses.
+            # Editable table: operator types Start / End as
+            # day-and-time strings ("Mon 6am", "Thu 4pm", "Sat 04:00").
+            # No more raw 0-47 hour math. On Apply, strings are
+            # parsed back to the (weekday, start_h, end_h) tuple
+            # shape the rest of the pipeline uses, where end_h is
+            # an offset from start-day midnight (so "Mon 6am →
+            # Sat 4am" → (0, 6, 124)).
+            from read_schedule import _parse_time as _parse_time_token
+            _DAY_TOKENS = {
+                "monday": 0, "mon": 0,
+                "tuesday": 1, "tue": 1, "tues": 1,
+                "wednesday": 2, "wed": 2,
+                "thursday": 3, "thu": 3, "thur": 3, "thurs": 3,
+                "friday": 4, "fri": 4,
+                "saturday": 5, "sat": 5,
+                "sunday": 6, "sun": 6,
+            }
+
+            def _parse_day_time(s):
+                """'Mon 6am' / 'Thu 4pm' / 'Sat 04:00' → (weekday, hour) | None."""
+                if not s or not isinstance(s, str):
+                    return None
+                parts = s.strip().lower().split(maxsplit=1)
+                if len(parts) != 2:
+                    return None
+                wd = _DAY_TOKENS.get(parts[0].rstrip(",.;"))
+                if wd is None:
+                    return None
+                h = _parse_time_token(parts[1])
+                if h is None:
+                    return None
+                return (wd, h)
+
+            def _entry_to_strs(entry):
+                """(weekday, start_h_in_day, end_h_offset) → ('Mon 6am', 'Sat 4am')."""
+                wd_s, sh, eh = int(entry[0]), int(entry[1]), int(entry[2])
+                day_offset = max(0, (eh - 1) // 24) if eh > sh else 0
+                wd_e = (wd_s + day_offset) % 7
+                h_e  = eh - day_offset * 24
+                return f"{DAYS[wd_s]} {sh:02d}:00", f"{DAYS[wd_e]} {h_e:02d}:00"
+
             edit_rows = []
             for e in entries:
-                edit_rows.append({
-                    "Day":   DAYS[e[0]],
-                    "Start": int(e[1]),
-                    "End":   int(e[2]),
-                })
+                s_str, e_str = _entry_to_strs(e)
+                edit_rows.append({"Start": s_str, "End": e_str})
             edited = st.data_editor(
                 edit_rows,
                 use_container_width=True,
@@ -1941,31 +1970,35 @@ with sp_col:
                 key="parser_entries_editor",
                 num_rows="dynamic",   # operator can add / remove rows
                 column_config={
-                    "Day":   st.column_config.SelectboxColumn(
-                        "Day", options=DAYS, required=True,
-                        help="Weekday for this run window."),
-                    "Start": st.column_config.NumberColumn(
-                        "Start hr", min_value=0, max_value=47, step=1,
-                        help="Start hour (0-23). Use 24+ for windows "
-                             "that cross midnight (e.g. 22 → 30)."),
-                    "End":   st.column_config.NumberColumn(
-                        "End hr", min_value=1, max_value=48, step=1,
-                        help="End hour, exclusive."),
+                    "Start": st.column_config.TextColumn(
+                        "Start", required=True,
+                        help="Day + time the window starts. "
+                             "e.g. 'Mon 6am', 'Mon 06:00', 'Mon 0600'."),
+                    "End":   st.column_config.TextColumn(
+                        "End", required=True,
+                        help="Day + time the window ends. Can roll "
+                             "over to a later day for continuous shifts. "
+                             "e.g. 'Thu 4pm', 'Sat 04:00', 'Fri 16:00'."),
                 },
             )
-            # Convert edits back to entries tuples for Apply.
+            # Convert edits back to (weekday, start_h, end_h) tuples.
+            # end_h = offset_days*24 + end_hour_of_day, so a Sat-4am end
+            # for a Mon-6am start becomes 124 (= 5*24 + 4).
             edited_entries = []
             for row in edited:
-                day_name = row.get("Day")
-                if day_name not in DAYS:
-                    continue   # skip malformed rows
-                start = int(row.get("Start", 0) or 0)
-                end   = int(row.get("End", 0) or 0)
-                if end <= start:
-                    continue   # skip degenerate windows
-                edited_entries.append((DAYS.index(day_name), start, end))
-            # Stash so the Apply button below uses the edited shape
-            # rather than the original parser output.
+                start = _parse_day_time(row.get("Start"))
+                end   = _parse_day_time(row.get("End"))
+                if start is None or end is None:
+                    continue
+                wd_s, h_s = start
+                wd_e, h_e = end
+                day_offset = (wd_e - wd_s) % 7
+                if day_offset == 0 and h_e <= h_s:
+                    day_offset = 7   # wraps a full week
+                end_in_day_offset = day_offset * 24 + h_e
+                if end_in_day_offset <= h_s:
+                    continue   # degenerate
+                edited_entries.append((wd_s, h_s, end_in_day_offset))
             st.session_state._edited_entries = edited_entries
             if edited_entries != [(e[0], e[1], e[2]) for e in entries]:
                 st.caption(
@@ -2130,144 +2163,6 @@ with ap_col:
 
 st.divider()
 
-# ── VMI Controls (operator overrides) ─────────────────────────────────────────
-#
-# Bounded reorder-target sliders + automation on/off toggle. Both
-# persist week-to-week via PlantState fields (target_overrides and
-# vmi_automation_enabled). Reset → back to cfg defaults / ON.
-
-from config import DEFAULT_CONFIG as _CFG
-
-st.subheader("🎛️ VMI Controls")
-
-_vmi_on = data.get("vmi_automation_enabled", True)
-_overrides = data.get("target_overrides")
-
-# Top row: status header + on/off toggle
-_status_col, _toggle_col = st.columns([3, 1])
-with _status_col:
-    if _vmi_on:
-        st.markdown("**Automation:** :green[ON] — planner will propose trucks "
-                    "and the schedule auto-applies when received.")
-    else:
-        st.markdown("**Automation:** :red[OFF] — planner is suppressed. "
-                    "A RED alert fires every Friday 9 AM until you turn "
-                    "this back on.")
-with _toggle_col:
-    new_vmi = st.toggle("Automation enabled",
-                          value=_vmi_on,
-                          key="vmi_toggle",
-                          help="When OFF, the planner stops proposing "
-                               "trucks and a weekly Friday RED alert is "
-                               "sent to the distribution list.")
-    if new_vmi != _vmi_on:
-        st.session_state.data["vmi_automation_enabled"] = new_vmi
-        _audit.record(st.session_state.data, _audit.A_VMI_TOGGLE,
-                       details={"enabled": bool(new_vmi)})
-        _save_data_state(st.session_state.data, _DATA_FILE)
-        st.rerun()
-
-# Bottom row: target sliders
-st.markdown(
-    "**Reorder targets** — operator-tunable. Set within the customer's "
-    "allowed window; click *Apply* to lock in (persists week-to-week). "
-    "*Reset* clears the override and reverts to the customer's default curve."
-)
-_eff_low  = (_overrides or {}).get("low",  _CFG.target_low_lbs)
-_eff_high = (_overrides or {}).get("high", _CFG.target_high_lbs)
-
-_slider_col_low, _slider_col_high = st.columns(2)
-with _slider_col_low:
-    _new_low = st.slider(
-        f"Low target (lbs) — light-week floor",
-        min_value=int(_CFG.tunable_low_min),
-        max_value=int(_CFG.tunable_low_max),
-        value=int(_eff_low),
-        step=500,
-        key="vmi_low_slider",
-    )
-with _slider_col_high:
-    _new_high = st.slider(
-        f"High target (lbs) — heavy-week ceiling",
-        min_value=int(_CFG.tunable_high_min),
-        max_value=int(_CFG.tunable_high_max),
-        value=int(_eff_high),
-        step=500,
-        key="vmi_high_slider",
-    )
-
-_apply_col, _reset_col, _info_col = st.columns([1, 1, 3])
-with _apply_col:
-    if st.button("✓ Apply", use_container_width=True, key="vmi_apply"):
-        st.session_state.data["target_overrides"] = {
-            "low":  float(_new_low),
-            "high": float(_new_high),
-        }
-        _audit.record(st.session_state.data, _audit.A_TARGET_APPLY,
-                       details={"low": float(_new_low),
-                                "high": float(_new_high)})
-        _save_data_state(st.session_state.data, _DATA_FILE)
-        st.rerun()
-with _reset_col:
-    if st.button("↺ Reset",
-                  use_container_width=True,
-                  key="vmi_reset",
-                  disabled=(_overrides is None),
-                  help="Clear the operator override and revert to the "
-                       "customer's default target curve."):
-        st.session_state.data["target_overrides"] = None
-        _audit.record(st.session_state.data, _audit.A_TARGET_RESET,
-                       details={"prior": _overrides or {}})
-        _save_data_state(st.session_state.data, _DATA_FILE)
-        st.rerun()
-with _info_col:
-    if _overrides is not None:
-        st.caption(f"📌 Override active: low={int(_overrides['low']):,} lbs, "
-                    f"high={int(_overrides['high']):,} lbs (persists week-to-week)")
-    else:
-        st.caption(f"Default curve: low={int(_CFG.target_low_lbs):,} lbs, "
-                    f"high={int(_CFG.target_high_lbs):,} lbs")
-
-# ── Customer notes (free-text scratchpad) ─────────────────────────────────────
-st.markdown(
-    "**Customer notes** — free-text context that doesn't fit any "
-    "structured field. Persists across resets via PlantState."
-)
-_existing_notes = data.get("customer_notes", "") or ""
-_notes_text = st.text_area(
-    "Customer notes",
-    value=_existing_notes,
-    height=90,
-    key="customer_notes_input",
-    label_visibility="collapsed",
-    placeholder=("e.g. 'Anna out 4/22-4/26, expect manual schedules' or "
-                  "'switching to weekend shifts in May' or "
-                  "'plant is undergoing minor maintenance Thu morning'"),
-)
-_save_notes_col, _notes_caption_col = st.columns([1, 5])
-with _save_notes_col:
-    if st.button("💾 Save notes",
-                  use_container_width=True,
-                  key="customer_notes_save",
-                  disabled=(_notes_text == _existing_notes),
-                  help="Save the notes to PlantState."):
-        st.session_state.data["customer_notes"] = _notes_text
-        _audit.record(st.session_state.data, "customer_notes_save",
-                       details={"length": len(_notes_text)})
-        _save_data_state(st.session_state.data, _DATA_FILE)
-        st.rerun()
-with _notes_caption_col:
-    if _notes_text == _existing_notes:
-        if _existing_notes:
-            st.caption(f"✓ Saved ({len(_existing_notes)} chars)")
-        else:
-            st.caption("No notes saved.")
-    else:
-        st.caption(f"⚡ Unsaved changes ({len(_notes_text)} chars). "
-                    "Click Save to persist.")
-
-st.divider()
-
 # ── VMI Health Dashboard (6-month alert history) ──────────────────────────────
 #
 # Reads alert_log (already populated on every alert fire) and counts
@@ -2412,18 +2307,21 @@ with _qf_col2:
     if st.button("🎬 Generate demo history",
                   use_container_width=True,
                   key="qf_btn",
-                  help="Advance the sim clock by the selected number "
-                       "of weeks, recording per-tank snapshots into "
-                       "level_history. Real simulator output — same "
-                       "code path as the Advance button, just batched."):
-        log, evts = _advance(
-            st.session_state.data, float(int(_qf_weeks) * 168),
-            session_start_utc=st.session_state.session_start_real_utc,
+                  help="Backfill the level-history chart with N weeks "
+                       "of synthetic past — alternating long-shift and "
+                       "standard weeks, with auto-inserted truck "
+                       "deliveries. Does NOT advance the sim clock."):
+        from demo_history import generate_demo_history
+        added = generate_demo_history(
+            st.session_state.data, int(_qf_weeks),
         )
-        st.session_state.advance_log = log
-        st.session_state.email_log.extend(evts)
         _audit.record(st.session_state.data, _audit.A_QUICK_FILL,
-                       details={"weeks": int(_qf_weeks)})
+                       details={"weeks": int(_qf_weeks),
+                                "snapshots_added": added,
+                                "mode": "backfill"})
+        _save_data_state(st.session_state.data, _DATA_FILE)
+        st.toast(f"Backfilled {added} snapshots ({int(_qf_weeks)} weeks).",
+                  icon="🎬")
         st.rerun()
 
 if _history:
@@ -2461,6 +2359,143 @@ if _history:
 else:
     st.caption("No level history yet. Click *Generate demo history* "
                 "or use *Advance* above to start populating the chart.")
+
+
+# ── VMI Controls (operator overrides) ─────────────────────────────────────────
+#
+# Bounded reorder-target sliders + automation on/off toggle. Both
+# persist week-to-week via PlantState fields (target_overrides and
+# vmi_automation_enabled). Reset → back to cfg defaults / ON.
+
+from config import DEFAULT_CONFIG as _CFG
+
+st.subheader("🎛️ VMI Controls")
+
+_vmi_on = data.get("vmi_automation_enabled", True)
+_overrides = data.get("target_overrides")
+
+# Top row: status header + on/off toggle
+_status_col, _toggle_col = st.columns([3, 1])
+with _status_col:
+    if _vmi_on:
+        st.markdown("**Automation:** :green[ON] — planner will propose trucks "
+                    "and the schedule auto-applies when received.")
+    else:
+        st.markdown("**Automation:** :red[OFF] — planner is suppressed. "
+                    "A RED alert fires every Friday 9 AM until you turn "
+                    "this back on.")
+with _toggle_col:
+    new_vmi = st.toggle("Automation enabled",
+                          value=_vmi_on,
+                          key="vmi_toggle",
+                          help="When OFF, the planner stops proposing "
+                               "trucks and a weekly Friday RED alert is "
+                               "sent to the distribution list.")
+    if new_vmi != _vmi_on:
+        st.session_state.data["vmi_automation_enabled"] = new_vmi
+        _audit.record(st.session_state.data, _audit.A_VMI_TOGGLE,
+                       details={"enabled": bool(new_vmi)})
+        _save_data_state(st.session_state.data, _DATA_FILE)
+        st.rerun()
+
+# Bottom row: target sliders
+st.markdown(
+    "**Reorder targets** — operator-tunable. Set within the customer's "
+    "allowed window; click *Apply* to lock in (persists week-to-week). "
+    "*Reset* clears the override and reverts to the customer's default curve."
+)
+_eff_low  = (_overrides or {}).get("low",  _CFG.target_low_lbs)
+_eff_high = (_overrides or {}).get("high", _CFG.target_high_lbs)
+
+_slider_col_low, _slider_col_high = st.columns(2)
+with _slider_col_low:
+    _new_low = st.slider(
+        f"Low target (lbs) — light-week floor",
+        min_value=int(_CFG.tunable_low_min),
+        max_value=int(_CFG.tunable_low_max),
+        value=int(_eff_low),
+        step=500,
+        key="vmi_low_slider",
+    )
+with _slider_col_high:
+    _new_high = st.slider(
+        f"High target (lbs) — heavy-week ceiling",
+        min_value=int(_CFG.tunable_high_min),
+        max_value=int(_CFG.tunable_high_max),
+        value=int(_eff_high),
+        step=500,
+        key="vmi_high_slider",
+    )
+
+_apply_col, _reset_col, _info_col = st.columns([1, 1, 3])
+with _apply_col:
+    if st.button("✓ Apply", use_container_width=True, key="vmi_apply"):
+        st.session_state.data["target_overrides"] = {
+            "low":  float(_new_low),
+            "high": float(_new_high),
+        }
+        _audit.record(st.session_state.data, _audit.A_TARGET_APPLY,
+                       details={"low": float(_new_low),
+                                "high": float(_new_high)})
+        _save_data_state(st.session_state.data, _DATA_FILE)
+        st.rerun()
+with _reset_col:
+    if st.button("↺ Reset",
+                  use_container_width=True,
+                  key="vmi_reset",
+                  disabled=(_overrides is None),
+                  help="Clear the operator override and revert to the "
+                       "customer's default target curve."):
+        st.session_state.data["target_overrides"] = None
+        _audit.record(st.session_state.data, _audit.A_TARGET_RESET,
+                       details={"prior": _overrides or {}})
+        _save_data_state(st.session_state.data, _DATA_FILE)
+        st.rerun()
+with _info_col:
+    if _overrides is not None:
+        st.caption(f"📌 Override active: low={int(_overrides['low']):,} lbs, "
+                    f"high={int(_overrides['high']):,} lbs (persists week-to-week)")
+    else:
+        st.caption(f"Default curve: low={int(_CFG.target_low_lbs):,} lbs, "
+                    f"high={int(_CFG.target_high_lbs):,} lbs")
+
+# ── Customer notes (free-text scratchpad) ─────────────────────────────────────
+st.markdown(
+    "**Customer notes** — free-text context that doesn't fit any "
+    "structured field. Persists across resets via PlantState."
+)
+_existing_notes = data.get("customer_notes", "") or ""
+_notes_text = st.text_area(
+    "Customer notes",
+    value=_existing_notes,
+    height=90,
+    key="customer_notes_input",
+    label_visibility="collapsed",
+    placeholder=("e.g. 'Anna out 4/22-4/26, expect manual schedules' or "
+                  "'switching to weekend shifts in May' or "
+                  "'plant is undergoing minor maintenance Thu morning'"),
+)
+_save_notes_col, _notes_caption_col = st.columns([1, 5])
+with _save_notes_col:
+    if st.button("💾 Save notes",
+                  use_container_width=True,
+                  key="customer_notes_save",
+                  disabled=(_notes_text == _existing_notes),
+                  help="Save the notes to PlantState."):
+        st.session_state.data["customer_notes"] = _notes_text
+        _audit.record(st.session_state.data, "customer_notes_save",
+                       details={"length": len(_notes_text)})
+        _save_data_state(st.session_state.data, _DATA_FILE)
+        st.rerun()
+with _notes_caption_col:
+    if _notes_text == _existing_notes:
+        if _existing_notes:
+            st.caption(f"✓ Saved ({len(_existing_notes)} chars)")
+        else:
+            st.caption("No notes saved.")
+    else:
+        st.caption(f"⚡ Unsaved changes ({len(_notes_text)} chars). "
+                    "Click Save to persist.")
 
 st.divider()
 
