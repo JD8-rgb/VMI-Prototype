@@ -87,6 +87,10 @@ def _load_product_sheet():
 
 st.set_page_config(page_title="VMI Automation", layout="wide", initial_sidebar_state="collapsed")
 
+# Inject the design system once at startup. Pure CSS; reverts cleanly
+# by removing this import + call.
+from theme import inject_theme as _inject_theme, chip_html as _chip_html
+_inject_theme(st)
 
 # ── Session state / defaults ──────────────────────────────────────────────────
 
