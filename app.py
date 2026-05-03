@@ -713,8 +713,13 @@ def _tank_info(col, name, info):
     fluid_y     = tank_top + (tank_h - fluid_h)
 
     # Unique IDs per tank so multiple inline SVGs don't collide on
-    # gradient / clip-path defs.
-    safe_id = name.replace("-", "_").replace(" ", "_")
+    # gradient / clip-path defs. Strip every non-[A-Za-z0-9_] char
+    # — apostrophes, slashes, dots, parentheses in tank names would
+    # break the SVG `clip-path="url(#clip_NAME)"` reference and the
+    # animation would silently fail. Prefix with "t_" so a name
+    # starting with a digit (e.g. "1-North") still produces a valid
+    # SVG id (which must start with a letter or _).
+    safe_id = "t_" + re.sub(r'[^A-Za-z0-9_]', '_', name)
 
     # The wave is two stacked sinusoids that translate-X at different
     # speeds — pure CSS animation via the keyframes block below.
