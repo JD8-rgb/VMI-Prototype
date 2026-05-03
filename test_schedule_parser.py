@@ -987,6 +987,44 @@ def curated_must_pass() -> List[Case]:
              expected_confidence="high",
              must_pass=True),
 
+        # ── Full-week fallback (must_80 … must_80e) ─────────────────────────
+        # When the operator writes a vague "run all week" / "24/5" without
+        # specifying days or hours, the parser falls back to the customer's
+        # full-week template (Mon 6am → Sat 4am, 118 run-hours = (0, 6, 124)).
+        # Always LOW confidence so the operator confirms via the
+        # low-confidence panel — vague phrasing is exactly the kind of
+        # thing that needs human review.
+        Case("must_80_run_all_week", "continuous_range",
+             "Run all week",
+             expected=[(0, 6, 124)],
+             expected_confidence="low",
+             must_pass=True),
+        Case("must_80a_run_all_week_period", "continuous_range",
+             "We'll run all week.",
+             expected=[(0, 6, 124)],
+             expected_confidence="low",
+             must_pass=True),
+        Case("must_80b_run_entire_week", "continuous_range",
+             "Run the entire week.",
+             expected=[(0, 6, 124)],
+             expected_confidence="low",
+             must_pass=True),
+        Case("must_80c_running_all_of_next_week", "continuous_range",
+             "Running all of next week",
+             expected=[(0, 6, 124)],
+             expected_confidence="low",
+             must_pass=True),
+        Case("must_80d_24_5", "continuous_range",
+             "24/5 next week",
+             expected=[(0, 6, 124)],
+             expected_confidence="low",
+             must_pass=True),
+        Case("must_80e_full_week_normal_hours", "continuous_range",
+             "Full week, normal hours",
+             expected=[(0, 6, 124)],
+             expected_confidence="low",
+             must_pass=True),
+
         # ── Range + day-off subtraction (must_68 … must_70) ─────────────────
         # 'Mon-Fri 6am-4pm; Wed off' must NOT include Wed. The off marker
         # in a separate segment was previously ignored by the in-segment

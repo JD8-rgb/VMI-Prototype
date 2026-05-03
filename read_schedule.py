@@ -640,6 +640,34 @@ _CHANGED_FROM_TO_RE = re.compile(
 _STALE_BOUNDARY_RE = re.compile(r'[.;\n]|\bbut\b[\s:,]*', re.IGNORECASE)
 
 
+# ── Full-week fallback (P0) ──────────────────────────────────────────────────
+#
+# When the operator writes a vague "run all week" / "24/5" / "full week"
+# without specifying days or hours, the parser falls through every other
+# detector with empty entries. We then check this regex; if it matches,
+# fall back to the customer's full-week template.
+#
+# Template is hardcoded for the demo customer (Mon 6am → Sat 4am =
+# 118 run-hours, encoded as a single overnight-spanning entry
+# (weekday=0, start_hour=6, end_hour=124)). Production multi-tenant
+# would route this through a per-customer "default full-week template"
+# field on PlantConfig — a TODO for the technical team.
+_FULL_WEEK_RE = re.compile(
+    r"""(?ix)
+    \b(?:
+        run(?:ning)?\s+(?:
+            all\s+(?:of\s+)?(?:the\s+|next\s+|this\s+)?week
+            | the\s+(?:entire|whole|full)\s+week
+        )
+        | (?:entire|whole|full)\s+week\b
+        | all\s+week\s+long
+        | 24\s*[/x-]\s*5    # 24/5, 24x5, 24-5
+    )\b
+    """
+)
+_FULL_WEEK_TEMPLATE = (0, 6, 124)   # Mon 6am → Sat 4am, 118 run-hours
+
+
 def _strip_stale_context(text):
     """
     Remove past-schedule clauses from `text`.
@@ -1457,6 +1485,20 @@ def parse_schedule_text(text, now_dt=None):
         forced_low = True
 
     confidence = "high" if (effective_days >= 3 and not forced_low) else "low"
+
+    # ── Full-week fallback (P0) ────────────────────────────────────────────
+    # If we extracted nothing AND the cleaned text contains a vague
+    # full-week phrase like "run all week" / "24/5" / "full week",
+    # fall back to the customer's full-week template at LOW confidence.
+    # Always low because vague phrasing needs human review.
+    if not entries and _FULL_WEEK_RE.search(cleaned):
+        notes.append(
+            f"  Full-week phrasing detected; falling back to customer "
+            f"default template (Mon 6am → Sat 4am, 118 run-hrs). LOW "
+            f"confidence — operator confirms via low-confidence panel."
+        )
+        return [_FULL_WEEK_TEMPLATE], "low", notes
+
     return entries, confidence, notes
 
 
