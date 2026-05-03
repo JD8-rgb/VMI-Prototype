@@ -409,20 +409,36 @@ dc458ac Add HANDOFF.md for autonomous run (prior session, baseline)
 |---|---|---|
 | P0 — handoff blocker | Mutation refactor of `simulate_*` to pure functions | MIGRATION_GUIDE § 5 |
 | P0 | Move `data_io` from JSON file to PostgreSQL | MIGRATION_GUIDE § 3 |
-| P1 | Schedule-parse "confirm low-confidence" panel | Show email + best-guess parse + 1-click Confirm/Edit. Pairs with the inline editor (already shipped) but adds the email-body display + auto-population of the editor. |
-| P1 | Parser-misses log + triage CLI | Append every LOW-confidence parse to `parser_misses_log.jsonl`. New CLI `triage_parser_misses.py` walks them, lets engineer promote to `must_pass` cases in the test corpus. Closes the regression-test feedback loop. |
-| P1 | Time-series storage for tank levels | Per-tank ring buffer recording `(run_hour, level_lbs)` snapshots every advance_time tick; bounded retention 180d. Unlocks richer dashboard panels (distribution charts, trendlines, the "Suggest new range" suggestion-mode follow-on). |
 | P1 | Replace IMAP/SMTP with Microsoft Graph + change notifications | MIGRATION_GUIDE § 4 |
 | P1 | Add file locking (interim) — recommend skipping in favor of § 3 | MIGRATION_GUIDE § 6 |
 | P1 | Generalize Streamlit UI for arbitrary topology | MIGRATION_GUIDE § 7 |
 | P1 | Order lifecycle state machine + transition audit log | MIGRATION_GUIDE § 8 |
-| P2 | Module split of `app.py` (1620 LOC) and `read_schedule.py` (2289 LOC) | (deferred per Q11) |
+| P1 | Schedule-email summarization (Claude one-paragraph "what this email actually says") | One LLM call on low-confidence parses; render alongside the email body in the confirm panel. |
+| P1 | LLM-as-judge for anomaly tuning (per PM brainstorm #4) | When an anomaly fires, ask Claude "given this customer's last 12 weeks, is this anomaly worth flagging?" Use the answer to gradually relax thresholds for false-positive-prone customers. |
+| P1 | Mobile-friendly view | Responsive collapse of side-by-side panels under 768px; touch-friendly buttons; floor-operator UX. |
+| P1 | Email triage queue (inbox status panel) | All inbound emails as a list with status (✅ applied / ⚠️ pending / 🚫 ignored); operator can re-process from the list. |
+| P1 | Multi-region tenancy (Canadian East/West etc.) | Per-region config inherited by customers. Reduces duplication when many customers share the same calendar / slot conventions. |
+| P2 | Module split of `app.py` (1620+ LOC) and `read_schedule.py` (2289 LOC) | (deferred per Q11) |
 | P2 | Type hints + `mypy --strict` pass | (deferred per Q-list) |
 | P2 | Module docstring inventory | (deferred per Q-list) |
 | P2 | TZ-aware datetime (DST safety) | MIGRATION_GUIDE § 10 |
 | P2 | Finish logging migration in CLI scripts (kept print()s per handoff Working Rule, technical team may revisit) | MIGRATION_GUIDE § 9 |
 | P3 | Per-tenant `email_config.json` (currently single-tenant only) | (no recipe yet) |
 | P3 | LLM rescue prompt caching (Anthropic ephemeral cache) | Skipped in PM brainstorm — only one schedule email per week per customer, 5-min cache TTL never hits. Re-evaluate if multi-customer batch ingest at scale changes the calculus. |
+
+## Delay list (cool, deferred — top-of-list first)
+
+| Item | One-line |
+|---|---|
+| Drill-down from alerts | Each alert_log entry → modal/page showing the full state at firing time. ~4h lightweight (snapshot deltas alongside the alert), ~1-2 days for full event-sourcing. |
+| Maintenance window awareness | `maintenance_windows: List[{start, end, tank_ids}]` in PlantState; planner skips affected tanks during that window. |
+| Forecast-driven safety stock (textbook supply-chain formula) | Replace static safety-stock constant with a dynamic value computed from lead-time variance × consumption variance. Needs the level-history time-series storage (already shipped Phase I). |
+| Embedded LLM operator chat | Right-rail panel: operator asks "why did the planner propose Tuesday?" / "what if Mon is cancelled?" — answered by Claude with full state context. |
+| Schema-aware diff tool | `python diff_customers.py customer_a customer_b` — shows meaningful diffs ignoring noise (alert_log, audit_log entries). |
+| Health endpoint + Prometheus metrics | `/health` returns `{schema_version, last_alert_at, parser_pass_rate_30d, ...}`. |
+| Inbound logistics integration (FourKites) | Carrier API → "scheduled truck" auto-updates to "in transit, ETA …". Late-truck alerts become predictive. |
+| Outbound alerts via PagerDuty | RED → PagerDuty incident. Resolve in PD → resolves in VMI dashboard. |
+| Demo script in repo | `DEMO_SCRIPT.md` — 3-minute live walkthrough for presenters. Low priority. |
 
 ## What just landed in the latest sprint (post-summary work)
 
@@ -518,3 +534,38 @@ Updated test surface:
   the typed wrappers in data_io.
 * mypy default-mode clean across the seven algorithm-core source files;
   mypy `--strict` clean on data_io / state / config (the leaf modules).
+
+---
+
+# PM brainstorm sprint #2 — operator trust + AI features (Phases 1-9 of UI/feature build)
+
+After the post-summary work, a second PM-driven sprint shipped the
+Streamlit operator-experience overhaul plus several AI-product
+features. Build order: **C** (theme tokens → customer roster →
+features → animation cherry on top).
+
+| Phase | Commit | What |
+|---|---|---|
+| 1 | `3d466af` | **theme.py** — design-token system. CSS custom properties for colors / typography (Inter + JetBrains Mono via Google Fonts) / spacing. Component classes: `.vmi-chip`, `.vmi-num`, `.vmi-tank-card`, `.vmi-banner`. Streamlit-default overrides for st.button, st.metric, st.container(border=True). One inject_theme(st) call in app.py; reverts cleanly by deleting one import + one call. |
+| 2 | `e1afab6` | **Customer roster landing page** — Acme (live, clickable, opens demo) + Customers 2/3/4 (decorative, R/Y/G alert chips, disabled "View" buttons). st.session_state.view toggle between "roster" and "dashboard"; "← Roster" button at top of dashboard returns. Sets the multi-tenant scalability narrative without requiring real per-tenant runtime infra. |
+| 3 | `ca0f8ca` | **Operator audit log** — every Streamlit operator action records `{iso, action, user, details}` to data["audit_log"] (bounded ring 1000 entries). New audit_log.py module + record() / recent() helpers. Action constants centralized for grep-safety. Hooks: VMI toggle, target Apply / Reset, advance, quick-fill, parse confirm / dismiss, customer notes save, parse acknowledge. Visible in-app via "📜 Recent operator activity" expander. PlantState gains audit_log: List[Dict] typed field. **17 tests.** |
+| 4 | `82b6daf` | **Severity-based alert escalation chain** — WARNING (yellow) routes to scheduler + scheduler_backup; RED FLAG (red, exact match only) routes to the full chain (scheduler + backup + manager + scheduling team + shipping team + operations). Defensive: anything other than the literal "red_flag" stays on the short list, preventing typos from accidentally paging the whole org. Backwards compat: unconfigured deployments still route via legacy distribution_group. **11 tests.** |
+| 5 | `72a7866` | **Per-customer notes scratchpad** — PlantState.customer_notes (str). Free-text operator context that persists across resets ("Anna out 4/22-4/26", "switching to weekend shifts in May"). Defensive normalization: None / non-string → "". Save button + unsaved-changes caption. **6 tests.** |
+| 6 | `b5e0ae4` | **HIGH-confidence parse review panel** — when a HIGH parse auto-applies, also stash `last_applied_parse_review` so the operator can eyeball the email + parsed entries even though the schedule has already gone through. Acknowledge / Dismiss buttons (both clear the panel; recorded in audit log so the difference is captured for compliance). **5 tests.** |
+| 7 | `(commit)` | **Per-customer parser learning loop** — once a customer has >= 10 misses with corrections in parser_misses_log, the LLM rescue prompt for that customer gets enriched with up to 5 example pairs of (input email, parser's output, operator's confirmed output). Closes the parser-quality feedback loop. New parser_learning.py module + append_correction / append_validation hooks in parser_misses.py. Hooked into Streamlit confirm/ack handlers. **16 tests.** |
+| 8 | `(commit)` | **Weighted seasonal forecaster** — new forecast.py module with a clean ForecastEngine abstraction. Default WeightedSeasonalForecaster uses 4-week lookback with 40/30/20/10 recency weighting (locked per PM brainstorm). Per-WEEK outlier filter at 30% of median total — drops down/shutdown weeks while preserving consistently-zero weekdays (Mon-Thu shop with Fri off). Holiday gating zeros out predicted holiday days. Falls back to static baseline + clear note when < 2 weeks of history. Auto-renders in a new Streamlit "🔮 Next-Week Forecast" panel with three KPI cards (predicted hours / lbs / suggested trucks) + per-product per-day breakdown + Refresh button. Engine-name is recorded in ForecastResult so the production team's Prophet swap (same input/output) self-identifies. **13 tests + 1 deliberate skip.** |
+| 9 | `ac61d33` | **Animated tank-fill SVG** — replaces the flat fill-bar in _tank_info with an inline SVG cylinder, color-coded fluid (red < 20%, amber < 50%, blue >= 50%), and a sinusoidal wave overlay that drifts horizontally on a 3.5s loop. Animation hook is the .vmi-tank-fluid CSS class from Phase 1; transitions are CSS-based, no JS, browser-native. Pure visual upgrade — same data, no algorithm changes. Demo wow factor. |
+
+Sprint test surface delta:
+* **419 pytest cases passing** (was 351 at end of prior sprint sprint).
+* Parser harness still OVERALL: PASS (1470/1471 generated, 91/91 must-pass).
+* mypy clean across the algorithm-core + new modules.
+
+New modules introduced:
+  theme.py · audit_log.py · forecast.py · parser_learning.py
+  + Phase 0-9 extensions to existing modules.
+
+Three TODOs from the prior sprint **closed by this sprint**:
+  - Schedule-parse confirm low-confidence panel (Phase J + Phase 6)
+  - Parser-misses log + triage CLI (Phase K — already shipped)
+  - Time-series storage for tank levels (Phase I — already shipped)
