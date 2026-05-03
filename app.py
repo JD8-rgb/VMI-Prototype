@@ -169,7 +169,142 @@ if "session_start_real_utc" not in st.session_state:
     from datetime import timezone as _tz_utc
     st.session_state.session_start_real_utc = datetime.now(_tz_utc.utc)
 
+# Customer roster / dashboard view toggle (Phase 2). Default: roster.
+# "Acme" is the live demo backed by data.json + defaults.json. The
+# other entries are static visual examples of multi-tenant scale —
+# clicking them does nothing (the click-to-run hint is on Acme).
+if "view" not in st.session_state: st.session_state.view = "roster"
+
 data = st.session_state.data
+
+
+# ── Customer roster (landing page) ────────────────────────────────────────────
+#
+# Renders when view=="roster" and exits early. Click "Acme" → flips to
+# the dashboard view (the existing app below). Other entries are
+# decorative — they show what multi-tenant scale would look like, but
+# aren't backed by real state.
+
+def _roster_alert_count(d):
+    """Count of currently-firing alerts on the live data dict —
+    drives Acme's status indicator."""
+    try:
+        from alerts import get_all_alerts as _gaa
+        alerts = _gaa(d)
+        red    = sum(1 for a in alerts if a.get("severity") == "red_flag")
+        yellow = sum(1 for a in alerts if a.get("severity") == "warning")
+        return red, yellow
+    except Exception:
+        return 0, 0
+
+
+def _render_roster():
+    st.markdown(
+        """
+        <div style="padding:1.5rem 0 0.5rem;">
+            <div style="font-size:1.6rem;font-weight:700;color:#0F1629;
+                        font-family:'Inter',sans-serif;letter-spacing:-0.5px;
+                        line-height:1.1;">
+                🏭 &nbsp;VMI Automation
+            </div>
+            <div style="color:#475569;font-size:0.95rem;margin-top:0.4rem;">
+                Vendor-managed inventory — multi-customer roster.
+                Click <b>Customer 1 — Acme</b> to run the live demo.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Live: Acme — backed by data.json
+    _red, _yellow = _roster_alert_count(data)
+    if _red > 0:
+        _acme_chip = _chip_html(f"🔴 {_red} CRITICAL", "danger")
+    elif _yellow > 0:
+        _acme_chip = _chip_html(f"🟡 {_yellow} WARNING", "warning")
+    else:
+        _acme_chip = _chip_html("🟢 ALL CLEAR", "success")
+
+    # Examples — static for visual-scale demonstration
+    _examples = [
+        {"name": "Customer 2",
+          "subtitle": "Example tenant — visualization only",
+          "chip": _chip_html("🟢 ALL CLEAR", "success")},
+        {"name": "Customer 3",
+          "subtitle": "Example tenant — visualization only",
+          "chip": _chip_html("🟡 1 WARNING", "warning")},
+        {"name": "Customer 4",
+          "subtitle": "Example tenant — visualization only",
+          "chip": _chip_html("🔴 2 CRITICAL", "danger")},
+    ]
+
+    # Acme: live, clickable card. Use a Streamlit container with a
+    # dedicated button. Card visual is built with HTML for the right
+    # status chip + subtitle; the button below it handles the click.
+    with st.container(border=True):
+        _c1, _c2 = st.columns([5, 1])
+        with _c1:
+            st.markdown(
+                f"""
+                <div style="font-size:1.15rem;font-weight:600;
+                            color:#0F172A;line-height:1.4;">
+                    Customer 1 — Acme Plastics
+                </div>
+                <div style="color:#475569;font-size:0.85rem;margin-top:0.1rem;">
+                    Live demo customer · Mon-Fri shift · 4 tanks · 2 products
+                </div>
+                <div style="margin-top:0.6rem;">{_acme_chip}</div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with _c2:
+            if st.button("▶ Open demo", key="open_acme",
+                          type="primary", use_container_width=True):
+                st.session_state.view = "dashboard"
+                st.rerun()
+
+    # Three example cards — informational only
+    for _ex in _examples:
+        with st.container(border=True):
+            _c1, _c2 = st.columns([5, 1])
+            with _c1:
+                st.markdown(
+                    f"""
+                    <div style="font-size:1.05rem;font-weight:600;
+                                color:#475569;line-height:1.4;">
+                        {_ex["name"]}
+                    </div>
+                    <div style="color:#94A3B8;font-size:0.85rem;
+                                margin-top:0.1rem;">
+                        {_ex["subtitle"]}
+                    </div>
+                    <div style="margin-top:0.6rem;">{_ex["chip"]}</div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            with _c2:
+                # Visually disabled — communicates "this is decoration"
+                st.button("View", key=f"view_{_ex['name']}",
+                           disabled=True, use_container_width=True,
+                           help="Demo placeholder — not connected to data.")
+
+    st.markdown(
+        """
+        <div style="margin-top:1rem;color:#94A3B8;font-size:0.8rem;
+                    font-style:italic;">
+            Real customer onboarding is a JSON-config drop into <code>customers/</code>.
+            See <code>customers/example_customer.json</code> for the template
+            and <code>validate_customer.py</code> for the linter.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+if st.session_state.view == "roster":
+    _render_roster()
+    st.stop()
 
 
 # ── Advance simulation ────────────────────────────────────────────────────────
@@ -922,6 +1057,16 @@ code {
 }
 </style>
 """, unsafe_allow_html=True)
+
+# "Back to roster" breadcrumb — visible only when we got here from the
+# roster page so the operator can return without using browser back.
+_back_col, _back_spacer = st.columns([1, 6])
+with _back_col:
+    if st.button("← Roster", key="back_to_roster",
+                  help="Return to the customer roster.",
+                  use_container_width=True):
+        st.session_state.view = "roster"
+        st.rerun()
 
 # Header — title row with Codebase tucked top-right, then centered Product Sheet CTA below
 _h_left, _h_right = st.columns([6, 1])
