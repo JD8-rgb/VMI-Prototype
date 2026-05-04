@@ -96,6 +96,94 @@ _inject_theme(st)
 # recording call sites short.
 import audit_log as _audit
 
+
+# ── Shared helpers: render parser entries as Day+time strings ───────────────
+#
+# Three places in the UI display (weekday_int, start_h_in_day, end_h_offset)
+# tuples to operators:
+#   1. Schedule Parser inline editor (LOW + HIGH)
+#   2. Pending low-confidence parse review (editor)
+#   3. Applied parse review (read-only — the HIGH-confidence "what just
+#      auto-applied" panel)
+#
+# Operators can't read the raw end_h offset (e.g. 46 = "Fri 22:00 from
+# Mon midnight") — they need "Mon 06:00 → Tue 16:00". These helpers
+# convert in both directions and live at module-top so all three
+# panels stay consistent.
+
+_PARSER_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_PARSER_DAY_TOKENS = {
+    "monday": 0, "mon": 0,
+    "tuesday": 1, "tue": 1, "tues": 1,
+    "wednesday": 2, "wed": 2,
+    "thursday": 3, "thu": 3, "thur": 3, "thurs": 3,
+    "friday": 4, "fri": 4,
+    "saturday": 5, "sat": 5,
+    "sunday": 6, "sun": 6,
+}
+
+
+def _entry_to_strs(entry):
+    """(weekday, start_h_in_day, end_h_offset) → ('Mon 06:00', 'Tue 16:00').
+
+    `end_h_offset` is hours-from-start-day-midnight, so eh=24 means
+    "next day 00:00", eh=124 means "5 days + 4h past start". divmod
+    collapses multiples-of-24 to next-day-00:00 cleanly so we never
+    print 'Mon 24:00' (which the parser later rejects)."""
+    wd_s, sh, eh = int(entry[0]), int(entry[1]), int(entry[2])
+    day_offset, h_e = divmod(eh, 24)
+    wd_e = (wd_s + day_offset) % 7
+    return f"{_PARSER_DAYS[wd_s]} {sh:02d}:00", f"{_PARSER_DAYS[wd_e]} {h_e:02d}:00"
+
+
+def _entry_to_window_str(entry):
+    """(weekday, start, end) → 'Mon 06:00 → Tue 16:00'.
+
+    Single-string presentation for read-only display of a parsed
+    window. Used by the applied-parse-review panel."""
+    s, e = _entry_to_strs(entry)
+    return f"{s} → {e}"
+
+
+def _parse_day_time(s):
+    """'Mon 6am' / 'Thu 4pm' / 'Sat 04:00' → (weekday, hour_of_day) | None.
+
+    Reuses the existing time-token parser from read_schedule for
+    the time half. Tolerant of trailing punctuation on the day
+    name (',' '.' ';')."""
+    from read_schedule import _parse_time as _parse_time_token
+    if not s or not isinstance(s, str):
+        return None
+    parts = s.strip().lower().split(maxsplit=1)
+    if len(parts) != 2:
+        return None
+    wd = _PARSER_DAY_TOKENS.get(parts[0].rstrip(",.;"))
+    if wd is None:
+        return None
+    h = _parse_time_token(parts[1])
+    if h is None:
+        return None
+    return (wd, h)
+
+
+def _parsed_strs_to_entry(start_str, end_str):
+    """Inverse of _entry_to_strs. Returns (weekday, start_h, end_h)
+    or None if either side fails to parse."""
+    start = _parse_day_time(start_str)
+    end   = _parse_day_time(end_str)
+    if start is None or end is None:
+        return None
+    wd_s, h_s = start
+    wd_e, h_e = end
+    day_offset = (wd_e - wd_s) % 7
+    if day_offset == 0 and h_e <= h_s:
+        day_offset = 7   # treat as a full-week wrap (rare; e.g. continuous shop)
+    end_in_day_offset = day_offset * 24 + h_e
+    if end_in_day_offset <= h_s:
+        return None
+    return (wd_s, h_s, end_in_day_offset)
+
+
 # ── Session state / defaults ──────────────────────────────────────────────────
 
 def _defaults():
@@ -1587,46 +1675,42 @@ if _pending_lc:
             st.markdown(f"**Parser's best guess** "
                           f"(confidence: `{_pending_lc.get('confidence', '?')}`):")
             _lc_entries = _pending_lc.get("entries") or []
-            DAYS_LC = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+            # Reuse the shared parser-editor format: text columns
+            # accepting "Mon 6am" / "Tue 16:00" / "Sat 04:00".
+            _LC_EDITOR_COL_CFG = {
+                "Start": st.column_config.TextColumn(
+                    "Start", required=True,
+                    help="Day + time the window starts. "
+                         "e.g. 'Mon 6am', 'Mon 06:00', 'Mon 0600'."),
+                "End": st.column_config.TextColumn(
+                    "End", required=True,
+                    help="Day + time the window ends. Can roll "
+                         "into a later day for continuous shifts. "
+                         "e.g. 'Tue 4pm', 'Sat 04:00', 'Fri 16:00'."),
+            }
             if _lc_entries:
-                _lc_rows = [
-                    {"Day": DAYS_LC[int(e[0])],
-                      "Start": int(e[1]), "End": int(e[2])}
-                    for e in _lc_entries
-                ]
+                _lc_rows = []
+                for e in _lc_entries:
+                    s_str, e_str = _entry_to_strs(e)
+                    _lc_rows.append({"Start": s_str, "End": e_str})
                 _lc_edited = st.data_editor(
                     _lc_rows,
                     use_container_width=True,
                     hide_index=True,
                     num_rows="dynamic",
-                    column_config={
-                        "Day":   st.column_config.SelectboxColumn(
-                            "Day", options=DAYS_LC, required=True),
-                        "Start": st.column_config.NumberColumn(
-                            "Start hr", min_value=0, max_value=47, step=1),
-                        "End":   st.column_config.NumberColumn(
-                            "End hr", min_value=1, max_value=48, step=1),
-                    },
+                    column_config=_LC_EDITOR_COL_CFG,
                     key="lc_editor",
                 )
             else:
                 st.info("Parser extracted zero entries. Add rows below "
                          "or use the Schedule Parser to manually paste "
                          "the schedule.")
-                _lc_edited = []
                 _lc_edited = st.data_editor(
-                    [{"Day": "Mon", "Start": 6, "End": 16}],
+                    [{"Start": "Mon 06:00", "End": "Mon 16:00"}],
                     use_container_width=True,
                     hide_index=True,
                     num_rows="dynamic",
-                    column_config={
-                        "Day":   st.column_config.SelectboxColumn(
-                            "Day", options=DAYS_LC, required=True),
-                        "Start": st.column_config.NumberColumn(
-                            "Start hr", min_value=0, max_value=47, step=1),
-                        "End":   st.column_config.NumberColumn(
-                            "End hr", min_value=1, max_value=48, step=1),
-                    },
+                    column_config=_LC_EDITOR_COL_CFG,
                     key="lc_editor_empty",
                 )
             if _pending_lc.get("notes"):
@@ -1647,17 +1731,15 @@ if _pending_lc:
                                "low-confidence merge. Other days' existing "
                                "windows survive; the week is NOT marked "
                                "received so reminders keep firing."):
-                # Convert editor rows back to entries tuples
+                # Convert text editor rows back to entry tuples.
+                # Reuses the shared _parsed_strs_to_entry helper so this
+                # panel + the main parser editor stay in lockstep.
                 _final_entries = []
                 for _row in _lc_edited:
-                    _day = _row.get("Day")
-                    if _day not in DAYS_LC:
-                        continue
-                    _s = int(_row.get("Start", 0) or 0)
-                    _e = int(_row.get("End", 0) or 0)
-                    if _e <= _s:
-                        continue
-                    _final_entries.append((DAYS_LC.index(_day), _s, _e))
+                    _ent = _parsed_strs_to_entry(_row.get("Start"),
+                                                  _row.get("End"))
+                    if _ent is not None:
+                        _final_entries.append(_ent)
                 if _final_entries:
                     sim_now = run_hour_to_dt(data, data["current_run_hour"])
                     data, _r, _a = apply_schedule_to_data(
@@ -1763,11 +1845,10 @@ if _applied_review:
             )
         with _ar_right:
             st.markdown("**Parsed run windows:**")
-            DAYS_AR = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
             _ar_entries = _applied_review.get("entries") or []
             _ar_rows = [
-                {"Day": DAYS_AR[int(e[0])],
-                  "Start": int(e[1]), "End": int(e[2])}
+                {"Window": _entry_to_window_str(e),
+                  "Hours": int(e[2]) - int(e[1])}
                 for e in _ar_entries
             ]
             st.dataframe(_ar_rows, use_container_width=True, hide_index=True)
@@ -1932,46 +2013,8 @@ with sp_col:
             # parsed back to the (weekday, start_h, end_h) tuple
             # shape the rest of the pipeline uses, where end_h is
             # an offset from start-day midnight (so "Mon 6am →
-            # Sat 4am" → (0, 6, 124)).
-            from read_schedule import _parse_time as _parse_time_token
-            _DAY_TOKENS = {
-                "monday": 0, "mon": 0,
-                "tuesday": 1, "tue": 1, "tues": 1,
-                "wednesday": 2, "wed": 2,
-                "thursday": 3, "thu": 3, "thur": 3, "thurs": 3,
-                "friday": 4, "fri": 4,
-                "saturday": 5, "sat": 5,
-                "sunday": 6, "sun": 6,
-            }
-
-            def _parse_day_time(s):
-                """'Mon 6am' / 'Thu 4pm' / 'Sat 04:00' → (weekday, hour) | None."""
-                if not s or not isinstance(s, str):
-                    return None
-                parts = s.strip().lower().split(maxsplit=1)
-                if len(parts) != 2:
-                    return None
-                wd = _DAY_TOKENS.get(parts[0].rstrip(",.;"))
-                if wd is None:
-                    return None
-                h = _parse_time_token(parts[1])
-                if h is None:
-                    return None
-                return (wd, h)
-
-            def _entry_to_strs(entry):
-                """(weekday, start_h_in_day, end_h_offset) → ('Mon 6am', 'Sat 4am').
-
-                eh is hours-from-start-day-midnight, so eh=24 means "next
-                day 00:00", eh=124 means "5 days + 4h past start". Use
-                divmod so multiples-of-24 collapse to next-day-00:00
-                rather than printing 'Mon 24:00' (which the parser later
-                rejects as invalid hour)."""
-                wd_s, sh, eh = int(entry[0]), int(entry[1]), int(entry[2])
-                day_offset, h_e = divmod(eh, 24)
-                wd_e = (wd_s + day_offset) % 7
-                return f"{DAYS[wd_s]} {sh:02d}:00", f"{DAYS[wd_e]} {h_e:02d}:00"
-
+            # Sat 4am" → (0, 6, 124)). Reuses the module-top helpers
+            # _entry_to_strs / _parsed_strs_to_entry.
             edit_rows = []
             for e in entries:
                 s_str, e_str = _entry_to_strs(e)
@@ -1994,24 +2037,11 @@ with sp_col:
                              "e.g. 'Thu 4pm', 'Sat 04:00', 'Fri 16:00'."),
                 },
             )
-            # Convert edits back to (weekday, start_h, end_h) tuples.
-            # end_h = offset_days*24 + end_hour_of_day, so a Sat-4am end
-            # for a Mon-6am start becomes 124 (= 5*24 + 4).
             edited_entries = []
             for row in edited:
-                start = _parse_day_time(row.get("Start"))
-                end   = _parse_day_time(row.get("End"))
-                if start is None or end is None:
-                    continue
-                wd_s, h_s = start
-                wd_e, h_e = end
-                day_offset = (wd_e - wd_s) % 7
-                if day_offset == 0 and h_e <= h_s:
-                    day_offset = 7   # wraps a full week
-                end_in_day_offset = day_offset * 24 + h_e
-                if end_in_day_offset <= h_s:
-                    continue   # degenerate
-                edited_entries.append((wd_s, h_s, end_in_day_offset))
+                _ent = _parsed_strs_to_entry(row.get("Start"), row.get("End"))
+                if _ent is not None:
+                    edited_entries.append(_ent)
             st.session_state._edited_entries = edited_entries
             if edited_entries != [(e[0], e[1], e[2]) for e in entries]:
                 st.caption(
@@ -2032,7 +2062,12 @@ with sp_col:
                 for n in notes:
                     st.markdown(f"- {n.strip()}")
 
-        btn_lbl = "✅ Apply to Schedule" if confidence == "high" else "⚠️ Apply Anyway"
+        # Single, neutral label — covers both "confirm what the parser
+        # got right" and "apply the corrections I just made". Confidence
+        # still drives apply_mode (HIGH = full replace + mark week
+        # received; LOW = additive merge), but the button text no
+        # longer requires the operator to interpret "Anyway".
+        btn_lbl = "✅ Apply Schedule"
         if st.button(btn_lbl, use_container_width=True):
             sim_now = run_hour_to_dt(data, data["current_run_hour"])
             # HIGH confidence → full replace + mark week received.
@@ -2321,25 +2356,65 @@ if _history:
     _decimated = _ds_lvl(_history, max_points=720)
     _xs = [entry["iso"] for entry in _decimated]
     _tank_names = sorted(_decimated[0].get("tanks", {}).keys())
+
+    # Combine the per-tank traces into ONE line per product.
+    # Operator complaint: 4 overlapping tank lines were impossible to
+    # read. Now: Product U total + Product M total, with combined
+    # capacity visible on the y-axis. Safety-stock floor drawn as a
+    # dashed reference line.
+    def _sum_for(prefix):
+        return [
+            sum(entry["tanks"].get(t, 0)
+                for t in _tank_names if t.startswith(prefix))
+            for entry in _decimated
+        ]
+
+    _u_totals = _sum_for("U-")
+    _m_totals = _sum_for("M-")
+
+    # Combined capacity per product = sum of all tanks' max_capacity_lbs
+    # for that prefix. Read from the live data dict (not from history,
+    # which only carries level snapshots).
+    def _capacity_for(prefix):
+        return sum(
+            float(t.get("max_capacity_lbs", 0))
+            for n, t in data.get("tanks", {}).items()
+            if n.startswith(prefix)
+        )
+
+    _u_cap = _capacity_for("U-")
+    _m_cap = _capacity_for("M-")
+    _y_max = max(_u_cap, _m_cap, max(_u_totals + _m_totals + [0])) * 1.05
+
     _fig_lvl = _go_lvl.Figure()
-    # Color palette — distinct, color-blind-safe (Wong-2011)
-    _palette = ["#0072B2", "#E69F00", "#009E73", "#CC79A7",
-                 "#56B4E9", "#D55E00", "#F0E442", "#999999"]
-    for _i, _tn in enumerate(_tank_names):
-        _ys = [entry["tanks"].get(_tn) for entry in _decimated]
-        _fig_lvl.add_trace(_go_lvl.Scatter(
-            x=_xs, y=_ys, mode="lines", name=_tn,
-            line=dict(color=_palette[_i % len(_palette)], width=2),
-        ))
+    _fig_lvl.add_trace(_go_lvl.Scatter(
+        x=_xs, y=_u_totals, mode="lines", name="Product U (combined)",
+        line=dict(color="#1E3A8A", width=2.5),
+        hovertemplate="<b>Product U</b><br>%{x}<br>%{y:,.0f} lbs<extra></extra>",
+    ))
+    _fig_lvl.add_trace(_go_lvl.Scatter(
+        x=_xs, y=_m_totals, mode="lines", name="Product M (combined)",
+        line=dict(color="#0F766E", width=2.5),
+        hovertemplate="<b>Product M</b><br>%{x}<br>%{y:,.0f} lbs<extra></extra>",
+    ))
+    # Safety-stock floor — same dashed-rose treatment as the
+    # 12-day projection chart, so the two charts read as a family.
+    _fig_lvl.add_hline(
+        y=SAFETY_STOCK_LBS, line_dash="dash",
+        line_color="#F43F5E", line_width=1.2,
+        annotation_text="Safety stock",
+        annotation_position="bottom right",
+        annotation_font=dict(size=10, color="#9F1239", family="Inter"),
+    )
     _fig_lvl.update_layout(
-        height=450,
+        height=420,
         margin=dict(l=20, r=20, t=10, b=40),
         legend=dict(orientation="h", y=-0.15),
         xaxis_title="Sim time",
-        yaxis_title="lbs",
+        yaxis_title="lbs (combined per product)",
         hovermode="x unified",
-        # Explicit daily ticks so a 12-day chart doesn't auto-pick
-        # 5-minute spacing when zoomed in. dtick=86400000 ms = 24 h.
+        yaxis=dict(range=[0, _y_max], tickformat=",", dtick=10000,
+                    gridcolor="#E2E8F0"),
         xaxis=dict(
             tickformat="%a %m/%d",
             dtick=86400000.0,

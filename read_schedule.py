@@ -518,16 +518,30 @@ _FORWARD_SEPARATORS = re.compile(
 
 
 def _strip_quoted_history(text):
-    """Cut at the second forward/reply separator so only the topmost message
-    + single most-recent quoted block survive. Kills the 'weeks of history'
-    problem where every stacked quoted reply is parsed as if it applies to
-    the current week."""
+    """Cut at the FIRST forward/reply separator so quoted history
+    never reaches the parser.
+
+    Old behaviour kept the topmost message + one quoted block (cut at
+    second separator). Real-world email bodies — even single-reply
+    chains — leak day-name tokens (e.g. "On Sun, May 3, ... wrote:")
+    and times (e.g. "9:16 PM") into the parser, which then trips
+    false-positive demoters ("Sun: day found but no time range",
+    "Half-hour times detected") and forces an unnecessary LLM rescue
+    on otherwise-clean schedules. Cutting at the first separator
+    eliminates that whole class of confusion.
+
+    Trade-off: emails whose ONLY schedule content lives inside a
+    quoted block (rare — operator forwarded an old schedule with no
+    new body text) will parse to zero entries → LOW confidence →
+    operator review. That's the right outcome anyway, since we
+    shouldn't silently apply a quoted-history schedule.
+    """
     if not isinstance(text, str) or not text.strip():
         return text
-    hits = list(_FORWARD_SEPARATORS.finditer(text))
-    if len(hits) < 2:
+    m = _FORWARD_SEPARATORS.search(text)
+    if not m:
         return text
-    return text[:hits[1].start()].rstrip()
+    return text[:m.start()].rstrip()
 
 
 # Email-header lines (RFC 2822 style): "From: ...", "Sent: ...", "To: ...",
@@ -789,14 +803,15 @@ def _clean_email_text(text):
     # formatting markers BEFORE any other regex runs. Otherwise a Word-pasted
     # 'Mon−Fri' (with U+2212) silently fails the day-range parser.
     text = _normalize_unicode(text)
-    # Truncate stacked reply chains FIRST so downstream strips only see the
-    # topmost message + one quoted block.
-    text = _strip_quoted_history(text)
-    # Strip any inlined email header block (From:/Sent:/To:/Cc:/Subject:/
-    # Date:) at the top — those are metadata, not schedule, and their
-    # values (e.g. "Sent: Friday, April 17") otherwise leak day-name
-    # false-positives into the parser.
+    # Strip any inlined email header block at the TOP first — Outlook
+    # forwards inline `From:/Sent:/To:/Subject:` lines that look like
+    # a "From:/Sent:" forward separator. If we ran _strip_quoted_history
+    # before this, the very first match would be the email's own
+    # headers and we'd cut the entire body. Order matters.
     text = _strip_header_block(text)
+    # Now cut at the first quoted-history separator. Anything below is
+    # a reply chain or forward — never the operator's actual schedule.
+    text = _strip_quoted_history(text)
     t = _QUOTED_LINE.sub('', text)
     t = _GREETING_LINE.sub('', t, count=1)
     t = _SIGNOFF_BLOCK.sub('', t)
