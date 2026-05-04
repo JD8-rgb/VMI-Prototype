@@ -191,6 +191,28 @@ def _parsed_strs_to_entry(start_str, end_str):
     return (wd_s, h_s, end_in_day_offset)
 
 
+def _has_fractional_minutes(s) -> bool:
+    """True if `s` is a Day+time string whose time component carries
+    a non-zero minute value (e.g. "Mon 6:30am", "Tue 14:45").
+
+    Used by the parser editor + LC pending-review editor to warn the
+    operator when their typed input gets silently rounded to integer
+    hours by read_schedule._parse_time. Without this hint the operator
+    could type "Mon 6:30am" and never notice the schedule actually
+    applied as "Mon 06:00".
+
+    Pattern requires a digit BEFORE the colon (so it's a time, not
+    a label like "weekend:30") and a non-zero minute (00 means the
+    operator was being explicit about "on the hour").
+    """
+    if not isinstance(s, str):
+        return False
+    # Trailing (?!\d) — not followed by another digit — so that "6:30am"
+    # matches (am is a word char, blocks \b but not \d) while "12:455"
+    # doesn't (the run of digits keeps going).
+    return bool(re.search(r'\b\d{1,2}:([1-5]\d|0[1-9])(?!\d)', s))
+
+
 # ── Session state / defaults ──────────────────────────────────────────────────
 
 def _defaults():
@@ -1741,6 +1763,20 @@ if _pending_lc:
                     column_config=_LC_EDITOR_COL_CFG,
                     key="lc_editor_empty",
                 )
+            # Half-hour rounding warning — same hint as the main parser
+            # editor, so operators can't silently lose 30 minutes here.
+            _lc_half = [
+                (r.get("Start"), r.get("End"))
+                for r in _lc_edited
+                if (_has_fractional_minutes(r.get("Start"))
+                    or _has_fractional_minutes(r.get("End")))
+            ]
+            if _lc_half:
+                _bad = ", ".join(f"{s} → {e}" for s, e in _lc_half[:3])
+                st.caption(
+                    f"⚠️ Half-hour values rounded down to integer hours: "
+                    f"{_bad}{' …' if len(_lc_half) > 3 else ''}."
+                )
             if _pending_lc.get("notes"):
                 with st.expander("Parser notes",
                                    expanded=(_pending_lc.get("confidence")
@@ -2066,15 +2102,29 @@ with sp_col:
                 },
             )
             edited_entries = []
+            _half_hour_typed = []
             for row in edited:
-                _ent = _parsed_strs_to_entry(row.get("Start"), row.get("End"))
+                _s, _e = row.get("Start"), row.get("End")
+                _ent = _parsed_strs_to_entry(_s, _e)
                 if _ent is not None:
                     edited_entries.append(_ent)
+                    # Surface a hint when the operator typed a non-zero
+                    # minute that read_schedule._parse_time will truncate.
+                    if _has_fractional_minutes(_s) or _has_fractional_minutes(_e):
+                        _half_hour_typed.append((_s, _e))
             st.session_state._edited_entries = edited_entries
             if edited_entries != [(e[0], e[1], e[2]) for e in entries]:
                 st.caption(
                     f"✏️ Edited: {len(edited_entries)} window(s) "
                     f"(parser originally extracted {len(entries)})"
+                )
+            if _half_hour_typed:
+                _bad = ", ".join(f"{s} → {e}" for s, e in _half_hour_typed[:3])
+                st.caption(
+                    f"⚠️ Half-hour values rounded down to integer hours: "
+                    f"{_bad}{' …' if len(_half_hour_typed) > 3 else ''}. "
+                    f"The plant runs in whole-hour blocks; if you need "
+                    f"finer granularity, contact engineering."
                 )
 
         # Show parse notes — critical when confidence is low so the user knows
