@@ -809,13 +809,34 @@ def _chart(hist, product, safety=None, cutoff_run_hour=None):
         annotation_font=dict(size=10, color="#9F1239", family="Inter"),
     )
     for ev in hist["truck_events"]:
-        if ev["product"] == product:
+        if ev["product"] != product:
+            continue
+        # Forecast trucks (run_hour > cutoff OR sap starts with FORECAST-)
+        # render as dotted, slightly fainter, with "(fcst)" annotation
+        # so the scheduler can clearly distinguish prospective from
+        # actual deliveries. Real trucks keep the dashed amber treatment.
+        is_forecast = (
+            (cutoff_run_hour is not None and ev["run_hour"] > cutoff_run_hour)
+            or str(ev.get("sap", "")).startswith("FORECAST-")
+        )
+        if is_forecast:
+            fig.add_vline(
+                x=ev["run_hour"],
+                line_dash="3 3", line_color="#F59E0B", line_width=1.0,
+                opacity=0.7,
+                annotation_text=f"+{ev['qty'] // 1000}k (fcst)",
+                annotation_position="top left",
+                annotation_font=dict(size=10, color="#B45309",
+                                       family="Inter"),
+            )
+        else:
             fig.add_vline(
                 x=ev["run_hour"],
                 line_dash="dash", line_color="#F59E0B", line_width=1.2,
                 annotation_text=f"{ev['sap']} +{ev['qty'] // 1000}k",
                 annotation_position="top left",
-                annotation_font=dict(size=10, color="#92400E", family="Inter"),
+                annotation_font=dict(size=10, color="#92400E",
+                                       family="Inter"),
             )
     fig.update_layout(
         title=dict(
