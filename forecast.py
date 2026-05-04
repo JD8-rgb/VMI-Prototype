@@ -472,15 +472,6 @@ def _generate_forecast_trucks(state, fc, cutoff: float, end_hour: float,
                 return True
         return False
 
-    # Reorder trigger: same threshold the operator would tune via the
-    # VMI Controls high target (heavy weeks need ~22-27k floor for
-    # cycling realism). We use a fraction of the high-target so the
-    # band tracks customer config — not a hard-coded 22k.
-    REORDER_BUFFER = max(
-        float(cfg.target_low_lbs) * 0.85,
-        float(cfg.safety_stock_lbs) * 1.5,
-    )
-
     # Forecast trucks are illustrative, not orders the operator must
     # place today. Use a shorter "intent" lead time (half the real
     # lead) so prospective trucks appear in the chart at the moment
@@ -493,6 +484,22 @@ def _generate_forecast_trucks(state, fc, cutoff: float, end_hour: float,
     rates = state.consumption_rates or {}
     products = list(rates.keys())
     slots = sorted(set(int(s) for s in (cfg.delivery_slots or (8,))))
+
+    # Per-product reorder threshold, sized so combined level stays
+    # above safety stock through the entire (trigger → next-slot →
+    # delivery) gap. Two sources of consumption during that gap:
+    #   1. FORECAST_LEAD_HOURS of intent lead.
+    #   2. Up to ~24h of slot-snap penalty (e.g. trigger fires Fri 15h
+    #      but next valid slot is Mon 06h → ~63h of weekend stall).
+    # The earlier static 15k trigger fired AT 15k, then the plant
+    # drained another ~28k before delivery, dropping combined level
+    # to roughly 0 (heel) — well below the 10k safety floor.
+    GAP_SAFETY_HOURS = FORECAST_LEAD_HOURS + 24.0
+    reorder_thresholds = {
+        product: float(cfg.safety_stock_lbs)
+                  + GAP_SAFETY_HOURS * float(rates[product].lbs_per_hour)
+        for product in products
+    }
 
     # Real trucks already on the books — we walk them so consumption
     # math stays accurate up to and past the cutoff.
@@ -557,7 +564,7 @@ def _generate_forecast_trucks(state, fc, cutoff: float, end_hour: float,
                 t["product"] == product
                 for t in pending_real + pending_forecast
             )
-            if combined < REORDER_BUFFER and not already_in_flight:
+            if combined < reorder_thresholds[product] and not already_in_flight:
                 arrival_rh = _next_delivery_slot(
                     h + FORECAST_LEAD_HOURS
                 )
