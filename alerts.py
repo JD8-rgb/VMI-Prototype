@@ -520,10 +520,13 @@ def check_schedule_alerts(data):
         next_mon_display = next_mon[5:].replace("-", "/").lstrip("0")  # "04/27" → "4/27"
         if state.schedule_received_for_week != next_mon:
             if sim_now.hour >= 15:
-                # 3 PM or later — critical: missed the deadline
+                # 3 PM or later — critical: missed the deadline.
+                # Alert goes to the distribution group, not just one
+                # contact, so the body intentionally avoids implying a
+                # single recipient.
                 alerts.append(_alert(
-                    f"RED FLAG: No schedule received for week of {next_mon_display} "
-                    f"by Friday 3 PM — reminder email sent to customer contact.",
+                    f"RED FLAG: No schedule received for week of "
+                    f"{next_mon_display} by Friday 3:00 PM.",
                     type="schedule_deadline", severity="red_flag", direction="other",
                 ))
             else:

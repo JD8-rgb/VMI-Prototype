@@ -802,9 +802,10 @@ def _tank_info(col, name, info):
     # SVG id (which must start with a letter or _).
     safe_id = "t_" + re.sub(r'[^A-Za-z0-9_]', '_', name)
 
-    # The wave is two stacked sinusoids that translate-X at different
-    # speeds — pure CSS animation via the keyframes block below.
-    # Wave only renders when fluid_h > 4 (otherwise it'd clip).
+    # Static surface wave — adds depth without the constant left/right
+    # translateX animation that previously made the tank cards "shift"
+    # in peripheral vision (operator complaint). Wave only renders
+    # when fluid_h > 4 (otherwise it'd clip).
     wave_svg = ""
     if fluid_h > 4:
         # Same dedent rule as the parent SVG — single-line so Streamlit
@@ -817,11 +818,7 @@ def _tank_info(col, name, info):
             f'L {tank_left + tank_w} {tank_top + tank_h} '
             f'L {tank_left} {tank_top + tank_h} Z" '
             f'fill="{fluid_dark}" opacity="0.4" '
-            f'clip-path="url(#clip_{safe_id})">'
-            f'<animateTransform attributeName="transform" type="translate" '
-            f'values="0,0; -10,0; 0,0" dur="3.5s" '
-            f'repeatCount="indefinite"/>'
-            f'</path>'
+            f'clip-path="url(#clip_{safe_id})"/>'
         )
 
     # SVG kept on a single line — Streamlit's markdown rendering
@@ -2065,8 +2062,11 @@ with ap_col:
     target_lbs = get_target_for_week(week_rh, state=data)
 
     ic1, ic2, ic3 = st.columns(3)
-    ic1.metric("Plan week starts", format_run_hour(data, week_start).split()[0] + " " +
-               format_run_hour(data, week_start).split()[1])
+    # Compact date so the metric value doesn't overflow the narrow
+    # auto-planner column. "Mon 5/4" instead of "Mon 2026-05-04".
+    _ws_dt = run_hour_to_dt(data, week_start)
+    ic1.metric("Plan week starts",
+                f"{_ws_dt.strftime('%a')} {_ws_dt.month}/{_ws_dt.day}")
     ic2.metric("Scheduled run hrs", f"{week_rh:.0f} h")
     ic3.metric("Reorder target", f"{target_lbs:,.0f} lbs")
 
@@ -2261,33 +2261,8 @@ with _d3:
              "sliders above.",
     )
 
-# Bottom row: weekly stacked bar chart
-if _weekly:
-    import plotly.graph_objects as _go_dash
-    _weeks = [w[0] for w in _weekly]
-    _overfills = [w[1] for w in _weekly]
-    _safeties  = [w[2] for w in _weekly]
-    _fig = _go_dash.Figure(data=[
-        _go_dash.Bar(name="Overfill",     x=_weeks, y=_overfills,
-                      marker_color="#DC2626"),
-        _go_dash.Bar(name="Safety-stock", x=_weeks, y=_safeties,
-                      marker_color="#F59E0B"),
-    ])
-    _fig.update_layout(
-        barmode="stack",
-        height=240,
-        margin=dict(l=20, r=20, t=10, b=20),
-        legend=dict(orientation="h", y=-0.15),
-        xaxis_title="Week of",
-        yaxis_title="Alerts",
-    )
-    st.plotly_chart(_fig, use_container_width=True)
-else:
-    st.caption(
-        f"No alerts logged in the last {_DASH_WINDOW_DAYS} days. "
-        "The chart will populate as the simulation runs and alerts fire. "
-        "Reset clears the log."
-    )
+# Weekly stacked bar chart of alert counts removed — operator request:
+# the three KPI cards above carry the same signal in less space.
 
 # ── Tank-level history chart (powered by level_history ring buffer) ──────────
 
@@ -2812,6 +2787,8 @@ with st.expander("✉️ Email Configuration"):
 
 with st.expander("📋 Alert Rules Reference"):
     st.markdown(f"""
+**🔴 / 🟡 Alerts** — block a planner step or demand operator action.
+
 | Alert | Triggers when | Threshold |
 |---|---|---|
 | **Safety Stock** | Projected combined product level drops below threshold within the next {PROJECTION_WINDOW_HOURS} h | **{SAFETY_STOCK_LBS:,} lbs** combined per product |
@@ -2820,14 +2797,27 @@ with st.expander("📋 Alert Rules Reference"):
 | **Plant State Mismatch** | Plant is running when the schedule says it's down, or down when the schedule says it's running | **> {PLANT_STATE_MISMATCH_HOURS} hours** off-schedule (reads live telemetry in production) |
 | **Lead-Time Warning** | On-hand usable + scheduled inbound < demand for the next **{LEAD_TIME_HOURS} scheduled run hours** | — |
 | **Late Truck** | A scheduled truck has not arrived | **> {LATE_TRUCK_HOURS} hours** past scheduled arrival |
-| **Reminder Sent** (yellow) | Friday 11 AM sim time reached with no schedule on file for next week | Shows from 11 AM until schedule is received or the 3 PM alert replaces it |
-| **No Schedule** (red) | Friday 3 PM sim time reached with no schedule on file for next week | Replaces the 11 AM alert; fires until `schedule_received_for_week` is set |
+| **Reminder Sent** (yellow) | Friday 11 AM sim time reached with no schedule on file for next week | Reminder email sent to customer contact at 11 AM; clears when schedule is received or the 3 PM alert replaces it |
+| **No Schedule** (red) | Friday 3 PM sim time reached with no schedule on file for next week | RED alert sent to the distribution group; fires until `schedule_received_for_week` is set |
 | **Low Confidence Parse** | A schedule email was found but fewer than 3 days could be parsed | Clears automatically when a high-confidence schedule is applied |
+| **VMI Automation Off** (red) | `vmi_automation_enabled` is OFF at Friday 9 AM sim time | Recurs every Friday until automation is re-enabled |
+
+**🟡 Anomalies** — soft "did you mean it?" warnings. Don't block; surface as a YELLOW chip so the operator can confirm or override.
+
+| Anomaly | Triggers when | Threshold |
+|---|---|---|
+| **Run hours unusual** | Most recent week's total run-hours is a >2σ outlier vs. last several weeks | Needs 3+ historical weeks; catches stale forwards / parser misreads (e.g. 24h instead of 12h) |
+| **Day shape unusual** | This week's run schedule covers a weekday the customer hasn't used in recent history | Catches "Sun shift" inserted by mistake into a Mon-Fri customer |
+| **Holiday in run window** | A parsed run window covers a date in `cfg.plant_holidays` | Operator likely forgot the holiday; the planner will gate it out via `is_running_at`, but worth confirming |
+| **Truck cadence unusual** | Scheduled trucks for the upcoming week is outside `predicted ± {{cfg.truck_cadence_band_pct × 100}}%` (min ±{{cfg.truck_cadence_min_band}}) | Forecaster output is the baseline (4-week 40/30/20/10 weighted, holiday-gated); prevents single-source drift |
+| **Schedule arrival unusual** | This week's schedule email arrived on a weekday the customer hasn't used in the last 8 schedules | Catches stale-forward / re-fetch of an old email |
 
 **Reorder target** scales with run activity:
 - Light week ({TARGET_LOW_RUN_HOURS} run hrs/wk or less): **{TARGET_LOW_LBS:,} lbs**
 - Heavy week ({TARGET_HIGH_RUN_HOURS} run hrs/wk or more): **{TARGET_HIGH_LBS:,} lbs**
 - Intermediate weeks: linear interpolation between the two
+
+The operator can override the low/high targets via the **VMI Controls** sliders below. The override persists week-to-week until cleared.
 """)
 
 # ── Alert History (expander) ─────────────────────────────────────────────────

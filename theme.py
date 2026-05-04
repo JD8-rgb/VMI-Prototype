@@ -151,8 +151,14 @@ html, body, [class*="css"], .stApp {{
 }}
 .stApp [data-testid="stMetricValue"] {{
     font-family: 'JetBrains Mono', monospace;
-    font-weight: 600;
+    font-feature-settings: "tnum" 1;
+    font-weight: 700;
+    font-size: 1.4rem;
+    line-height: 1.25;
     color: var(--vmi-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }}
 
 /* ── Container with border (st.container(border=True)) ─────────────────── */
@@ -247,7 +253,11 @@ header[data-testid="stHeader"] {{ background: transparent; }}
 footer {{ visibility: hidden; }}
 
 /* ── Tighten default vertical spacing between blocks ──────────────────── */
-.stApp .block-container {{ padding-top: 1.5rem; }}
+/* Page max-width: 1480px — wider than the design kit's 1280 so the
+   side-by-side projection charts have room to render daily ticks
+   without overlap. Operator complaint: at 1280 the run-windows
+   were too narrow to read. */
+.stApp .block-container {{ padding-top: 1.5rem; max-width: 1480px; }}
 .stApp [data-testid="stVerticalBlock"] {{ gap: 0.6rem; }}
 </style>
 """
