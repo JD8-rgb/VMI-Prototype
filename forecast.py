@@ -481,6 +481,13 @@ def _generate_forecast_trucks(state, fc, cutoff: float, end_hour: float,
         float(cfg.safety_stock_lbs) * 1.5,
     )
 
+    # Forecast trucks are illustrative, not orders the operator must
+    # place today. Use a shorter "intent" lead time (half the real
+    # lead) so prospective trucks appear in the chart at the moment
+    # the planner would have wanted them — not 48h after the trigger
+    # when delivery might already be past the chart's right edge.
+    FORECAST_LEAD_HOURS = max(8.0, float(cfg.lead_time_hours) / 2.0)
+
     sim_tanks = deepcopy(state.to_dict().get("tanks", {}))
     truck_qty_map = dict(state.truck_quantities or {})
     rates = state.consumption_rates or {}
@@ -539,10 +546,6 @@ def _generate_forecast_trucks(state, fc, cutoff: float, end_hour: float,
                     simulate_consume(sim_tanks, product, float(rate))
 
         # 3. After consuming, check whether any product needs reordering.
-        #    Only place forecast orders for arrivals strictly after the
-        #    cutoff — the pre-cutoff window is the operator's already-
-        #    locked schedule, planner output for that period is whatever
-        #    state.scheduled_trucks already carries.
         for product in products:
             prefix = "U-" if product == "Product U" else "M-"
             combined = sum(
@@ -556,8 +559,12 @@ def _generate_forecast_trucks(state, fc, cutoff: float, end_hour: float,
             )
             if combined < REORDER_BUFFER and not already_in_flight:
                 arrival_rh = _next_delivery_slot(
-                    h + float(cfg.lead_time_hours)
+                    h + FORECAST_LEAD_HOURS
                 )
+                # Drop trucks that would arrive past the chart's right
+                # edge — they'd be invisible (Plotly clips vlines past
+                # the data range) and the operator gets nothing useful
+                # from a "ghost" delivery.
                 if arrival_rh >= end_hour:
                     continue
                 qty = int(truck_qty_map.get(product, 33_000))
