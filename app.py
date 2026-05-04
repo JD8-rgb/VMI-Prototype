@@ -663,10 +663,11 @@ def _chart(hist, product, safety=None, cutoff_run_hour=None):
                 break
 
     fig = go.Figure()
-    # Run windows — subtle warm tint so they read as "active" without competing
+    # Run windows — barely-there brand-blue tint per design system
+    # (single-blue identity; no teal in the chrome).
     for w in hist["run_windows"]:
         fig.add_vrect(x0=w["start_hour"], x1=w["end_hour"],
-                      fillcolor="rgba(0,199,169,0.07)", line_width=0)
+                      fillcolor="rgba(30,64,175,0.06)", line_width=0)
     for name in tnks:
         color = COLORS.get(name, "#888")
         y_vals = hist["tanks"][name]
@@ -683,7 +684,7 @@ def _chart(hist, product, safety=None, cutoff_run_hour=None):
             # Cutoff before chart start (no future parsed windows) → all dotted
             fig.add_trace(go.Scatter(
                 x=x_vals, y=y_vals, name=name,
-                line=dict(color=color, width=2.5, dash="dot"),
+                line=dict(color=color, width=2.5, dash="3 3"),
                 customdata=dts,
                 hovertemplate=f"<b>{name}</b> (forecast)<br>%{{customdata}}<br>%{{y:,.0f}} lbs<extra></extra>",
             ))
@@ -699,7 +700,7 @@ def _chart(hist, product, safety=None, cutoff_run_hour=None):
             ))
             fig.add_trace(go.Scatter(
                 x=x_vals[split_idx-1:], y=y_vals[split_idx-1:], name=name,
-                line=dict(color=color, width=2.5, dash="dot"),
+                line=dict(color=color, width=2.5, dash="3 3"),
                 legendgroup=name, showlegend=False,
                 customdata=dts[split_idx-1:],
                 hovertemplate=f"<b>{name}</b> (forecast)<br>%{{customdata}}<br>%{{y:,.0f}} lbs<extra></extra>",
@@ -713,9 +714,9 @@ def _chart(hist, product, safety=None, cutoff_run_hour=None):
             annotation_position="top right",
             annotation_font=dict(size=10, color="#64748B", family="Inter"),
         )
-    # Safety stock — softer rose, smaller annotation
+    # Safety-stock floor — dashed rose line per design spec
     fig.add_hline(
-        y=safety, line_dash="dot", line_color="#F43F5E", line_width=1.2,
+        y=safety, line_dash="dash", line_color="#F43F5E", line_width=1.2,
         annotation_text="Safety stock", annotation_position="bottom right",
         annotation_font=dict(size=10, color="#9F1239", family="Inter"),
     )
@@ -731,14 +732,14 @@ def _chart(hist, product, safety=None, cutoff_run_hour=None):
     fig.update_layout(
         title=dict(
             text=product,
-            font=dict(size=14, family="Inter", color="#1E2A45"),
+            font=dict(size=11, family="Inter", color="#1E2A45"),
             x=0.01, xanchor="left",
         ),
         height=560,
         margin=dict(l=5, r=5, t=34, b=44),
         font=dict(family="Inter", color="#1E2A45", size=11),
         yaxis=dict(
-            range=[0, 37000], tickformat=",", title="lbs",
+            range=[0, 37000], tickformat=",", title="lbs", dtick=10000,
             gridcolor="#E2E8F0", gridwidth=1, zeroline=False,
             title_font=dict(size=11, color="#64748B"),
             tickfont=dict(size=10, color="#64748B"),
@@ -827,7 +828,7 @@ def _tank_info(col, name, info):
     # the SVG without leading whitespace dodges that interaction.
     svg = (
         f'<svg viewBox="0 0 {SVG_W} {SVG_H}" class="vmi-tank-svg" '
-        f'width="60" height="80" xmlns="http://www.w3.org/2000/svg">'
+        f'width="56" height="74" xmlns="http://www.w3.org/2000/svg">'
         f'<defs><clipPath id="clip_{safe_id}">'
         f'<rect x="{tank_left}" y="{tank_top}" rx="3" ry="3" '
         f'width="{tank_w}" height="{tank_h}"/></clipPath></defs>'
@@ -847,7 +848,7 @@ def _tank_info(col, name, info):
     col.markdown(f"""
     <div class="vmi-tank-card" style="margin-bottom:0.4rem;">
         <div style="display:flex;gap:0.75rem;align-items:flex-start;">
-            <div style="flex:0 0 60px;">{svg}</div>
+            <div style="flex:0 0 56px;">{svg}</div>
             <div style="flex:1 1 auto;min-width:0;">
                 <div style="display:flex;align-items:center;
                             justify-content:space-between;
@@ -1251,6 +1252,14 @@ with _h_left:
     </div>
     """, unsafe_allow_html=True)
 with _h_right:
+    # Sim-time pill (design system signature) + Codebase link below.
+    from theme import simtime_pill_html as _simtime_pill_html
+    _sim_str = format_run_hour(data, data["current_run_hour"])
+    st.markdown(
+        f'<div style="text-align:right;margin-bottom:0.4rem;">'
+        f'{_simtime_pill_html(_sim_str)}</div>',
+        unsafe_allow_html=True,
+    )
     st.link_button("💻 Codebase", GITHUB_URL, use_container_width=True)
 
 # Centered Product Sheet button (~18% page width = 2.5× the previous 1/14)
@@ -1413,26 +1422,28 @@ if not alerts:
     </div>""", unsafe_allow_html=True)
 else:
     for a in alerts:
-        # Alerts are structured dicts (see alerts._alert). Severity keys the
-        # styling; the text field strips the legacy prefix for clean display.
+        # Alerts are structured dicts (see alerts._alert). Severity keys
+        # the styling via the .vmi-banner class (4px left-border per
+        # design system); the text field strips legacy prefixes.
         is_red = a.get("severity") == "red_flag"
+        kind   = "danger" if is_red else "warning"
         label  = "🔴 &nbsp; CRITICAL" if is_red else "🟡 &nbsp; WARNING"
+        accent = "#F43F5E" if is_red else "#F59E0B"
         raw    = a.get("text", "")
         text   = (raw.replace("RED FLAG: ", "")
                      .replace("YELLOW FLAG: ", "")
                      .replace("WARNING: ", ""))
-        bg     = "#FFF1F2" if is_red else "#FFFBEB"
-        border = "#F43F5E" if is_red else "#F59E0B"
-        lcolor = "#9F1239" if is_red else "#92400E"
-        bcolor = "#FECDD3" if is_red else "#FDE68A"
-        st.markdown(f"""
-        <div style="background:{bg};border:1px solid {bcolor};border-left:4px solid {border};
-                    border-radius:8px;padding:0.65rem 1rem;margin-bottom:0.5rem;
-                    font-family:'Inter',sans-serif;">
-            <span style="font-size:0.72rem;font-weight:600;color:{border};
-                         letter-spacing:0.04em;text-transform:uppercase;">{label}</span>
-            <div style="color:{lcolor};font-size:0.9rem;font-weight:400;margin-top:0.2rem;">{text}</div>
-        </div>""", unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="vmi-banner vmi-banner-{kind}">'
+            f'<div>'
+            f'<span style="font-size:0.7rem;font-weight:600;color:{accent};'
+            f'letter-spacing:0.05em;text-transform:uppercase;">{label}</span>'
+            f'<div style="font-size:0.875rem;font-weight:400;margin-top:0.2rem;">'
+            f'{text}</div>'
+            f'</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
 st.divider()
 
