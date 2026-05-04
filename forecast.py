@@ -409,8 +409,14 @@ def build_augmented_data(data: Dict[str, Any], cfg: PlantConfig = DEFAULT_CONFIG
     # count across the customer's allowed delivery slots, starting at
     # the Monday after the cutoff. The chart renders these as DOTTED
     # amber vlines so they read as "forecast, not real".
+    #
+    # IMPORTANT: pass the AUGMENTED state to the truck generator —
+    # _generate_forecast_trucks needs to see the forecast run windows
+    # we just appended above, otherwise its forward-walking simulator
+    # has no "running" hours past the parsed week and no tank ever
+    # drops far enough to trigger a reorder.
     forecast_trucks = _generate_forecast_trucks(
-        state, fc, cutoff, end_hour, cfg
+        _as_state(augmented), fc, cutoff, end_hour, cfg
     )
     if forecast_trucks:
         augmented["scheduled_trucks"] = (
@@ -422,67 +428,158 @@ def build_augmented_data(data: Dict[str, Any], cfg: PlantConfig = DEFAULT_CONFIG
 
 def _generate_forecast_trucks(state, fc, cutoff: float, end_hour: float,
                                 cfg: PlantConfig) -> List[Dict[str, Any]]:
-    """Produce one truck dict per (product, forecast-week, slot) for the
-    period strictly between `cutoff` and `end_hour`.
+    """Walk the projection forward and schedule prospective trucks the
+    way the live planner would: only when a tank actually needs one
+    to stay above safety stock. The forecaster's `suggested_trucks`
+    count is informational; what we ACTUALLY place is whatever the
+    forecast schedule + consumption rates demand.
 
-    `n_trucks` per product per week comes straight from the forecaster
-    (same source the truck-cadence anomaly checks against — single
-    source of truth). Trucks are placed at cfg.delivery_slots starting
-    Mon morning of the first forecast week, then wrapping forward in
-    24h (one slot/day) increments. Truck quantity comes from
-    state.truck_quantities. SAP order numbers are tagged with a
-    'FORECAST-' prefix so the audit trail can tell them apart from
-    real planner output (and so the projection chart's vline
-    annotation can label them clearly).
+    Mirrors the demo_history backfill pattern (consume per-hour during
+    run windows, deliver pending trucks, trigger an order when
+    combined product level drops below the reorder threshold) but
+    runs forward from current_run_hour through end_hour. Trucks
+    landing strictly between cutoff and end_hour are returned with
+    a 'FORECAST-' SAP prefix; trucks before cutoff are NOT returned
+    (those are real, already in state.scheduled_trucks).
 
-    Returns [] if the forecaster predicted zero trucks or the
-    cutoff already extends past the chart horizon."""
+    Trucks arrive at the next valid delivery slot (cfg.delivery_slots
+    on the wall-clock day) at least `cfg.lead_time_hours` from the
+    trigger event. This matches what the real planner produces, so
+    the projection's prospective trucks visually agree with what the
+    operator would see if they ran the planner for the forecast week.
+    """
+    from copy import deepcopy
+    from alerts import simulate_consume, simulate_delivery_no_alert
+    from time_utils import run_hour_to_dt, dt_to_run_hour
+
     if cutoff >= end_hour or not fc.products:
         return []
-    from time_utils import run_hour_to_dt, dt_to_run_hour
-    cutoff_dt = run_hour_to_dt(state, cutoff)
-    end_dt    = run_hour_to_dt(state, end_hour)
 
-    # Snap to next Monday 00:00 at-or-after cutoff. The forecaster's
-    # weekly truck count is per Mon-Sun cycle, so weeks land on Mondays.
-    week_start_dt = (
-        cutoff_dt + timedelta(days=(7 - cutoff_dt.weekday()) % 7)
-    ).replace(hour=0, minute=0, second=0, microsecond=0)
-    if week_start_dt <= cutoff_dt:
-        week_start_dt = week_start_dt + timedelta(days=7)
+    # The augmented state's full run_schedule (parsed + forecast
+    # windows) is what we walk against — defines when consumption
+    # happens during the forecast period.
+    schedule = state.run_schedule
 
-    slots = list(cfg.delivery_slots) or [8]
-    truck_qty_map = {p: int(q) for p, q in
-                     (state.truck_quantities or {}).items()}
+    def _is_running_at(h: float) -> bool:
+        # Mirror alerts.is_running_at semantics inline so we don't
+        # circular-import. Honors holiday gating via cfg.
+        if cfg.plant_holidays:
+            iso = run_hour_to_dt(state, h).date().isoformat()
+            if iso in cfg.plant_holidays:
+                return False
+        for w in schedule:
+            if w.start_hour <= h < w.end_hour:
+                return True
+        return False
 
-    out: List[Dict[str, Any]] = []
-    week_idx = 0
-    while week_start_dt < end_dt:
-        for prod_fc in fc.products:
-            n = int(prod_fc.suggested_trucks or 0)
-            qty = truck_qty_map.get(prod_fc.product, 33_000)
-            for i in range(n):
-                # Distribute across (weekday × slot) so 5+ trucks per
-                # week wrap onto multiple slots/day rather than piling
-                # on one weekday.
-                day_offset = i % 5            # Mon..Fri
-                slot_idx   = (i // 5) % len(slots)
-                slot_hour  = slots[slot_idx]
-                arrival_dt = week_start_dt + timedelta(
-                    days=day_offset, hours=int(slot_hour)
+    # Reorder trigger: same threshold the operator would tune via the
+    # VMI Controls high target (heavy weeks need ~22-27k floor for
+    # cycling realism). We use a fraction of the high-target so the
+    # band tracks customer config — not a hard-coded 22k.
+    REORDER_BUFFER = max(
+        float(cfg.target_low_lbs) * 0.85,
+        float(cfg.safety_stock_lbs) * 1.5,
+    )
+
+    sim_tanks = deepcopy(state.to_dict().get("tanks", {}))
+    truck_qty_map = dict(state.truck_quantities or {})
+    rates = state.consumption_rates or {}
+    products = list(rates.keys())
+    slots = sorted(set(int(s) for s in (cfg.delivery_slots or (8,))))
+
+    # Real trucks already on the books — we walk them so consumption
+    # math stays accurate up to and past the cutoff.
+    pending_real = sorted(
+        [{"product": t.product,
+           "quantity_lbs": t.quantity_lbs,
+           "arrival_rh": t.arrival_run_hour}
+          for t in state.scheduled_trucks
+          if state.current_run_hour <= t.arrival_run_hour < end_hour],
+        key=lambda r: r["arrival_rh"],
+    )
+    pending_forecast: List[Dict[str, Any]] = []
+
+    def _next_delivery_slot(after_rh: float) -> float:
+        """Smallest run_hour >= after_rh that lands on a configured
+        delivery slot (e.g. 06:00 / 08:00 / 14:00) on a non-holiday."""
+        dt = run_hour_to_dt(state, after_rh)
+        # Try the same calendar day first, then walk forward
+        for day_offset in range(0, 14):
+            check_dt = (dt + timedelta(days=day_offset)).replace(
+                minute=0, second=0, microsecond=0
+            )
+            if cfg.plant_holidays and \
+               check_dt.date().isoformat() in cfg.plant_holidays:
+                continue
+            for slot in slots:
+                slot_dt = check_dt.replace(hour=slot)
+                slot_rh = dt_to_run_hour(state, slot_dt)
+                if slot_rh >= after_rh:
+                    return float(slot_rh)
+        # Should not happen — fall back to lead-time + 0
+        return float(after_rh)
+
+    forecast_trucks: List[Dict[str, Any]] = []
+    forecast_idx = 0
+
+    h = float(state.current_run_hour)
+    while h < end_hour:
+        # 1. Deliver any trucks that arrive at this hour (real or fcst)
+        for arr_list in (pending_real, pending_forecast):
+            ready = [t for t in arr_list if t["arrival_rh"] <= h]
+            for t in ready:
+                simulate_delivery_no_alert(sim_tanks, t)
+                arr_list.remove(t)
+
+        # 2. Consume during run windows
+        if _is_running_at(h):
+            for product in products:
+                rate = rates[product].lbs_per_hour
+                if rate:
+                    simulate_consume(sim_tanks, product, float(rate))
+
+        # 3. After consuming, check whether any product needs reordering.
+        #    Only place forecast orders for arrivals strictly after the
+        #    cutoff — the pre-cutoff window is the operator's already-
+        #    locked schedule, planner output for that period is whatever
+        #    state.scheduled_trucks already carries.
+        for product in products:
+            prefix = "U-" if product == "Product U" else "M-"
+            combined = sum(
+                tk.get("current_level_lbs", 0)
+                for n, tk in sim_tanks.items()
+                if n.startswith(prefix)
+            )
+            already_in_flight = any(
+                t["product"] == product
+                for t in pending_real + pending_forecast
+            )
+            if combined < REORDER_BUFFER and not already_in_flight:
+                arrival_rh = _next_delivery_slot(
+                    h + float(cfg.lead_time_hours)
                 )
-                arrival_rh = dt_to_run_hour(state, arrival_dt)
-                # Strict inequality on cutoff — real trucks scheduled
-                # at exactly cutoff stay solid; only post-cutoff
-                # arrivals get the forecast treatment.
-                if arrival_rh <= cutoff or arrival_rh >= end_hour:
+                if arrival_rh >= end_hour:
                     continue
-                out.append({
-                    "sap_order":        f"FORECAST-{week_idx}-{i}",
-                    "product":          prod_fc.product,
-                    "quantity_lbs":     qty,
-                    "arrival_run_hour": float(arrival_rh),
-                })
-        week_start_dt = week_start_dt + timedelta(days=7)
-        week_idx += 1
-    return out
+                qty = int(truck_qty_map.get(product, 33_000))
+                truck = {
+                    "product": product,
+                    "quantity_lbs": qty,
+                    "arrival_rh": arrival_rh,
+                }
+                pending_forecast.append(truck)
+                # Only record as a "forecast truck" if it arrives in the
+                # forecast period; otherwise it's effectively a real
+                # planner suggestion for the parsed period (don't double-
+                # count with state.scheduled_trucks).
+                if arrival_rh > cutoff:
+                    forecast_trucks.append({
+                        "sap_order":        f"FORECAST-{forecast_idx:03d}",
+                        "product":          product,
+                        "quantity_lbs":     qty,
+                        "arrival_run_hour": float(arrival_rh),
+                    })
+                    forecast_idx += 1
+
+        h += 1.0
+
+    return forecast_trucks
