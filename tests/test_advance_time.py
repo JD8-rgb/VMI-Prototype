@@ -37,8 +37,11 @@ def test_customer_flag_eq():
 
 def test_main_rejects_invalid_target(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    # Use defaults.json fallback (no data.json in tmp_path)
-    monkeypatch.chdir(advance_time.__file__.rsplit("/", 1)[0])
+    # Use defaults.json fallback (no data.json in tmp_path).
+    # Pathlib instead of rsplit("/", 1) so the test runs on Windows
+    # (backslash path separators) too.
+    from pathlib import Path
+    monkeypatch.chdir(Path(advance_time.__file__).parent)
     rc = advance_time.main(["not_a_number_or_date"])
     assert rc == 1
     out = capsys.readouterr().out

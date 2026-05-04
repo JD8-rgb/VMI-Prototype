@@ -153,6 +153,63 @@ _PRODUCT_PREFIX_RE = re.compile(
     r'(?im)^\s*product\s+([A-Z][A-Z0-9]?[0-9]?)\s*:'
 )
 
+# Split-shift detection (e.g. "Mon 6am-10am and 2pm-6pm").
+# _split_segments breaks on " and ", which would otherwise leave a
+# day-less time-range orphan segment that the day loop drops silently.
+# Detect the pattern BEFORE segmentation: a day word, then a time
+# range, then "and"/"&"/"+"/"plus", then a SECOND time range —
+# without any day word slipping in between.
+#
+# Stripping intermediate day words is what distinguishes
+#   "Mon 6am-4pm and Tue 6am-4pm"  (two days, NOT a split shift)
+# from
+#   "Mon 6am-10am and 2pm-6pm"      (one day with two windows).
+# The negative lookahead `(?!.*?\bday\b)` would be expensive; instead
+# we constrain the chars between the two time ranges to a 1-15 char
+# window of whitespace + the connector + whitespace. A day word
+# wouldn't fit in that window without bumping the connector out.
+_SPLIT_SHIFT_RE = re.compile(
+    r'(?i)\b(?:mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|'
+    r'thursday|friday|saturday|sunday)\b'
+    r'\s+'
+    r'\d{1,2}(?:[:.]?\d{2})?\s*(?:am|pm)?'
+    r'\s*[-–—]\s*'
+    r'\d{1,2}(?:[:.]?\d{2})?\s*(?:am|pm)?'
+    r'\s+(?:and|&|\+|plus)\s+'
+    r'\d{1,2}(?:[:.]?\d{2})?\s*(?:am|pm)?'
+    r'\s*[-–—]\s*'
+    r'\d{1,2}(?:[:.]?\d{2})?\s*(?:am|pm)?'
+)
+
+# Real customer emails rarely write "Product U:" verbatim — they write
+# "U resin", "M resin", "Acid feed", "grade A", "material B", or
+# product/material codes like "P-127". When any of those appear as a
+# segment prefix immediately followed by a schedule (day word + time),
+# the email is describing per-product schedules — same fail-open
+# class as _PRODUCT_PREFIX_RE. Force LOW with a note so the operator
+# adds per-product schedules manually until the data model supports
+# them natively.
+#
+# Pattern: short alphanumeric token + one of the common
+# product-alias words + a day token within the next ~30 chars.
+# Examples that match:
+#   "U resin Mon-Wed 6am-4pm"          → "resin"
+#   "M material Thu-Fri 6am-4pm"        → "material"
+#   "Acid feed Mon-Fri 6-16"            → "feed"
+#   "grade A Tue 6-16"                  → "grade A"
+# Examples that DON'T match (false-positive guards):
+#   "We had a feed issue Tuesday"       → no day-range follows immediately
+#   "Production started Mon"            → no alias word
+_PRODUCT_ALIAS_RE = re.compile(
+    r'(?im)\b(?:'
+    r'[A-Z]{1,3}[0-9]?\s+(?:resin|material|feed|product|grade|acid|base|catalyst)'
+    r'|grade\s+[A-Z]'
+    r'|material\s+[A-Z][0-9]?'
+    r'|P-\d{1,4}'
+    r')\b\s*[:\-]?\s*'
+    r'(?:mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)'
+)
+
 # Any time token with non-zero minutes. The parser silently truncates
 # minutes to integer hours, which would shift a 6:30am-4:30pm schedule
 # (or military 0630-1630) into 6am-4pm — a real misrepresentation.
@@ -1257,9 +1314,11 @@ def parse_schedule_text(text, now_dt=None):
     confidence : "high" if >= 3 calendar days covered, else "low"
     notes      : list of warning strings for partially-unreadable lines
     """
-    entries        = []
-    notes          = []
-    effective_days = 0   # counts logical calendar days for confidence
+    entries              = []
+    notes                = []
+    effective_days       = 0   # counts logical calendar days for confidence
+    split_shift_detected = False
+    product_alias_detected = False
 
     # Clean greetings / sign-offs / quoted replies before segmentation, so
     # prose like "Hi team,\n ... \nThanks, Anna" doesn't pollute segments.
@@ -1390,8 +1449,10 @@ def parse_schedule_text(text, now_dt=None):
     #    physical runtime cap, and we refuse to auto-apply.
     # Seed with any forced-low signal from the date-substitution pass (e.g.
     # a mathematically-impossible US/EU collision) so that signal survives
-    # into the final confidence verdict.
-    forced_low = bool(date_forced_low)
+    # into the final confidence verdict. Also include split-shift +
+    # product-alias detection from the segment loop above.
+    forced_low = bool(date_forced_low) or split_shift_detected \
+                 or product_alias_detected
 
     # Ambiguous "DAY or DAY" phrasing. "Monday or Tuesday 6am-4pm" means
     # ONE of the two — the author hasn't decided which. Whichever the
@@ -1491,12 +1552,38 @@ def parse_schedule_text(text, now_dt=None):
                      "integer hours) — forcing low confidence so operator "
                      "can confirm the rounded windows.")
         forced_low = True
+    if _SPLIT_SHIFT_RE.search(cleaned):
+        # Split-shift detection runs against the FULL cleaned text
+        # (not the per-segment loop) because _split_segments breaks
+        # on " and " — the canonical split-shift connector — so by
+        # the time we'd see segment N, the second shift has already
+        # been orphaned (a day-less time range) and dropped silently.
+        notes.append(
+            "  Split shift detected (e.g. 'Mon 6am-10am and 2pm-6pm'). "
+            "The parser emits one window per day, so the second shift "
+            "would be dropped — forcing low confidence so the operator "
+            "can add the missing window(s) manually."
+        )
+        forced_low = True
+        split_shift_detected = True
     if _PRODUCT_PREFIX_RE.search(cleaned):
         notes.append("  Product-specific schedule lines detected (e.g. "
                      "'Product U: ...'). The plant model has a single "
                      "run_schedule, so per-product schedules cannot be "
                      "represented — forcing low confidence. Send one "
                      "combined plant schedule instead.")
+        forced_low = True
+    elif _PRODUCT_ALIAS_RE.search(cleaned):
+        # Same fail-open class as _PRODUCT_PREFIX_RE, just expressed
+        # with operator language ("U resin", "Acid feed", "grade A")
+        # instead of the formal "Product X:" header. The note is
+        # phrased differently so the operator knows we matched on an
+        # alias pattern, not the literal prefix.
+        notes.append("  Product-specific schedule detected via alias "
+                     "(e.g. 'U resin', 'Acid feed', 'grade A') followed "
+                     "by a day token. The plant model has a single "
+                     "run_schedule — forcing low confidence so the "
+                     "operator can split the schedule per product manually.")
         forced_low = True
 
     confidence = "high" if (effective_days >= 3 and not forced_low) else "low"

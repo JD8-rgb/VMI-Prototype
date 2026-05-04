@@ -125,10 +125,16 @@ def compute_level_history(data, hours=PROJECTION_HOURS,
                 "label":      w.label,
             })
 
+    # tank_product map lets renderers filter by product without
+    # falling back to tank-name prefix heuristics ("U-..."/"M-...")
+    # that don't generalize across customers.
+    tank_product = {name: tanks[name].get("product") for name in tank_names}
+
     return {
         "run_hours":    run_hours,
         "datetimes":    datetimes,
         "tanks":        tank_hist,
+        "tank_product": tank_product,
         "truck_events": truck_events,
         "run_windows":  clipped_windows,
     }

@@ -757,8 +757,11 @@ def _chart(hist, product, safety=None, cutoff_run_hour=None):
     tank. None = all-solid (back-compat for non-augmented callers)."""
     if safety is None:
         safety = SAFETY_STOCK_LBS
-    prefix = "U-" if product == "Product U" else "M-"
-    tnks   = [n for n in hist["tanks"] if n.startswith(prefix)]
+    # Filter tanks by product membership (hist["tank_product"][name] ==
+    # product), not by tank-name prefix. The old `"U-"/"M-"` shortcut
+    # only worked for the Acme demo's tank naming.
+    tank_product_map = hist.get("tank_product") or {}
+    tnks = [n for n in hist["tanks"] if tank_product_map.get(n) == product]
     x_vals = hist["run_hours"]          # numeric floats — safe for add_vline/vrect
 
     tick_idxs = list(range(0, len(x_vals), 24))
@@ -2437,44 +2440,42 @@ if _history:
 
     # Combine the per-tank traces into ONE line per product.
     # Operator complaint: 4 overlapping tank lines were impossible to
-    # read. Now: Product U total + Product M total, with combined
-    # capacity visible on the y-axis. Safety-stock floor drawn as a
-    # dashed reference line.
-    def _sum_for(prefix):
+    # read. Now: one line per product (read dynamically from
+    # data["tanks"][name]["product"] — works for any customer
+    # topology, not just Acme's hardcoded U-/M- prefix).
+    _live_tanks = data.get("tanks", {}) or {}
+    _tanks_by_product: dict[str, list[str]] = {}
+    for _tn in _tank_names:
+        _prod = (_live_tanks.get(_tn) or {}).get("product")
+        if _prod:
+            _tanks_by_product.setdefault(_prod, []).append(_tn)
+
+    def _totals_for(tank_list):
         return [
-            sum(entry["tanks"].get(t, 0)
-                for t in _tank_names if t.startswith(prefix))
+            sum(entry["tanks"].get(t, 0) for t in tank_list)
             for entry in _decimated
         ]
+    def _capacity_for(tank_list):
+        return sum(float((_live_tanks.get(t) or {}).get("max_capacity_lbs", 0))
+                   for t in tank_list)
 
-    _u_totals = _sum_for("U-")
-    _m_totals = _sum_for("M-")
+    _trace_palette = ["#1E3A8A", "#0F766E", "#7C3AED", "#B45309", "#0891B2",
+                       "#BE185D"]
 
-    # Combined capacity per product = sum of all tanks' max_capacity_lbs
-    # for that prefix. Read from the live data dict (not from history,
-    # which only carries level snapshots).
-    def _capacity_for(prefix):
-        return sum(
-            float(t.get("max_capacity_lbs", 0))
-            for n, t in data.get("tanks", {}).items()
-            if n.startswith(prefix)
-        )
-
-    _u_cap = _capacity_for("U-")
-    _m_cap = _capacity_for("M-")
-    _y_max = max(_u_cap, _m_cap, max(_u_totals + _m_totals + [0])) * 1.05
-
+    _all_totals: list[float] = []
+    _max_cap = 0.0
     _fig_lvl = _go_lvl.Figure()
-    _fig_lvl.add_trace(_go_lvl.Scatter(
-        x=_xs, y=_u_totals, mode="lines", name="Product U (combined)",
-        line=dict(color="#1E3A8A", width=2.5),
-        hovertemplate="<b>Product U</b><br>%{x}<br>%{y:,.0f} lbs<extra></extra>",
-    ))
-    _fig_lvl.add_trace(_go_lvl.Scatter(
-        x=_xs, y=_m_totals, mode="lines", name="Product M (combined)",
-        line=dict(color="#0F766E", width=2.5),
-        hovertemplate="<b>Product M</b><br>%{x}<br>%{y:,.0f} lbs<extra></extra>",
-    ))
+    for _i, (_product, _tlist) in enumerate(sorted(_tanks_by_product.items())):
+        _totals = _totals_for(_tlist)
+        _all_totals.extend(_totals)
+        _max_cap = max(_max_cap, _capacity_for(_tlist))
+        _color = _trace_palette[_i % len(_trace_palette)]
+        _fig_lvl.add_trace(_go_lvl.Scatter(
+            x=_xs, y=_totals, mode="lines", name=f"{_product} (combined)",
+            line=dict(color=_color, width=2.5),
+            hovertemplate=f"<b>{_product}</b><br>%{{x}}<br>%{{y:,.0f}} lbs<extra></extra>",
+        ))
+    _y_max = max(_max_cap, max(_all_totals + [0])) * 1.05
     # Safety-stock floor — same dashed-rose treatment as the
     # 12-day projection chart, so the two charts read as a family.
     _fig_lvl.add_hline(

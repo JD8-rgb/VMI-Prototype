@@ -558,11 +558,18 @@ def _generate_forecast_trucks(state, fc, cutoff: float, end_hour: float,
 
         # 3. After consuming, check whether any product needs reordering.
         for product in products:
-            prefix = "U-" if product == "Product U" else "M-"
+            # Combined-by-product uses the tank's `product` field, not
+            # tank-name prefix matching. Earlier code did
+            # `prefix = "U-" if product == "Product U" else "M-"`,
+            # which silently evaluated to 0 for any non-Acme customer
+            # (Product Acid / Base / Catalyst → no tank starts with
+            # "A-" or "B-" → combined always 0 → trigger fires every
+            # hour → 36+ stacked forecast trucks). Membership-based
+            # match works for any product/tank topology.
             combined = sum(
                 tk.get("current_level_lbs", 0)
-                for n, tk in sim_tanks.items()
-                if n.startswith(prefix)
+                for tk in sim_tanks.values()
+                if tk.get("product") == product
             )
             already_in_flight = any(
                 t["product"] == product

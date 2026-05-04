@@ -128,13 +128,14 @@ def generate_demo_history(data: Dict[str, Any], weeks: int) -> int:
 
         # 3c. Auto-trigger a delivery if any product is running low and
         #     no truck is already in-flight for it. Synthetic stand-in
-        #     for what the planner would have done.
+        #     for what the planner would have done. Combined level
+        #     reads tank.product membership, not name prefix — the
+        #     "U-"/"M-" shortcut only worked for Acme's tank naming.
         for product in rates.keys():
-            prefix = "U-" if product == "Product U" else "M-"
             combined = sum(
                 t.get("current_level_lbs", 0)
-                for n, t in past_tanks.items()
-                if n.startswith(prefix)
+                for t in past_tanks.values()
+                if t.get("product") == product
             )
             already = any(t["product"] == product for t in pending)
             if combined < _REORDER_THRESHOLD_LBS and not already:
