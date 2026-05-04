@@ -168,16 +168,23 @@ def _parse_day_time(s):
 
 def _parsed_strs_to_entry(start_str, end_str):
     """Inverse of _entry_to_strs. Returns (weekday, start_h, end_h)
-    or None if either side fails to parse."""
+    or None if either side fails to parse OR is degenerate."""
     start = _parse_day_time(start_str)
     end   = _parse_day_time(end_str)
     if start is None or end is None:
         return None
     wd_s, h_s = start
     wd_e, h_e = end
+    # Same day-of-week + same hour is a degenerate "Mon 6am to Mon 6am"
+    # row — almost certainly an operator typo or unfilled cell, not a
+    # legitimate 7-day continuous shift. Drop it. (For a real full-week
+    # shift the operator types e.g. "Mon 6am" → "Mon 5am", which has
+    # h_e < h_s and wraps correctly via the next branch.)
+    if wd_s == wd_e and h_s == h_e:
+        return None
     day_offset = (wd_e - wd_s) % 7
-    if day_offset == 0 and h_e <= h_s:
-        day_offset = 7   # treat as a full-week wrap (rare; e.g. continuous shop)
+    if day_offset == 0 and h_e < h_s:
+        day_offset = 7   # legitimate full-week wrap (e.g. continuous shop)
     end_in_day_offset = day_offset * 24 + h_e
     if end_in_day_offset <= h_s:
         return None

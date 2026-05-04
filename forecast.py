@@ -513,11 +513,16 @@ def _generate_forecast_trucks(state, fc, cutoff: float, end_hour: float,
     )
     pending_forecast: List[Dict[str, Any]] = []
 
-    def _next_delivery_slot(after_rh: float) -> float:
+    def _next_delivery_slot(after_rh: float):
         """Smallest run_hour >= after_rh that lands on a configured
-        delivery slot (e.g. 06:00 / 08:00 / 14:00) on a non-holiday."""
+        delivery slot (e.g. 06:00 / 08:00 / 14:00) on a non-holiday.
+
+        Returns None if no non-holiday slot is available within the
+        next 14 days (e.g. customer config has 14+ consecutive holidays
+        — pathological but possible with bad data). Callers must skip
+        the truck when this returns None — falling back to `after_rh`
+        would land the truck ON a holiday."""
         dt = run_hour_to_dt(state, after_rh)
-        # Try the same calendar day first, then walk forward
         for day_offset in range(0, 14):
             check_dt = (dt + timedelta(days=day_offset)).replace(
                 minute=0, second=0, microsecond=0
@@ -530,8 +535,7 @@ def _generate_forecast_trucks(state, fc, cutoff: float, end_hour: float,
                 slot_rh = dt_to_run_hour(state, slot_dt)
                 if slot_rh >= after_rh:
                     return float(slot_rh)
-        # Should not happen — fall back to lead-time + 0
-        return float(after_rh)
+        return None
 
     forecast_trucks: List[Dict[str, Any]] = []
     forecast_idx = 0
@@ -568,6 +572,11 @@ def _generate_forecast_trucks(state, fc, cutoff: float, end_hour: float,
                 arrival_rh = _next_delivery_slot(
                     h + FORECAST_LEAD_HOURS
                 )
+                # _next_delivery_slot returns None when every day in
+                # the next 14 is a holiday — skip the truck rather
+                # than landing it ON a holiday via the old fallback.
+                if arrival_rh is None:
+                    continue
                 # Drop trucks that would arrive past the chart's right
                 # edge — they'd be invisible (Plotly clips vlines past
                 # the data range) and the operator gets nothing useful
