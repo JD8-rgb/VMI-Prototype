@@ -1777,8 +1777,17 @@ if _pending_lc:
                 label_visibility="collapsed",
             )
         with _lc_right:
-            st.markdown(f"**Parser's best guess** "
-                          f"(confidence: `{_pending_lc.get('confidence', '?')}`):")
+            _lc_method = _pending_lc.get("method", "regex")
+            if _lc_method == "llm_hint":
+                st.markdown(
+                    f":orange[**⚠️ LLM hint** — confidence was below the "
+                    f"95% threshold. Review every window carefully before "
+                    f"applying.] (confidence: "
+                    f"`{_pending_lc.get('confidence', '?')}`)"
+                )
+            else:
+                st.markdown(f"**Parser's best guess** "
+                              f"(confidence: `{_pending_lc.get('confidence', '?')}`):")
             _lc_entries = _pending_lc.get("entries") or []
             # Reuse the shared parser-editor format: text columns
             # accepting "Mon 6am" / "Tue 16:00" / "Sat 04:00".

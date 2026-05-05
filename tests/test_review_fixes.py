@@ -331,7 +331,8 @@ def test_check_anthropic_api_messages_are_binary():
 def test_llm_low_confidence_returns_no_entries(monkeypatch):
     """LLM returning confidence_pct=80 → gate rejects the result and returns
     no entries with confidence='low', even when the windows array is non-empty.
-    This prevents a plausible-looking but uncertain LLM result from auto-applying."""
+    The rejected windows are preserved as `hint_entries` so the caller can
+    surface them as a pre-fill HINT in the LOW review editor."""
     import json
     from unittest.mock import MagicMock
     from read_schedule import parse_schedule_llm
@@ -346,10 +347,15 @@ def test_llm_low_confidence_returns_no_entries(monkeypatch):
     mock_client.messages.create.return_value = mock_msg
     monkeypatch.setattr("anthropic.Anthropic", lambda **kw: mock_client)
 
-    entries, confidence, notes = parse_schedule_llm("Mon 6am-10pm", api_key="test-key")
+    entries, confidence, notes, hints = parse_schedule_llm(
+        "Mon 6am-10pm", api_key="test-key"
+    )
 
     assert entries == [], "Low-confidence LLM result must be discarded"
     assert confidence == "low"
+    assert hints == [(0, 6, 22)], (
+        "Rejected windows must still be returned as hint_entries"
+    )
     assert any("80" in n for n in notes), (
         "Notes must mention the rejected confidence percentage"
     )
@@ -357,7 +363,8 @@ def test_llm_low_confidence_returns_no_entries(monkeypatch):
 
 def test_llm_high_confidence_returns_entries(monkeypatch):
     """LLM returning confidence_pct=97 → gate passes and entries are returned.
-    Uses 3 windows so _coverage_days scores 'high' externally as well."""
+    Uses 3 windows so _coverage_days scores 'high' externally as well.
+    `hint_entries` must be None when the gate passes."""
     import json
     from unittest.mock import MagicMock
     from read_schedule import parse_schedule_llm
@@ -376,7 +383,7 @@ def test_llm_high_confidence_returns_entries(monkeypatch):
     mock_client.messages.create.return_value = mock_msg
     monkeypatch.setattr("anthropic.Anthropic", lambda **kw: mock_client)
 
-    entries, confidence, notes = parse_schedule_llm(
+    entries, confidence, notes, hints = parse_schedule_llm(
         "Mon Tue Wed 6am-10pm", api_key="test-key"
     )
 
@@ -385,3 +392,78 @@ def test_llm_high_confidence_returns_entries(monkeypatch):
     assert entries[1] == (1, 6, 22)
     assert entries[2] == (2, 6, 22)
     assert confidence == "high"
+    assert hints is None, "When gate passes, hint_entries must be None"
+
+
+def test_llm_hint_surfaces_when_regex_empty(monkeypatch):
+    """Edge case: regex extracts nothing AND LLM is gate-rejected (<95%).
+    parse_schedule must surface the LLM's rejected windows as a pre-fill
+    hint with method='llm_hint' so the LOW review editor isn't empty."""
+    import json
+    from unittest.mock import MagicMock
+    from read_schedule import parse_schedule
+
+    # Force regex to return nothing — this is the empty-regex case.
+    monkeypatch.setattr(
+        "read_schedule.parse_schedule_text",
+        lambda text, now_dt=None: ([], "low", ["regex extracted nothing"]),
+    )
+    # Mock LLM to return confidence_pct=80 (below the 95% gate) with valid windows.
+    mock_response = json.dumps({
+        "confidence_pct": 80,
+        "windows": [{"weekday": 5, "start_hour": 4, "end_hour": 26}],
+    })
+    mock_msg = MagicMock()
+    mock_msg.content = [MagicMock(text=mock_response)]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_msg
+    monkeypatch.setattr("anthropic.Anthropic", lambda **kw: mock_client)
+
+    entries, confidence, notes, method = parse_schedule(
+        "we'll run Saturday into Sunday late", api_key="test-key"
+    )
+    assert entries == [(5, 4, 26)], (
+        "LLM hint windows must be surfaced when regex is empty"
+    )
+    assert confidence == "low"
+    assert method == "llm_hint", (
+        f"Method must be 'llm_hint' to flag UI; got {method!r}"
+    )
+    assert any("LLM hint" in n for n in notes), (
+        "Notes must contain the 'LLM hint' marker"
+    )
+
+
+def test_llm_hint_NOT_surfaced_when_regex_has_entries(monkeypatch):
+    """Counter case: if regex extracted some entries (even if LOW), we
+    keep regex — the LLM's rejected windows are NOT surfaced. Operator
+    sees regex's entries in the LOW editor as before."""
+    import json
+    from unittest.mock import MagicMock
+    from read_schedule import parse_schedule
+
+    # Regex extracts a partial result — LOW confidence but non-empty.
+    monkeypatch.setattr(
+        "read_schedule.parse_schedule_text",
+        lambda text, now_dt=None: (
+            [(0, 6, 22)], "low", ["regex got 1 window"],
+        ),
+    )
+    mock_response = json.dumps({
+        "confidence_pct": 70,
+        "windows": [{"weekday": 5, "start_hour": 4, "end_hour": 26}],
+    })
+    mock_msg = MagicMock()
+    mock_msg.content = [MagicMock(text=mock_response)]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_msg
+    monkeypatch.setattr("anthropic.Anthropic", lambda **kw: mock_client)
+
+    entries, confidence, notes, method = parse_schedule(
+        "Mon 6am-10pm but also something weekend", api_key="test-key"
+    )
+    # Regex result kept, NOT the LLM hint.
+    assert entries == [(0, 6, 22)]
+    assert method == "regex", (
+        f"With regex entries present, method must stay 'regex'; got {method!r}"
+    )

@@ -1715,10 +1715,16 @@ def parse_schedule_llm(text, api_key, few_shot_prefix=None, cfg=None):
     Handles arbitrary natural language formats, time-first notation,
     multi-day ranges packed without commas, etc.
 
-    Returns the same signature as parse_schedule_text:
-        (entries, confidence, notes)
+    Returns a 4-tuple:
+        (entries, confidence, notes, hint_entries)
     where entries = list of (weekday_int, start_hour_int, end_hour_int).
     end_hour_int may exceed 24 for overnight / multi-day windows.
+
+    `hint_entries` is non-None ONLY when the 95% confidence gate rejected
+    the LLM's own result. In that case `entries` is [] and `hint_entries`
+    holds the rejected windows so the caller can surface them as a
+    pre-fill hint in the LOW-confidence review editor (NEVER auto-apply).
+    When the gate passes, `hint_entries` is None.
 
     Raises LLMParseError with a `stage` tag if anything goes wrong so the
     caller can surface a specific reason (auth / network / JSON / schema).
@@ -1879,7 +1885,21 @@ def parse_schedule_llm(text, api_key, few_shot_prefix=None, cfg=None):
             raise LLMParseError("schema", f"unexpected JSON envelope: {e}",
                                 raw_response=raw[:400])
 
-    # Gate: reject if LLM self-reports < 95% confidence.
+    # Coerce raw_windows into tuple shape regardless of the gate verdict —
+    # we may surface them as an editor HINT (never auto-applied) when the
+    # gate rejects AND the regex parser also returned nothing.
+    try:
+        parsed_hints = [
+            (int(w["weekday"]), int(w["start_hour"]), int(w["end_hour"]))
+            for w in raw_windows
+        ]
+    except Exception as e:
+        raise LLMParseError("schema", f"unexpected window shape: {e}",
+                            raw_response=raw[:400])
+
+    # Gate: reject if LLM self-reports < 95% confidence. The rejected
+    # windows are still passed back as `hint_entries` so the operator UI
+    # can pre-fill them in the LOW review editor (clearly labeled).
     if confidence_pct < 95:
         logger.info(
             "LLM rescue rejected own result (confidence_pct=%d < 95). "
@@ -1887,14 +1907,9 @@ def parse_schedule_llm(text, api_key, few_shot_prefix=None, cfg=None):
         )
         return [], "low", [
             f"  LLM self-reported confidence {confidence_pct}% < 95 — result discarded"
-        ]
+        ], parsed_hints
 
-    try:
-        entries = [(int(w["weekday"]), int(w["start_hour"]), int(w["end_hour"]))
-                   for w in raw_windows]
-    except Exception as e:
-        raise LLMParseError("schema", f"unexpected window shape: {e}",
-                            raw_response=raw[:400])
+    entries = parsed_hints
 
     # Confidence: count calendar-days covered across all windows (so a single
     # continuous Mon → Fri range counts as multiple days, not just one).
@@ -1905,7 +1920,7 @@ def parse_schedule_llm(text, api_key, few_shot_prefix=None, cfg=None):
         f"  LLM parsed {len(entries)} window(s) starting on {distinct_days} day(s), "
         f"covering ~{days_covered} calendar day(s) — confidence: {confidence}"
     ]
-    return entries, confidence, notes
+    return entries, confidence, notes, None
 
 
 def parse_schedule(text, api_key=None, now_dt=None, customer_id=None, cfg=None):
@@ -2044,7 +2059,7 @@ def parse_schedule(text, api_key=None, now_dt=None, customer_id=None, cfg=None):
         _few_shot = None
 
     try:
-        llm_entries, llm_confidence, llm_notes = parse_schedule_llm(
+        llm_entries, llm_confidence, llm_notes, llm_hints = parse_schedule_llm(
             text, api_key, few_shot_prefix=_few_shot, cfg=cfg,
         )
         logger.info(f"LLM rescue returned {llm_confidence} confidence "
@@ -2089,6 +2104,26 @@ def parse_schedule(text, api_key=None, now_dt=None, customer_id=None, cfg=None):
             + rx_notes + llm_notes
         )
         return rx_entries, rx_confidence, combined_notes, "regex"
+
+    # ── 3b. Hint surfacing ─────────────────────────────────────────────────
+    # Edge case: the LLM was gate-rejected (entries=[], hints non-empty)
+    # AND regex extracted nothing useful. Surface the LLM's rejected
+    # windows as a pre-fill HINT in the LOW-confidence review editor —
+    # operator must still confirm before anything applies, so the 95%
+    # gate's safety property is preserved. Without this branch the
+    # operator would face an empty editor and have to type the schedule
+    # from scratch.
+    if (not llm_entries) and llm_hints and (not rx_entries):
+        hint_notes = (
+            ["  LLM hint surfaced — its self-reported confidence was below "
+             "95%. Verify each window before applying."]
+            + rx_notes + llm_notes
+        )
+        logger.info(
+            "Surfacing %d LLM hint window(s) in LOW review editor "
+            "(regex was empty, LLM gate-rejected).", len(llm_hints)
+        )
+        return llm_hints, "low", hint_notes, "llm_hint"
 
     # ── 4. Score both and keep the better one ─────────────────────────────
     def _score(entries, confidence):
@@ -2601,6 +2636,7 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
                 "entries":    [list(e) for e in (best_entries or [])],
                 "confidence": best_confidence,
                 "notes":      list(best_notes or []),
+                "method":     best_method,   # "regex" | "llm" | "llm_hint"
                 "fetched_at": __import__("datetime").datetime.now().isoformat(),
             }
 
