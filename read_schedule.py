@@ -145,12 +145,16 @@ _EXCEPTION_RE = re.compile(
 # We DON'T want to fire on prose like 'Product strategy: ...' or
 # 'Product update: ...'. Heuristic: the token after 'Product' must look
 # like an actual product name — a single uppercase letter (Product U),
-# a single letter+digit (Product M1), or a short alphanumeric code
-# (Product XY1). Generic English words ('strategy', 'update', 'plan',
-# 'idea', 'roadmap', etc.) won't match because they're too long for
-# the bounded character class.
+# a short code (Product M1, Product XY1), or a descriptive word
+# (Product Acid, Product Base, Product Feed). We cap at 14 chars.
+#
+# Key discriminator: product NAMES start with an actual uppercase letter
+# (Acid, Base, U, M), while prose words are lowercase ("strategy",
+# "update"). We use (?-i:...) inside the (?im) pattern so the 'product'
+# keyword itself is matched case-insensitively, but the name's first
+# character MUST be an uppercase letter in the original text.
 _PRODUCT_PREFIX_RE = re.compile(
-    r'(?im)^\s*product\s+([A-Z][A-Z0-9]?[0-9]?)\s*:'
+    r'(?im)^\s*product\s+(?-i:([A-Z][A-Za-z0-9]{0,13}))\s*:'
 )
 
 # Split-shift detection (e.g. "Mon 6am-10am and 2pm-6pm").
@@ -208,6 +212,22 @@ _PRODUCT_ALIAS_RE = re.compile(
     r'|P-\d{1,4}'
     r')\b\s*[:\-]?\s*'
     r'(?:mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)'
+)
+
+# Force LOW when the schedule body contains tentative or conditional language.
+# Operators occasionally send "tentatively Mon-Wed 6am-4pm" before final
+# confirmation — HIGH confidence here would silently lock in the wrong week.
+_TENTATIVE_RE = re.compile(
+    r'(?i)\b(?:tentative(?:ly)?|might\s+run|if\s+material|if\s+available|'
+    r'subject\s+to|may\s+run|possibly|weather\s+permitting|TBD|TBC)\b'
+)
+
+# Force LOW when explicit negation phrases appear — e.g. "not running Mon–Fri"
+# or "no production this week". The parser cannot reliably tell which parsed
+# windows are negated vs. affirmed, so operator review is required.
+_NEGATION_RE = re.compile(
+    r"(?i)\b(?:not\s+running|won't\s+run|will\s+not\s+run|no\s+production|"
+    r'skipping|cancelled|canceled|no\s+operations?)\b'
 )
 
 # Any time token with non-zero minutes. The parser silently truncates
@@ -385,16 +405,31 @@ def _normalize_phrasing(text):
     def _bare_range(m):
         a, b = int(m.group(1)), int(m.group(2))
         if 1 <= a <= 12 and 1 <= b <= 12 and a > b:
-            rewrites.append("12hr")
+            # "12" is the uniquely ambiguous value: could mean midnight or
+            # noon. "12-8" → could be midnight-to-8pm OR noon-to-8pm. Flag
+            # this so parse_schedule_text() can force LOW. Other pairs like
+            # "6-4" are unambiguous (6am-4pm is the only sensible reading).
+            is_colon_form = ':' in m.group(0)
+            has_twelve = (a == 12 or b == 12)
+            if is_colon_form:
+                rewrites.append("12hr_colon")
+            elif has_twelve:
+                rewrites.append("12hr_twelve")   # noon/midnight ambiguity
+            else:
+                rewrites.append("12hr_bare")
             return f"{a}am to {b}pm"
         if 0 <= a <= 23 and 13 <= b <= 23 and a < b:
             rewrites.append("24hr")
             return f"{a:02d}00-{b:02d}00"
         return m.group(0)
     new = _BARE_NUM_RANGE_RE.sub(_bare_range, text)
-    if "12hr" in rewrites:
+    if "12hr_bare" in rewrites or "12hr_colon" in rewrites:
         notes.append("  Applied 12-hour clock heuristic to bare-numeric "
                      "range (start > end → start AM, end PM).")
+    if "12hr_twelve" in rewrites:
+        notes.append("  Applied 12-hour clock heuristic to bare-numeric "
+                     "range containing '12' — noon/midnight ambiguity "
+                     "(start > end → start AM, end PM).")
     if "24hr" in rewrites:
         notes.append("  Applied 24-hour clock heuristic to bare-numeric "
                      "range (end ≥ 13 → both treated as 24-hour times).")
@@ -1555,13 +1590,20 @@ def parse_schedule_text(text, now_dt=None):
     # segment as the day name, so it can't subtract from a sibling
     # range-segment's entries. Do that subtraction here.
     _DAY_OFF_RE = re.compile(
-        r'(?i)\b(' + '|'.join(_DAY_KEYS_SORTED) + r')\b'
-        r'\s+(?:is\s+)?(?:off|no\s*run|shutdown|n/a|none|down)\b'
+        r'(?i)(?:'
+        # day-first: "Thursday off", "Wed is down", "Mon N/A"
+        r'\b(' + '|'.join(_DAY_KEYS_SORTED) + r')\b'
+        r'\s+(?:is\s+)?(?:off|no\s*run|shutdown|n/a|none|down)'
+        r'|'
+        # marker-first: "no run Thursday", "plant down Wednesday", "shutdown Mon"
+        r'(?:no\s*run|plant\s+down|shutdown|no\s+production)\s+'
+        r'\b(' + '|'.join(_DAY_KEYS_SORTED) + r')\b'
+        r')'
     )
-    off_weekdays = {
-        _DAY_MAP[m.group(1).lower()]
-        for m in _DAY_OFF_RE.finditer(cleaned)
-    }
+    off_weekdays = set()
+    for m in _DAY_OFF_RE.finditer(cleaned):
+        day_str = m.group(1) or m.group(2)   # one group per alternation branch
+        off_weekdays.add(_DAY_MAP[day_str.lower()])
     if off_weekdays:
         before_count = len(entries)
         entries = [(wd, sh, eh) for (wd, sh, eh) in entries
@@ -1631,6 +1673,33 @@ def parse_schedule_text(text, now_dt=None):
                      "by a day token. The plant model has a single "
                      "run_schedule — forcing low confidence so the "
                      "operator can split the schedule per product manually.")
+        forced_low = True
+
+    # 1C — tentative/conditional language
+    if _TENTATIVE_RE.search(cleaned):
+        notes.append(
+            "  Tentative/conditional language detected (e.g. 'tentative', "
+            "'might run', 'subject to'). Schedule may change — forcing low "
+            "confidence for operator review."
+        )
+        forced_low = True
+    # 1D — explicit negation phrases
+    if _NEGATION_RE.search(cleaned):
+        notes.append(
+            "  Explicit negation phrase detected (e.g. 'not running', "
+            "'no production'). Parser cannot reliably determine which days "
+            "are affected — forcing low confidence."
+        )
+        forced_low = True
+    # 1E — "12" in a bare range is genuinely ambiguous (noon vs midnight).
+    # "12-8" could mean midnight-to-8pm OR noon-to-8pm; the parser guessed.
+    # Other bare pairs like "6-4" are unambiguous (6am-4pm only), so only
+    # the "12hr_twelve" sentinel (containing "noon/midnight") triggers LOW.
+    if any("noon/midnight" in n for n in norm_notes):
+        notes.append(
+            "  Bare-numeric time range required a guess (12-hour clock "
+            "heuristic). Could be AM/PM or 24-hour — forcing low confidence."
+        )
         forced_low = True
 
     confidence = "high" if (effective_days >= 3 and not forced_low) else "low"

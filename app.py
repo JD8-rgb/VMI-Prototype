@@ -61,12 +61,23 @@ def _get_anthropic_key():
     cfg = load_config()
     return cfg.get("anthropic_api_key", "") if cfg else ""
 
-COLORS = {
-    "U-Tank1": "#1E3A8A",   # navy
-    "U-Tank2": "#60A5FA",   # light blue
-    "M-Tank1": "#0F766E",   # deep teal
-    "M-Tank2": "#5EEAD4",   # light teal
-}
+_PALETTE = [
+    "#1E3A8A",  # navy
+    "#60A5FA",  # light blue
+    "#0F766E",  # deep teal
+    "#5EEAD4",  # light teal
+    "#7C3AED",  # violet
+    "#A78BFA",  # light violet
+    "#B45309",  # amber
+    "#FCD34D",  # yellow
+]
+
+def _tank_color(tank_name: str, all_tanks: list) -> str:
+    """Deterministic color per tank from the shared palette."""
+    try:
+        return _PALETTE[all_tanks.index(tank_name) % len(_PALETTE)]
+    except ValueError:
+        return "#888888"
 
 # Header links
 GITHUB_URL         = "https://github.com/JD8-rgb/vmi-prototype"
@@ -792,7 +803,7 @@ def _chart(hist, product, safety=None, cutoff_run_hour=None):
         fig.add_vrect(x0=w["start_hour"], x1=w["end_hour"],
                       fillcolor="rgba(30,64,175,0.06)", line_width=0)
     for name in tnks:
-        color = COLORS.get(name, "#888")
+        color = _tank_color(name, tnks)
         y_vals = hist["tanks"][name]
         dts    = hist["datetimes"]
         if split_idx is None:
@@ -1655,27 +1666,27 @@ st.subheader("📈 12-Day Projection")
 # line up to cutoff; dotted line beyond.
 _augmented_data, _projection_cutoff = _build_augmented_data(data, hours=288)
 hist = compute_level_history(_augmented_data, hours=288)
-c1, c2 = st.columns(2)
 
-with c1:
-    st.plotly_chart(
-        _chart(hist, "Product U", cutoff_run_hour=_projection_cutoff),
-        use_container_width=True, key="ch_u",
-    )
-    t1, t2 = st.columns(2)
-    _lh = data.get("level_history", [])
-    _rh = data.get("current_run_hour", 0.0)
-    _tank_info(t1, "U-Tank1", data["tanks"]["U-Tank1"], _lh, _rh)
-    _tank_info(t2, "U-Tank2", data["tanks"]["U-Tank2"], _lh, _rh)
+# Build product → [tank_name, ...] mapping from data["tanks"] so the
+# chart section works for any customer config, not just the Acme demo.
+_lh = data.get("level_history", [])
+_rh = data.get("current_run_hour", 0.0)
+_prod_tanks: dict = {}
+for _tname, _tinfo in data.get("tanks", {}).items():
+    _prod_tanks.setdefault(_tinfo.get("product", ""), []).append(_tname)
 
-with c2:
-    st.plotly_chart(
-        _chart(hist, "Product M", cutoff_run_hour=_projection_cutoff),
-        use_container_width=True, key="ch_m",
-    )
-    t1, t2 = st.columns(2)
-    _tank_info(t1, "M-Tank1", data["tanks"]["M-Tank1"], _lh, _rh)
-    _tank_info(t2, "M-Tank2", data["tanks"]["M-Tank2"], _lh, _rh)
+_prod_cols = st.columns(max(len(_prod_tanks), 1))
+for _col, (_prod_name, _tank_names) in zip(_prod_cols, _prod_tanks.items()):
+    with _col:
+        _safe_key = _prod_name.lower().replace(" ", "_").replace("-", "_")
+        st.plotly_chart(
+            _chart(hist, _prod_name, cutoff_run_hour=_projection_cutoff),
+            use_container_width=True,
+            key=f"ch_{_safe_key}",
+        )
+        _tcols = st.columns(max(len(_tank_names), 1))
+        for _tc, _tn in zip(_tcols, _tank_names):
+            _tank_info(_tc, _tn, data["tanks"][_tn], _lh, _rh)
 
 st.divider()
 
@@ -1848,12 +1859,39 @@ if _pending_lc:
                     for _n in _pending_lc["notes"]:
                         st.markdown(f"- {_n.strip()}")
 
+        # Overlap check — runs on every rerender before the button row so
+        # the error appears inline (no click required) and disables apply.
+        def _find_overlaps(rows):
+            """Return 1-based (i, j) pairs for rows whose windows overlap."""
+            parsed = []
+            for row in rows:
+                e = _parsed_strs_to_entry(row.get("Start"), row.get("End"))
+                if e is not None:
+                    parsed.append(e)
+            pairs = []
+            for i in range(len(parsed)):
+                for j in range(i + 1, len(parsed)):
+                    wd_i, s_i, e_i = parsed[i]
+                    wd_j, s_j, e_j = parsed[j]
+                    if wd_i != wd_j:
+                        continue
+                    if s_i < e_j and s_j < e_i:
+                        pairs.append((i + 1, j + 1))
+            return pairs
+
+        _overlap_pairs = _find_overlaps(_lc_edited)
+        if _overlap_pairs:
+            _pair_strs = ", ".join(f"rows {a}+{b}" for a, b in _overlap_pairs)
+            st.error(f"⛔ Overlapping windows detected ({_pair_strs}). "
+                     f"Fix before applying.")
+
         # Three-button row: confirm-and-apply, dismiss, or do nothing
         _lc_b1, _lc_b2, _lc_b3 = st.columns([2, 2, 5])
         with _lc_b1:
             if st.button("✓ Confirm & apply",
                           type="primary",
                           use_container_width=True,
+                          disabled=bool(_overlap_pairs),
                           key="lc_confirm_btn",
                           help="Apply the (possibly edited) entries as a "
                                "low-confidence merge. Other days' existing "
