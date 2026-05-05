@@ -121,6 +121,23 @@ def test_plan_proposes_truck_when_short(defaults_dict, capsys):
         slot_hour_of_day = int(t["arrival_run_hour"] - week_start) % 24
         assert slot_hour_of_day in DEFAULT_CONFIG.delivery_slots
 
+    # The planner guarantees: after the last truck's arrival, no further
+    # breach exists at the planning target within the week. This mirrors
+    # the planner's own internal termination condition — it only returns
+    # new_trucks once find_first_breach returns None from the last slot + 1.
+    last_slot = max(t["arrival_run_hour"] for t in new_trucks)
+    breach_after_last = find_first_breach_in_target_week(
+        d, "Product U", target=25_000,
+        week_start=week_start, week_end=week_end,
+        extra_trucks=new_trucks,
+        breach_floor=last_slot + 1,
+    )
+    assert breach_after_last is None, (
+        f"After last truck delivery, Product U should have no breach "
+        f"at target=25 000 in target week, but found one at "
+        f"run_hour={breach_after_last}"
+    )
+
 
 def test_plan_skips_when_target_already_met(defaults_dict, capsys):
     d = with_target_week_schedule(defaults_dict)

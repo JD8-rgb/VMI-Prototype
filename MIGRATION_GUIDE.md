@@ -15,18 +15,32 @@ recipe ever requires editing `alerts.py` / `plan_orders.py` /
 
 ## 1. Add a new customer
 
-Two-step:
+Three steps:
 
-1. Drop a new `customers/<customer_id>.json` with two top-level keys:
+1. Copy the example customer and rename it:
+   ```bash
+   cp customers/example_customer.json customers/<customer_id>.json
+   ```
+
+2. Edit the two top-level keys in the new file:
    * `config_overrides` — kwargs for `PlantConfig(**)`. Anything you
      don't override inherits the prototype default. List values in
      JSON (e.g. `delivery_slots`, `plant_holidays`) are coerced to
-     tuples by the loader so the dataclass stays frozen.
+     tuples by the loader so the dataclass stays frozen. Common
+     overrides: `safety_stock_lbs`, `lead_time_hours`, `delivery_slots`,
+     `sap_order_format`.
    * `state` — same shape as `data.json` / `defaults.json`. Tank
      topology, consumption rates, truck quantities, run schedule,
-     in-flight orders.
-2. Confirm with `tests/test_example_customer.py` as a template: copy
-   it, point it at your `customer_id`, run the smoke battery.
+     in-flight orders. See `SCHEMA.md` for the full field list.
+
+3. Validate and smoke-test:
+   ```bash
+   python validate_customer.py               # schema + integrity check
+   python tank_status.py --customer <customer_id>   # spot-check levels
+   cp tests/test_example_customer.py tests/test_<customer_id>.py
+   # edit the copy to point at your customer_id, then:
+   python -m pytest tests/test_<customer_id>.py -v
+   ```
 
 The algorithm core is provably customer-agnostic across:
 * Number of tanks per product (1, 2, 3+, asymmetric).

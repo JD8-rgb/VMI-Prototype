@@ -16,7 +16,7 @@ This prototype demonstrates how an AI-driven VMI tool would handle that workload
 - Parses schedule emails with a regex-first parser plus optional LLM rescue (common formats supported; safe-fail on anything ambiguous)
 - Projects 10-day tank levels and recommends truck orders
 - Fires live alerts before problems happen
-- Scales reorder targets dynamically with projected weekly run hours
+- Scales reorder targets dynamically with scheduled weekly run hours
 
 ## Workflow
 
@@ -37,10 +37,11 @@ This prototype demonstrates how an AI-driven VMI tool would handle that workload
 | 🟡 | Low-confidence schedule parse |
 | 🟡 | No schedule received by Fri 3 PM |
 | 🟡 | Late truck (3+ hrs overdue) |
+| 🟡 | Schedule applied via LLM parse (operator verify recommended) |
 
 ## Dynamic target levels
 
-Reorder targets scale with projected weekly run hours. Light weeks (≤ 28 run hrs) target **15,000 lbs**; heavy weeks (≥ 118 run hrs) target **27,000 lbs**; intermediate weeks interpolate linearly. This reduces shelf-life exposure in slow weeks and run-out risk when the plant ramps up.
+Reorder targets scale with scheduled weekly run hours. Light weeks (≤ 28 run hrs) target **15,000 lbs**; heavy weeks (≥ 118 run hrs) target **27,000 lbs**; intermediate weeks interpolate linearly. This reduces shelf-life exposure in slow weeks and run-out risk when the plant ramps up.
 
 ## Tech & integration stack
 

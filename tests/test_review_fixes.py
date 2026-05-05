@@ -23,7 +23,7 @@ def test_split_shift_with_and_forces_low():
     returned HIGH confidence with only the Mon-morning shift extracted
     — fail open. Must now return LOW with a split-shift note."""
     text = "Mon 6am-10am and 2pm-6pm; Tue 6am-4pm; Wed 6am-4pm"
-    _entries, conf, notes = parse_schedule(text, api_key=None)
+    _entries, conf, notes, _method = parse_schedule(text, api_key=None)
     assert conf == "low", (
         f"Split shift with 'and' must demote to LOW (was HIGH in review). "
         f"Got conf={conf!r}, notes={notes}"
@@ -35,14 +35,14 @@ def test_split_shift_with_and_forces_low():
 
 def test_split_shift_with_ampersand_forces_low():
     """'Mon 6-10 & 2-6' uses '&' as the connector instead of 'and'."""
-    _, conf, notes = parse_schedule("Mon 6-10 & 2-6", api_key=None)
+    _, conf, notes, _method = parse_schedule("Mon 6-10 & 2-6", api_key=None)
     assert conf == "low"
     assert any("split shift" in n.lower() for n in notes)
 
 
 def test_split_shift_with_plus_word_forces_low():
     """'Mon 0600-1000 plus 1400-1800' uses 'plus' as the connector."""
-    _, conf, notes = parse_schedule("Mon 0600-1000 plus 1400-1800",
+    _, conf, notes, _method = parse_schedule("Mon 0600-1000 plus 1400-1800",
                                      api_key=None)
     assert conf == "low"
     assert any("split shift" in n.lower() for n in notes)
@@ -54,7 +54,7 @@ def test_two_separate_days_not_treated_as_split_shift():
     Guard against over-eager regex matching the day-connector 'and'."""
     text = ("Monday 6am-4pm and Tuesday 6am-4pm "
             "and Wednesday 6am-4pm")
-    _, conf, _ = parse_schedule(text, api_key=None)
+    _, conf, _, _method = parse_schedule(text, api_key=None)
     assert conf == "high", (
         "Three distinct days connected by 'and' must NOT trigger "
         "split-shift detection."
@@ -70,7 +70,7 @@ def test_product_alias_resin_forces_low():
     schedule with HIGH confidence. Must demote to LOW so the operator
     knows the data model has one shared plant schedule."""
     text = "U resin Mon-Wed 6am-4pm; M resin Thu-Fri 6am-4pm"
-    _entries, conf, notes = parse_schedule(text, api_key=None)
+    _entries, conf, notes, _method = parse_schedule(text, api_key=None)
     assert conf == "low"
     assert any("alias" in n.lower() or "product-specific" in n.lower()
                for n in notes), (
@@ -82,7 +82,7 @@ def test_product_alias_grade_letter_forces_low():
     """'grade A Mon-Wed 6am-4pm; grade B Thu-Fri 6am-4pm' is the same
     fail-open class — different operator vocabulary."""
     text = "grade A Mon-Wed 6am-4pm; grade B Thu-Fri 6am-4pm"
-    _, conf, _ = parse_schedule(text, api_key=None)
+    _, conf, _, _method = parse_schedule(text, api_key=None)
     assert conf == "low"
 
 
@@ -90,14 +90,14 @@ def test_product_alias_material_code_forces_low():
     """'P-127 Mon 6am-4pm; P-128 Tue 6am-4pm' — material codes
     instead of product names."""
     text = "P-127 Mon 6am-4pm; P-128 Tue 6am-4pm"
-    _, conf, _ = parse_schedule(text, api_key=None)
+    _, conf, _, _method = parse_schedule(text, api_key=None)
     assert conf == "low"
 
 
 def test_plain_schedule_without_product_alias_stays_high():
     """Sanity: a clean Mon-Fri schedule with no product/material
     qualifier must still parse HIGH."""
-    _, conf, _ = parse_schedule("Mon-Fri 6am-4pm", api_key=None)
+    _, conf, _, _method = parse_schedule("Mon-Fri 6am-4pm", api_key=None)
     assert conf == "high"
 
 
@@ -155,7 +155,7 @@ def test_same_start_end_time_forces_low():
     typo. Must demote to LOW with a same-time note so the operator
     confirms whether a 24h run is intended."""
     text = "Mon 6am-2pm; Tue 6am-6am"
-    _entries, conf, notes = parse_schedule(text, api_key=None)
+    _entries, conf, notes, _method = parse_schedule(text, api_key=None)
     assert conf == "low", (
         f"Same start/end time must demote to LOW. Got conf={conf!r}, "
         f"notes={notes}"
@@ -167,7 +167,7 @@ def test_same_start_end_time_forces_low():
 
 def test_same_start_end_military_forces_low():
     """'Tue 0600-0600' — same time in 4-digit military format."""
-    _, conf, notes = parse_schedule("Mon 6am-4pm; Tue 0600-0600",
+    _, conf, notes, _method = parse_schedule("Mon 6am-4pm; Tue 0600-0600",
                                      api_key=None)
     assert conf == "low"
     assert any("same start/end" in n.lower() for n in notes)
@@ -175,7 +175,7 @@ def test_same_start_end_military_forces_low():
 
 def test_same_start_end_colon_forces_low():
     """'Tue 06:00-06:00' — same time in HH:MM format."""
-    _, conf, notes = parse_schedule("Mon 6am-4pm; Tue 06:00-06:00",
+    _, conf, notes, _method = parse_schedule("Mon 6am-4pm; Tue 06:00-06:00",
                                      api_key=None)
     assert conf == "low"
     assert any("same start/end" in n.lower() for n in notes)
@@ -185,7 +185,7 @@ def test_overnight_window_does_not_trigger_same_time():
     """Sanity: 'Mon 10pm-6am' is a legitimate cross-midnight 8h
     window, NOT a same-time typo — must stay HIGH-eligible."""
     text = "Mon 10pm-6am; Tue 6am-4pm; Wed 6am-4pm"
-    _, conf, notes = parse_schedule(text, api_key=None)
+    _, conf, notes, _method = parse_schedule(text, api_key=None)
     assert not any("same start/end" in n.lower() for n in notes), (
         "Overnight windows must not trip the same-time guard."
     )

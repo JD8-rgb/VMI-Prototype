@@ -171,12 +171,24 @@ def test_schedule_parse_warning_when_unparseable(defaults_dict, as_shape):
 def test_run_projection_emits_safety_stock_at_defaults(defaults_dict, as_shape):
     """Defaults: 80 run-hours over the next 168h, ~46.7k lbs demand per
     product, only ~19-25k lbs usable on hand. Both products MUST hit
-    safety stock somewhere in the window."""
+    safety stock somewhere in the window. Each alert must be red_flag
+    severity and carry the product name in its text."""
     alerts = run_projection(as_shape(defaults_dict))
-    products_with_alert = {a["product"] for a in alerts
-                            if a["type"] == "safety_stock"}
-    assert "Product U" in products_with_alert
-    assert "Product M" in products_with_alert
+    ss_alerts = [a for a in alerts if a["type"] == "safety_stock"]
+    products_with_alert = {a["product"] for a in ss_alerts}
+    assert "Product U" in products_with_alert, (
+        "Product U should hit safety stock in the default projection"
+    )
+    assert "Product M" in products_with_alert, (
+        "Product M should hit safety stock in the default projection"
+    )
+    for a in ss_alerts:
+        assert a["severity"] == "red_flag", (
+            f"safety_stock alert must be red_flag, got {a['severity']!r}"
+        )
+        assert a["product"] in a["text"], (
+            f"Alert text should mention the product; got {a['text']!r}"
+        )
 
 
 def test_run_projection_safety_stock_dedup_per_product(defaults_dict, as_shape):
@@ -234,3 +246,78 @@ def test_get_all_alerts_with_override_cfg(defaults_dict, as_shape):
     high_safety = PlantConfig(safety_stock_lbs=50_000)
     alerts = get_all_alerts(as_shape(defaults_dict), cfg=high_safety)
     assert any(a["type"] == "safety_stock" for a in alerts)
+
+
+# ── Year / leap-year boundary tests ──────────────────────────────────────────
+
+
+def _state_dec28(run_schedule=None):
+    """Minimal state with epoch Dec 28 2026, single product, near-empty."""
+    return {
+        "simulation_epoch": "2026-12-28T00:00:00",
+        "current_run_hour": 0.0,
+        "tanks": {
+            "T1": {"product": "P", "current_level_lbs": 8000,
+                    "max_capacity_lbs": 35000, "heel_lbs": 500, "status": "draw"},
+        },
+        "consumption_rates": {"P": {"lbs_per_hour": 200.0}},
+        "truck_quantities": {"P": 30000},
+        "scheduled_trucks": [],
+        "run_schedule": run_schedule or [
+            # Mon Dec 28 06:00 → Sat Jan 3 04:00 — spans year boundary
+            {"start_hour": 6.0, "end_hour": 148.0, "label": "NYE-run"},
+        ],
+        "alerted_hashes": [],
+    }
+
+
+def test_safety_stock_fires_across_year_boundary():
+    """A product projected to drop below safety stock in early Jan (the
+    next calendar year) must still fire a safety_stock alert. The year
+    rollover must not break the alert's datetime formatting or
+    deduplication logic."""
+    d = _state_dec28()
+    # 8000 lbs at 200 lbs/hr → exhausted after 40 run-hours ≈ Dec 30
+    # Well within the 168h projection window that crosses into Jan 2027.
+    alerts = run_projection(d)
+    ss_alerts = [a for a in alerts if a["type"] == "safety_stock"]
+    assert ss_alerts, (
+        "Safety-stock alert must fire when level drops across the year boundary"
+    )
+    # The alert text must contain a year — confirms datetime formatting didn't crash
+    for a in ss_alerts:
+        assert "2027" in a["text"] or "2026" in a["text"], (
+            f"Alert text should include the year; got: {a['text']!r}"
+        )
+
+
+def test_safety_stock_fires_across_feb28_in_leap_year():
+    """Feb 28 → Feb 29 (2028) boundary. Projection must handle the extra
+    leap day without raising and must fire safety_stock correctly."""
+    d = {
+        "simulation_epoch": "2028-02-26T00:00:00",  # Sunday
+        "current_run_hour": 0.0,
+        "tanks": {
+            "T1": {"product": "P", "current_level_lbs": 6000,
+                    "max_capacity_lbs": 35000, "heel_lbs": 500, "status": "draw"},
+        },
+        "consumption_rates": {"P": {"lbs_per_hour": 150.0}},
+        "truck_quantities": {"P": 30000},
+        "scheduled_trucks": [],
+        "run_schedule": [
+            # Mon Feb 28 through Fri Mar 1 — crosses the leap day
+            {"start_hour": 48.0, "end_hour": 120.0, "label": "Feb-Mar"},
+        ],
+        "alerted_hashes": [],
+    }
+    # 6000 lbs at 150 lbs/hr → exhausted in 40 run-hours (~Wed Feb 29)
+    alerts = run_projection(d)
+    ss_alerts = [a for a in alerts if a["type"] == "safety_stock"]
+    assert ss_alerts, (
+        "Safety-stock alert must fire when level drops during leap-day window"
+    )
+    # Confirm no date-arithmetic exception: alert text contains a valid month
+    for a in ss_alerts:
+        assert any(m in a["text"] for m in (
+            "Feb", "Mar", "2028",
+        )), f"Alert text should reference the correct period; got: {a['text']!r}"

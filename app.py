@@ -281,8 +281,8 @@ def _initial_state():
     if _os_state.path.exists(_DATA_FILE):
         try:
             return _reanchor_to_now(_load_data_state(_DATA_FILE))
-        except Exception:
-            pass
+        except Exception as _load_err:
+            st.warning(f"⚠️ Could not load data.json ({_load_err}) — starting from defaults.")
     return _defaults()
 
 if "data" not in st.session_state:
@@ -339,7 +339,8 @@ def _roster_alert_count(d):
         red    = sum(1 for a in alerts if a.get("severity") == "red_flag")
         yellow = sum(1 for a in alerts if a.get("severity") == "warning")
         return red, yellow
-    except Exception:
+    except Exception as _e:
+        import sys; print(f"[roster_alert_count] {_e}", file=sys.stderr)
         return 0, 0
 
 
@@ -690,8 +691,8 @@ def _advance(data, hours, session_start_utc=None):
                     try:
                         _send_cs(data, all_new)
                         cs_status = "sent"
-                    except Exception:
-                        cs_status = "not sent (no SMTP in demo mode)"
+                    except Exception as _cs_err:
+                        cs_status = f"not sent ({_cs_err})"
                     cfg2 = load_config()
                     cs_addr = cfg2.get("cs_email", "") if cfg2 else ""
                     email_events.append({
@@ -904,13 +905,17 @@ def _chart(hist, product, safety=None, cutoff_run_hour=None):
     return fig
 
 
-def _tank_info(col, name, info):
+def _tank_info(col, name, info, level_history=(), current_run_hour=0.0):
     """Animated tank-fill card. SVG silhouette of a cylinder with the
     fluid level animated between renders (CSS transition on the
     fluid-rect's y / height). Color semantically encodes fill level:
     red < 20%, amber < 50%, green/teal otherwise. A subtle wave
     (animated SVG sinusoid) on top of the fluid sells the "real
     liquid" feel.
+
+    level_history / current_run_hour: when provided, a small age chip
+    is shown below the level — hours since the tank last dipped below
+    2 000 lbs, indicating how long material has been in the tank.
     """
     pct      = info["current_level_lbs"] / info["max_capacity_lbs"]
     pct_clip = max(0.0, min(1.0, pct))
@@ -925,6 +930,30 @@ def _tank_info(col, name, info):
         fluid_dark             = "#0369A1"
     is_draw = info["status"] == "draw"
     chip_kind = "draw" if is_draw else "standby"
+
+    # ── Inventory age chip ─────────────────────────────────────────────
+    # How long has material been sitting in this tank? Resets whenever
+    # the tank dips below 2 000 lbs (proxy for near-empty = fresh fill).
+    _age_html = ""
+    if level_history:
+        from level_history import inventory_age_hours as _inv_age
+        _age_h, _capped = _inv_age(name, level_history, current_run_hour)
+        if _capped and _age_h < 1:
+            _age_str = "—"        # no history → nothing meaningful to show
+        else:
+            _days = int(_age_h) // 24
+            _hrs  = int(_age_h) % 24
+            if _days >= 1:
+                _age_str = f"{_days}d+" if _capped else f"{_days}d"
+            else:
+                _age_str = f"{_hrs}h+" if _capped else f"{_hrs}h"
+        if _age_str != "—":
+            _age_html = (
+                f'<span style="font-size:0.68rem;color:var(--vmi-text-muted);'
+                f'margin-top:0.15rem;display:inline-block;" '
+                f'title="Material age in tank (resets when level &lt; 2 000 lbs)">'
+                f'⏱ {_age_str}</span>'
+            )
 
     # SVG geometry: 60×80 viewBox, tank silhouette inset 4px on each
     # side. Fluid fills from the bottom; height encodes fill level.
@@ -1020,6 +1049,7 @@ def _tank_info(col, name, info):
                         / {info['max_capacity_lbs']:,} lbs · {pct*100:.0f}%
                     </span>
                 </div>
+                {_age_html}
             </div>
         </div>
     </div>
@@ -1633,8 +1663,10 @@ with c1:
         use_container_width=True, key="ch_u",
     )
     t1, t2 = st.columns(2)
-    _tank_info(t1, "U-Tank1", data["tanks"]["U-Tank1"])
-    _tank_info(t2, "U-Tank2", data["tanks"]["U-Tank2"])
+    _lh = data.get("level_history", [])
+    _rh = data.get("current_run_hour", 0.0)
+    _tank_info(t1, "U-Tank1", data["tanks"]["U-Tank1"], _lh, _rh)
+    _tank_info(t2, "U-Tank2", data["tanks"]["U-Tank2"], _lh, _rh)
 
 with c2:
     st.plotly_chart(
@@ -1642,8 +1674,8 @@ with c2:
         use_container_width=True, key="ch_m",
     )
     t1, t2 = st.columns(2)
-    _tank_info(t1, "M-Tank1", data["tanks"]["M-Tank1"])
-    _tank_info(t2, "M-Tank2", data["tanks"]["M-Tank2"])
+    _tank_info(t1, "M-Tank1", data["tanks"]["M-Tank1"], _lh, _rh)
+    _tank_info(t2, "M-Tank2", data["tanks"]["M-Tank2"], _lh, _rh)
 
 st.divider()
 
@@ -1903,18 +1935,28 @@ if _pending_lc:
 
 _applied_review = data.get("last_applied_parse_review")
 if _applied_review:
+    _ar_via_llm = _applied_review.get("parse_method") == "llm"
     with st.container(border=True):
         st.markdown(
             f'<div style="display:flex;align-items:center;gap:0.6rem;'
             f'margin-bottom:0.4rem;">'
             f'{_chip_html("✓ APPLIED — HIGH CONFIDENCE", "success")}'
-            f'<span style="color:#475569;font-size:0.85rem;">'
+            + (f'{_chip_html("⚠️ VIA LLM PARSER", "warning")}' if _ar_via_llm else "")
+            + f'<span style="color:#475569;font-size:0.85rem;">'
             f'{_applied_review.get("windows_applied", 0)} window(s) for '
             f'week of {_applied_review.get("week_str", "?")} '
             f'({_applied_review.get("windows_replaced", 0)} old replaced)'
             f'</span></div>',
             unsafe_allow_html=True,
         )
+        if _ar_via_llm:
+            st.warning(
+                "⚠️ This schedule was applied via the **LLM parser** "
+                "(the regex parser couldn't extract a complete result). "
+                "LLM parses are more prone to errors — please verify the "
+                "windows below before acknowledging.",
+                icon=None,
+            )
         st.markdown(
             f"**From:** `{_applied_review.get('sender', '?')}` · "
             f"**Subject:** {_applied_review.get('subject', '(none)')}"
@@ -1954,6 +1996,7 @@ if _applied_review:
                                "schedule. Clears the panel."):
                 _email_id_for_audit = _applied_review.get("email_id")
                 st.session_state.data.pop("last_applied_parse_review", None)
+                st.session_state.data.pop("last_parse_method", None)
                 _audit.record(st.session_state.data, "applied_parse_ack",
                                 details={"email_id": _email_id_for_audit})
                 # Phase 7 — operator-acknowledged HIGH parses are
@@ -2015,21 +2058,21 @@ with sp_col:
     if sim_hi_btn.button("🧪 Simulate HIGH parse", use_container_width=True,
                           help="Stage a clean Mon-Fri example and parse it."):
         st.session_state["sched_text"] = SIM_HIGH_TEXT
-        entries, confidence, notes = parse_schedule(
+        entries, confidence, notes, parse_method = parse_schedule(
             SIM_HIGH_TEXT, api_key=_get_anthropic_key(),
             now_dt=_sim_now_for_seed,
         )
-        st.session_state.parse_result = (entries, confidence, notes)
+        st.session_state.parse_result = (entries, confidence, notes, parse_method)
         st.rerun()
     if sim_lo_btn.button("🧪 Simulate LOW parse", use_container_width=True,
                           help="Stage an ambiguous 'run all week' example "
                                "and parse it (LOW-confidence fallback)."):
         st.session_state["sched_text"] = SIM_LOW_TEXT
-        entries, confidence, notes = parse_schedule(
+        entries, confidence, notes, parse_method = parse_schedule(
             SIM_LOW_TEXT, api_key=_get_anthropic_key(),
             now_dt=_sim_now_for_seed,
         )
-        st.session_state.parse_result = (entries, confidence, notes)
+        st.session_state.parse_result = (entries, confidence, notes, parse_method)
         st.rerun()
 
     sched_text = st.text_area(
@@ -2050,10 +2093,10 @@ with sp_col:
             # clock so the tester honours simulation time rather than wall
             # clock, matching `apply_schedule_to_data` below.
             sim_now = run_hour_to_dt(data, data["current_run_hour"])
-            entries, confidence, notes = parse_schedule(
+            entries, confidence, notes, parse_method = parse_schedule(
                 sched_text, api_key=_get_anthropic_key(), now_dt=sim_now
             )
-            st.session_state.parse_result = (entries, confidence, notes)
+            st.session_state.parse_result = (entries, confidence, notes, parse_method)
         else:
             st.warning("Paste a schedule first.")
     if test_api_btn.button("🧪 Test API", use_container_width=True,
@@ -2073,7 +2116,9 @@ with sp_col:
     )
 
     if st.session_state.parse_result:
-        entries, confidence, notes = st.session_state.parse_result
+        _pr = st.session_state.parse_result
+        entries, confidence, notes = _pr[0], _pr[1], _pr[2]
+        parse_method = _pr[3] if len(_pr) > 3 else "regex"
         if confidence == "high":
             pill_bg, pill_fg, pill_label = "#DCFCE7", "#166534", "HIGH CONFIDENCE"
         else:
@@ -2323,8 +2368,8 @@ with ap_col:
                 import email_hooks as _eh
                 _eh.send_cs_load_entry(data, sorted_t)
                 cs_send_status = "sent"
-            except Exception:
-                cs_send_status = "not sent (no SMTP in demo mode)"
+            except Exception as _cs_err:
+                cs_send_status = f"not sent ({_cs_err})"
             st.session_state.email_log.append({
                 "sim_time": format_run_hour(data, data["current_run_hour"]),
                 "type":    "CS Load Entry",

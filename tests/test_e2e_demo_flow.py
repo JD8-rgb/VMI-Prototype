@@ -25,6 +25,7 @@ from alerts import (
     simulate_delivery,
     is_running_at,
 )
+from read_schedule import parse_schedule, apply_schedule_to_data
 from config import PlantConfig, DEFAULT_CONFIG
 from customers import load_customer
 from plan_orders import (
@@ -113,23 +114,56 @@ def test_e2e_defaults_demo_flow(defaults_dict):
     for sap in saps:
         assert sap.startswith("SAP")
 
-    # Run alerts after commit — schedule_received state is fine,
-    # planner has filled the gap; no safety_stock alerts in target week
+    # Run alerts after commit — no exception and every alert has the
+    # required structural fields. (The projection window covers week 1,
+    # not the target week, so safety_stock alerts may still appear for
+    # the current-week shortfall; that's expected and outside the
+    # planner's scope.)
     alerts_after_plan = get_all_alerts(d)
-    assert isinstance(alerts_after_plan, list)
+    for _a in alerts_after_plan:
+        assert "type" in _a and "severity" in _a and "text" in _a, (
+            f"Alert missing required fields: {_a!r}"
+        )
 
-    # Walk the clock forward one full week
+    # Walk the clock through week 1 (trucks are scheduled in week 2)
     starting_hour = d["current_run_hour"]
     for _ in range(168):
         _advance_one_hour(d, DEFAULT_CONFIG)
     assert d["current_run_hour"] == starting_hour + 168
 
-    # The committed trucks should have either delivered or still be inbound
-    # — none should disappear without a trace
-    delivered_count = (len(new_trucks)
-                       - len([t for t in d["scheduled_trucks"]
-                              if t["sap_order"] in saps]))
-    assert delivered_count >= 0
+    # Trucks are scheduled in the target week (168-336); they should
+    # still be pending after the week-1 advance — not yet delivered.
+    pending_after_w1 = {
+        t["sap_order"] for t in d["scheduled_trucks"] if t["sap_order"] in saps
+    }
+    assert pending_after_w1 == set(saps), (
+        "Planned trucks should still be pending at week-2 start; "
+        f"some missing: {set(saps) - pending_after_w1}"
+    )
+
+    # Walk the clock through week 2 — all trucks must be delivered.
+    for _ in range(168):
+        _advance_one_hour(d, DEFAULT_CONFIG)
+
+    still_scheduled_saps = {
+        t["sap_order"] for t in d["scheduled_trucks"] if t["sap_order"] in saps
+    }
+    assert still_scheduled_saps == set(), (
+        f"Trucks {still_scheduled_saps} were planned for week 2 "
+        "but not delivered after the full 336-hour advance."
+    )
+
+    # After delivering all trucks, the combined level for each product
+    # must be positive (trucks actually added material, not zero-fill).
+    for product in d["consumption_rates"]:
+        combined = sum(
+            t["current_level_lbs"] for t in d["tanks"].values()
+            if t["product"] == product
+        )
+        assert combined > 0, (
+            f"After truck deliveries, {product} combined level should "
+            f"be > 0; got {combined}"
+        )
 
 
 def test_e2e_defaults_drains_below_safety_without_planning(defaults_dict):
@@ -173,6 +207,75 @@ def test_e2e_example_customer_demo_flow():
     # Tick a few hours and confirm no crashes across the 6-tank topology
     for _ in range(48):
         _advance_one_hour(d, cfg)
+
+
+# ── Real-email → alert end-to-end integration ─────────────────────────────────
+
+
+def test_e2e_real_email_to_safety_stock_alert(defaults_dict):
+    """Full pipeline: parse a realistic schedule email body, apply it to
+    state, run the projection, and assert that a safety_stock alert fires
+    when the schedule has too few run-hours to cover demand.
+
+    Pipeline under test:
+        parse_schedule (regex path, no API key)
+        → apply_schedule_to_data
+        → run_projection / get_all_alerts
+
+    Scenario: the "customer" sends a 2-window schedule (Mon + Tue only =
+    32 run-hours, ~18,600 lbs demand) against a near-empty tank (8,000 lbs
+    usable). Safety stock (10,000 lbs) must be breached and flagged.
+    """
+    # 3-window schedule (parser requires >= 3 days for HIGH confidence)
+    schedule_body = (
+        "Hi team,\n\n"
+        "Schedule for next week:\n"
+        "Mon 0600 to 2200\n"
+        "Tue 0600 to 2200\n"
+        "Wed 0600 to 2200\n\n"
+        "Thanks,\nScheduler"
+    )
+
+    # ── Step 1: parse ──
+    entries, confidence, notes, method = parse_schedule(schedule_body, api_key=None)
+    assert confidence == "high", (
+        f"Parser should be HIGH confidence for 3-window email, got {confidence!r}. "
+        "Notes: " + "; ".join(notes)
+    )
+    assert method == "regex"
+    assert len(entries) == 3          # Mon, Tue, Wed windows
+
+    # ── Step 2: apply schedule to state ──
+    d = copy.deepcopy(defaults_dict)
+    # Put tanks near-empty so safety stock will be breached
+    for name, tank in d["tanks"].items():
+        if tank["product"] == "Product U":
+            tank["current_level_lbs"] = 9000   # U: 8k usable (9k - 1k heel)
+        else:
+            tank["current_level_lbs"] = 9000   # M: 8k usable
+
+    apply_schedule_to_data(d, entries)
+
+    # Schedule was written into run_schedule (target week windows)
+    applied_windows = [w for w in d["run_schedule"]]
+    assert len(applied_windows) >= 2, (
+        "apply_schedule_to_data must have written at least 2 windows"
+    )
+
+    # ── Step 3: run projection → get_all_alerts ──
+    alerts = get_all_alerts(d)
+    ss_alerts = [a for a in alerts if a["type"] == "safety_stock"]
+
+    # With only 32 run-hours in the week, demand (~18,600 lbs) exceeds
+    # supply (~8,000 lbs usable) — safety stock must fire.
+    assert ss_alerts, (
+        "Safety-stock alert must fire when the applied schedule leaves "
+        "insufficient supply to cover demand. Alerts received: "
+        + str([a["type"] for a in alerts])
+    )
+    for a in ss_alerts:
+        assert a["severity"] == "red_flag"
+        assert a["product"] in a["text"]
 
 
 def test_e2e_example_customer_holiday_blocks_consumption():

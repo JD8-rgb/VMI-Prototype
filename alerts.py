@@ -612,6 +612,30 @@ def check_vmi_off(data, cfg: PlantConfig = DEFAULT_CONFIG):
     )]
 
 
+def check_llm_schedule_applied(data):
+    """WARNING when the last auto-applied schedule was parsed by the LLM.
+
+    The LLM rescue path is more prone to hallucination than the regex parser.
+    This alert fires whenever last_parse_method == "llm" AND the operator
+    has not yet acknowledged the applied-parse review panel. Clears
+    automatically on Acknowledge (which pops last_applied_parse_review and
+    clears last_parse_method).
+    """
+    state = _as_state(data)
+    if state.last_parse_method != "llm":
+        return []
+    # Only fire while the review panel is still pending acknowledgement
+    raw = data if isinstance(data, dict) else state.to_dict()
+    if not raw.get("last_applied_parse_review"):
+        return []
+    return [_alert(
+        "WARNING: Last schedule was applied via LLM parse (HIGH confidence). "
+        "LLM parsers can hallucinate confident-looking results — review the "
+        "'Applied' panel and verify the windows before the week starts.",
+        type="llm_schedule_applied", severity="warning", direction="other",
+    )]
+
+
 def get_all_alerts(data, cfg: PlantConfig = DEFAULT_CONFIG):
     """
     Aggregate every active alert. Returns a list of alert dicts (see `_alert`).
@@ -636,6 +660,7 @@ def get_all_alerts(data, cfg: PlantConfig = DEFAULT_CONFIG):
     alerts.extend(check_schedule_alerts(state))
     alerts.extend(check_plant_state_mismatch(state, cfg=cfg))
     alerts.extend(check_vmi_off(state, cfg=cfg))
+    alerts.extend(check_llm_schedule_applied(data))
     # Anomaly checks (warnings, not blockers). Imported lazily to avoid
     # an import cycle (anomaly.py imports from alerts).
     from anomaly import get_all_anomalies

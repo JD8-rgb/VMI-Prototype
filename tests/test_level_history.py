@@ -17,6 +17,7 @@ from level_history import (
     LEVEL_HISTORY_MAX_ENTRIES,
     record_level_snapshot,
     downsample_for_chart,
+    inventory_age_hours,
 )
 from state import PlantState
 
@@ -172,3 +173,92 @@ def test_downsample_zero_max_points_passes_through():
     chart."""
     history = [{"run_hour": 1.0}, {"run_hour": 2.0}]
     assert downsample_for_chart(history, max_points=0) == history
+
+
+# ── inventory_age_hours ──────────────────────────────────────────────────────
+
+
+def _make_history(run_hours_and_levels):
+    """Build a history list: [(run_hour, level_lbs), ...]."""
+    return [
+        {"run_hour": float(rh), "iso": "2026-01-01T00:00:00",
+         "tanks": {"T1": float(lvl)}}
+        for rh, lvl in run_hours_and_levels
+    ]
+
+
+def test_age_empty_history():
+    """No history → (0.0, True) — no data, treat as capped."""
+    age, capped = inventory_age_hours("T1", [], current_run_hour=100.0)
+    assert age == 0.0
+    assert capped is True
+
+
+def test_age_dipped_recently():
+    """Tank dipped below threshold at run_hour=50; current=100 → age=50h."""
+    history = _make_history([
+        (10, 5000),   # above threshold
+        (50, 1500),   # below 2000 lbs — most recent dip
+        (80, 8000),   # back above
+        (100, 9000),
+    ])
+    age, capped = inventory_age_hours("T1", history, current_run_hour=100.0)
+    assert age == pytest.approx(50.0)
+    assert capped is False
+
+
+def test_age_never_dipped():
+    """Tank always above threshold in history → capped=True, age = time
+    since oldest entry."""
+    history = _make_history([
+        (10, 5000),
+        (50, 8000),
+        (100, 9000),
+    ])
+    age, capped = inventory_age_hours("T1", history, current_run_hour=100.0)
+    assert age == pytest.approx(90.0)   # 100 - 10
+    assert capped is True
+
+
+def test_age_dipped_at_start():
+    """Tank dipped below threshold only in the very first history entry."""
+    history = _make_history([
+        (0,   500),    # below 2000
+        (24,  5000),
+        (100, 8000),
+    ])
+    age, capped = inventory_age_hours("T1", history, current_run_hour=100.0)
+    assert age == pytest.approx(100.0)
+    assert capped is False
+
+
+def test_age_currently_below_threshold():
+    """If the MOST RECENT entry is itself below threshold, age is ~0."""
+    history = _make_history([
+        (80, 8000),
+        (99, 1000),   # below threshold
+    ])
+    age, capped = inventory_age_hours("T1", history, current_run_hour=100.0)
+    assert age == pytest.approx(1.0)
+    assert capped is False
+
+
+def test_age_tank_absent_from_history():
+    """Tank name not in any history entry → (0.0, True)."""
+    history = _make_history([(10, 5000), (50, 8000)])
+    age, capped = inventory_age_hours("MISSING", history, current_run_hour=100.0)
+    assert age == 0.0
+    assert capped is True
+
+
+def test_age_custom_threshold():
+    """threshold_lbs is configurable."""
+    history = _make_history([
+        (10, 4500),   # below custom threshold of 5000
+        (50, 7000),
+    ])
+    age, capped = inventory_age_hours(
+        "T1", history, current_run_hour=100.0, threshold_lbs=5000.0
+    )
+    assert age == pytest.approx(90.0)   # 100 - 10
+    assert capped is False

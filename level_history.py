@@ -82,6 +82,59 @@ def record_level_snapshot(data: Dict[str, Any], run_hour: float) -> None:
     data["level_history"] = history
 
 
+def inventory_age_hours(
+    tank_name: str,
+    history: list,
+    current_run_hour: float,
+    threshold_lbs: float = 2000.0,
+):
+    """Return how many hours it has been since the tank last dipped below
+    `threshold_lbs` (proxy for "near-empty = material turnover").
+
+    Returns:
+        (age_hours: float, capped: bool)
+
+        age_hours  – hours since the last sub-threshold entry.
+        capped     – True when the oldest available history entry was
+                     already above the threshold; the true age is at
+                     least `age_hours` but the ring buffer doesn't go
+                     back far enough to find the actual dip.
+
+    Edge cases:
+        - Empty history or tank absent from history → (0.0, True).
+        - Tank always below threshold in history  → (0.0, False).
+    """
+    if not history:
+        return (0.0, True)
+
+    # Scan newest → oldest for the most recent sub-threshold entry
+    last_dip_run_hour: float | None = None
+    for entry in reversed(history):
+        tanks = entry.get("tanks", {})
+        if tank_name not in tanks:
+            continue
+        if tanks[tank_name] < threshold_lbs:
+            last_dip_run_hour = float(entry["run_hour"])
+            break
+
+    if last_dip_run_hour is not None:
+        return (max(0.0, current_run_hour - last_dip_run_hour), False)
+
+    # Tank was never below threshold in the available history.
+    # Age is at least (current_run_hour - oldest_run_hour).
+    # Find the oldest entry that contains this tank.
+    oldest_run_hour: float | None = None
+    for entry in history:
+        if tank_name in entry.get("tanks", {}):
+            oldest_run_hour = float(entry["run_hour"])
+            break
+
+    if oldest_run_hour is None:
+        return (0.0, True)
+
+    return (max(0.0, current_run_hour - oldest_run_hour), True)
+
+
 def downsample_for_chart(history, max_points: int = 720):
     """Decimate a level_history list to at most `max_points` entries.
 

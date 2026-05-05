@@ -44,7 +44,7 @@ SCHEDULE_BODY_3W = (
 
 
 def _assert_high_with(entries, body):
-    parsed, conf, notes = parse_schedule(body, api_key=None)
+    parsed, conf, notes, _method = parse_schedule(body, api_key=None)
     assert conf == "high", (
         f"Expected HIGH confidence, got {conf!r}.\n"
         f"Body:\n{body}\n\nNotes:\n" + "\n".join(f"  - {n.strip()}" for n in notes)
@@ -233,7 +233,7 @@ def test_prose_with_extra_day_mention_demotes_to_low():
         + "\n\nWe'll have the cleaning crew in on Saturday.\n"
         "Thanks,\nJonathan"
     )
-    parsed, conf, notes = parse_schedule(body, api_key=None)
+    parsed, conf, notes, _method = parse_schedule(body, api_key=None)
     assert parsed == EXPECTED_3W, (
         "Schedule windows should still be extracted correctly even "
         "when confidence is demoted by an unrelated day mention.\n"

@@ -46,6 +46,16 @@ class TankState:
     heel_lbs: float
     status: TankStatus
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.current_level_lbs, (int, float)):
+            raise TypeError(f"TankState.current_level_lbs must be numeric, got {type(self.current_level_lbs).__name__!r}")
+        if not isinstance(self.max_capacity_lbs, (int, float)) or self.max_capacity_lbs <= 0:
+            raise ValueError(f"TankState.max_capacity_lbs must be a positive number, got {self.max_capacity_lbs!r}")
+        if not isinstance(self.heel_lbs, (int, float)) or self.heel_lbs < 0:
+            raise ValueError(f"TankState.heel_lbs must be >= 0, got {self.heel_lbs!r}")
+        if self.status not in ("draw", "standby", "receiving"):
+            raise ValueError(f"TankState.status must be 'draw', 'standby', or 'receiving', got {self.status!r}")
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "product":           self.product,
@@ -134,6 +144,22 @@ class ProductRate:
 class PlantState:
     """The entire mutable state of one plant. Round-trips with data.json."""
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.current_run_hour, (int, float)):
+            raise TypeError(
+                f"PlantState.current_run_hour must be numeric, "
+                f"got {type(self.current_run_hour).__name__!r}"
+            )
+        if self.current_run_hour < 0:
+            raise ValueError(
+                f"PlantState.current_run_hour must be >= 0, got {self.current_run_hour!r}"
+            )
+        if not isinstance(self.simulation_epoch, str) or not self.simulation_epoch:
+            raise TypeError(
+                f"PlantState.simulation_epoch must be a non-empty ISO datetime string, "
+                f"got {self.simulation_epoch!r}"
+            )
+
     # Required fields
     simulation_epoch:  str           # ISO datetime string, naive (today's contract)
     current_run_hour:  float
@@ -188,6 +214,11 @@ class PlantState:
     # manual schedules", "switching to weekend shifts in May", etc.
     customer_notes:          str = ""
 
+    # Tracks which parser produced the last auto-applied HIGH-confidence
+    # schedule. "regex" (default) or "llm". Drives check_llm_schedule_applied
+    # in alerts.py — clears when the operator acknowledges the review panel.
+    last_parse_method: Optional[str] = None
+
     # Catch-all for any future fields added to data.json that this module
     # doesn't know about — preserved verbatim through the round-trip so a
     # newer-schema file isn't lossily mangled when an older code version
@@ -205,7 +236,7 @@ class PlantState:
         "schedule_alerted_ids", "alerted_hashes", "alert_log",
         "sap_history", "plant_state_override",
         "target_overrides", "vmi_automation_enabled", "level_history",
-        "audit_log", "customer_notes",
+        "audit_log", "customer_notes", "last_parse_method",
     ])
 
     @classmethod
@@ -236,6 +267,7 @@ class PlantState:
             level_history                = list(d.get("level_history", [])),
             audit_log                    = list(d.get("audit_log", [])),
             customer_notes               = str(d.get("customer_notes") or ""),
+            last_parse_method            = d.get("last_parse_method"),
             _extra = {k: v for k, v in d.items() if k not in cls._KNOWN_KEYS},
         )
 
@@ -262,6 +294,7 @@ class PlantState:
             "level_history":                list(self.level_history),
             "audit_log":                    list(self.audit_log),
             "customer_notes":               str(self.customer_notes or ""),
+            "last_parse_method":            self.last_parse_method,
         }
         # Preserve any unknown future fields verbatim
         for k, v in self._extra.items():

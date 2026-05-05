@@ -5,7 +5,7 @@
 > when migrating to PostgreSQL or any other persistence layer
 > (`MIGRATION_GUIDE.md` § 3).
 
-Current schema version: **1** (`data_io.CURRENT_SCHEMA_VERSION`).
+Current schema version: **2** (`data_io.CURRENT_SCHEMA_VERSION`).
 
 ## Top-level keys
 
@@ -28,6 +28,9 @@ Current schema version: **1** (`data_io.CURRENT_SCHEMA_VERSION`).
 | `alert_log`                  | array of objects      | optional | Persistent record of every alert fired. Each entry has the alert dict + `logged_at_iso`. |
 | `sap_history`                | array of str          | optional | Append-only ledger of every SAP order number ever issued. Prevents reuse after delivery. |
 | `plant_state_override`       | object or null        | optional | Mocks the plant historian for testing the plant-state-mismatch alert. Shape: `{actual: "running" \| "down", since_hour: float}`. |
+| `level_history`              | array of snapshots    | optional | Ring buffer of per-tank level snapshots (added in v2). Each entry: `{run_hour, iso, tanks: {name: lbs}}`. Capped at 4320 entries (~180 days at 1/hr). |
+| `last_parse_method`          | str or null           | optional | `"regex"` or `"llm"` — which parser produced the last applied schedule. Drives the LLM-parse warning alert. |
+| `safety_stock_lbs`           | int                   | optional | Per-customer safety-stock floor in lbs. Defaults to `PlantConfig.safety_stock_lbs` (10 000) if absent. Developer-editable; not exposed in the operator UI. |
 
 Any key not listed above is preserved verbatim through the
 `PlantState` round-trip via the `_extra` field (see `state.py`). New

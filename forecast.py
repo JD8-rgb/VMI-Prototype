@@ -43,6 +43,11 @@ def _as_state(data_or_state):
     though the symbol exists in alerts.py. Inlining removes the
     cross-module dependency at import time. Behavior is identical to
     alerts._as_state (which keeps its own copy for callers there).
+
+    KNOWN FRAGILITY: two implementations of the same shim can drift.
+    To fix: make `_as_state` a public function in state.py (rename to
+    `as_state`) so both alerts.py and forecast.py import from the same
+    source without triggering the Streamlit Cloud underscore-import bug.
     """
     if isinstance(data_or_state, PlantState):
         return data_or_state

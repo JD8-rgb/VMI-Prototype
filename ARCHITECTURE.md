@@ -7,13 +7,15 @@
 
 The prototype is intentionally split into a **pure algorithm core**, a
 **typed domain model**, a **serialization layer**, and a **Streamlit
-UI / CLI shell**. The algorithm core has no I/O. Everything that
-touches a file, an SMTP server, or a clock is at the edge.
+UI / CLI shell**. The algorithm core has no file I/O, no network calls,
+and no wall-clock reads — it accepts a clock value and mutable state as
+inputs and mutates state in place. Everything that touches a file, an
+SMTP server, or a real clock is at the edge.
 
 ```
                          ┌──────────────────────────────┐
                          │        Streamlit UI          │
-                         │   (app.py — 1597 LOC)        │
+                         │   (app.py — ~3130 LOC)       │
                          └──────────────┬───────────────┘
    ┌──────────────────────┐             │
    │       CLI scripts    │─────────────┤
@@ -59,7 +61,7 @@ touches a file, an SMTP server, or a clock is at the edge.
 | `alerts.py`         |  ~550 | All alert checks (safety-stock, overfill, lead-time, late-truck, schedule-deadline, plant-state-mismatch). Forward simulation engine (`simulate_consume`, `simulate_delivery`, `simulate_delivery_no_alert`). Tank routing helpers (`find_lowest_in`, `find_others_in`, `_refresh_draw_status`). |
 | `plan_orders.py`    |  ~520 | Per-product truck planner. Slot enumeration / validation, breach detection, overfill avoidance, iterative planning loop. CLI wrapper. |
 | `projection.py`     |  ~135 | Tank-level history for chart rendering. Wraps the same simulation engine without alert side-effects. |
-| `read_schedule.py`  | ~2289 | Schedule-email parser. Most fragile module in the prototype. Heavily hardened by the stress harness in `test_schedule_parser.py` (1466 generated + 87 must-pass cases). |
+| `read_schedule.py`  | ~2588 | Schedule-email parser. Most fragile module in the prototype. Heavily hardened by the stress harness in `test_schedule_parser.py` (1466 generated + 87 must-pass cases). |
 | `state.py`          |  ~240 | Typed dataclasses (`PlantState`, `TankState`, `Truck`, `RunWindow`, `ProductRate`) with round-trip `from_dict` / `to_dict`. Unknown future fields preserved via `_extra`. |
 | `config.py`         |  ~115 | `PlantConfig` (frozen dataclass) with every plant-specific business constant. `target_for_week` reorder curve. |
 | `data_io.py`        |  ~115 | Atomic JSON read/write via tempfile + `os.replace`. Schema migration via `_MIGRATIONS` chain. UTF-8 explicit. |
@@ -68,7 +70,7 @@ touches a file, an SMTP server, or a clock is at the edge.
 | `email_client.py`   |  ~250 | IMAP/SMTP wrapper. Production target: MS Graph. |
 | `email_hooks.py`    |  ~220 | Wires alert/customer-success/reminder emails to `send_mail`. |
 | `pdf_generator.py`  |  ~140 | Load-entry PDF via reportlab. |
-| `app.py`            | ~1620 | Streamlit dashboard + automation loop. UI is heavily coupled to the 2-product 4-tank demo shape — this is fine for a prototype but is the main module the technical team will rewrite. |
+| `app.py`            | ~3130 | Streamlit dashboard + automation loop. UI is heavily coupled to the 2-product 4-tank demo shape — this is fine for a prototype but is the main module the technical team will rewrite. |
 | CLI scripts         | small | Thin wrappers over algorithm functions. `advance_time.py 1` is the canonical "tick the clock" command. |
 
 ## Polymorphic call shape (the rule)

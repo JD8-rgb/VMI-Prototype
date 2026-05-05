@@ -1876,7 +1876,10 @@ def parse_schedule(text, api_key=None, now_dt=None, customer_id=None):
     we build a few-shot prefix and pass it to parse_schedule_llm so
     the model gets nudged toward this customer's specific phrasings.
 
-    Always returns (entries, confidence, notes).
+    Always returns (entries, confidence, notes, method) where method is
+    "regex" if the final result came from the regex parser, or "llm" if
+    the LLM rescue result was used. Use ``method`` to surface a warning
+    when a HIGH-confidence schedule was applied via LLM.
     """
     # ── 1. Regex pass (always) ────────────────────────────────────────────
     rx_entries, rx_confidence, rx_notes = parse_schedule_text(text, now_dt=now_dt)
@@ -1940,7 +1943,7 @@ def parse_schedule(text, api_key=None, now_dt=None, customer_id=None):
         logger.info(f"Regex parse is HIGH confidence "
               f"({len(rx_entries)} window(s), covered all "
               f"{distinct_day_mentions} mentioned day(s)) — no LLM call needed.")
-        return rx_entries, rx_confidence, rx_notes
+        return rx_entries, rx_confidence, rx_notes, "regex"
 
     if rx_confidence == "high":
         # HIGH but missed a SPECIFIC mentioned day (set difference, not
@@ -1953,7 +1956,7 @@ def parse_schedule(text, api_key=None, now_dt=None, customer_id=None):
     elif rx_entries and not missing_mentioned:
         logger.info(f"Regex covered all {distinct_day_mentions} distinct "
               f"day mention(s) — no LLM call needed.")
-        return rx_entries, rx_confidence, rx_notes
+        return rx_entries, rx_confidence, rx_notes, "regex"
 
     # ── 2. Regex was incomplete — try the LLM as a rescue ─────────────────
     if not api_key:
@@ -1966,10 +1969,10 @@ def parse_schedule(text, api_key=None, now_dt=None, customer_id=None):
                     f"{missing_names} are missing from the regex result — "
                     f"downgrading to low confidence so operator can confirm.")
             logger.info(note.strip())
-            return rx_entries, "low", [note] + rx_notes
+            return rx_entries, "low", [note] + rx_notes, "regex"
         note = "  No Anthropic API key configured — using regex parser only."
         logger.info(note.strip())
-        return rx_entries, rx_confidence, [note] + rx_notes
+        return rx_entries, rx_confidence, [note] + rx_notes, "regex"
 
     llm_failure_note = None
     # Phase 7 — build a customer-specific few-shot prefix when the
@@ -2001,11 +2004,11 @@ def parse_schedule(text, api_key=None, now_dt=None, customer_id=None):
         if e.raw_response:
             logger.info(f"Raw model output (truncated): {e.raw_response}")
         llm_failure_note = f"  LLM rescue failed — {stage_label}: {e.detail}"
-        return rx_entries, rx_confidence, [llm_failure_note] + rx_notes
+        return rx_entries, rx_confidence, [llm_failure_note] + rx_notes, "regex"
     except Exception as e:
         logger.error(f"LLM rescue failed (unexpected): {e}")
         llm_failure_note = f"  LLM rescue failed (unexpected): {e}"
-        return rx_entries, rx_confidence, [llm_failure_note] + rx_notes
+        return rx_entries, rx_confidence, [llm_failure_note] + rx_notes, "regex"
 
     # ── 3. Validate the LLM result against the source text ────────────────
     # The LLM has been observed to extend a multi-day window's end weekday
@@ -2027,7 +2030,7 @@ def parse_schedule(text, api_key=None, now_dt=None, customer_id=None):
              f"{', '.join(invented_names)}. Kept regex result."]
             + rx_notes + llm_notes
         )
-        return rx_entries, rx_confidence, combined_notes
+        return rx_entries, rx_confidence, combined_notes, "regex"
 
     # ── 4. Score both and keep the better one ─────────────────────────────
     def _score(entries, confidence):
@@ -2043,7 +2046,7 @@ def parse_schedule(text, api_key=None, now_dt=None, customer_id=None):
             ["  Used LLM rescue — regex was low confidence."]
             + rx_notes + llm_notes
         )
-        return llm_entries, llm_confidence, combined_notes
+        return llm_entries, llm_confidence, combined_notes, "llm"
     else:
         logger.info(f"Keeping regex result — LLM rescue did not improve it "
               f"({rx_confidence}, {len(rx_entries)} window(s)).")
@@ -2051,7 +2054,7 @@ def parse_schedule(text, api_key=None, now_dt=None, customer_id=None):
             ["  Kept regex result — LLM rescue did not improve confidence."]
             + rx_notes + llm_notes
         )
-        return rx_entries, rx_confidence, combined_notes
+        return rx_entries, rx_confidence, combined_notes, "regex"
 
 
 def check_anthropic_api(api_key):
@@ -2399,7 +2402,7 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
 
     # Try the most recent email first; if low confidence, try older ones.
     # Uses LLM parsing when an Anthropic API key is configured.
-    best_entries, best_confidence, best_notes, best_msg = [], "low", [], None
+    best_entries, best_confidence, best_notes, best_msg, best_method = [], "low", [], None, "regex"
 
     for msg in results:
         # Diagnostic: show what the parser is actually seeing.  Helps debug
@@ -2410,12 +2413,12 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
         body_preview = raw_body[:200].replace("\n", " ⏎ ")
         logger.info(f"Trying email from {msg.get('sender','?')}: "
               f"body[0:200]={body_preview!r}")
-        entries, confidence, notes = parse_schedule(msg["body"], api_key=api_key, now_dt=now_dt)
+        entries, confidence, notes, _method = parse_schedule(msg["body"], api_key=api_key, now_dt=now_dt)
         if confidence == "high":
-            best_entries, best_confidence, best_notes, best_msg = entries, confidence, notes, msg
+            best_entries, best_confidence, best_notes, best_msg, best_method = entries, confidence, notes, msg, _method
             break
         elif len(entries) > len(best_entries):
-            best_entries, best_confidence, best_notes, best_msg = entries, confidence, notes, msg
+            best_entries, best_confidence, best_notes, best_msg, best_method = entries, confidence, notes, msg, _method
 
     logger.info(f"Best match: {len(best_entries)} day(s) parsed — confidence: {best_confidence}")
     for n in best_notes:
@@ -2444,6 +2447,9 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
             # HIGH parse supersedes whatever was sitting in the
             # confirm panel.
             data.pop("pending_low_confidence_parse", None)
+            # Record which parser produced this result so the alert
+            # system and UI can warn when the LLM was used.
+            data["last_parse_method"] = best_method
             # Phase 6 — stash the HIGH parse so the operator can still
             # eyeball the email + parse output even though the schedule
             # auto-applied. Optional acknowledgement; doesn't change
@@ -2457,6 +2463,7 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
                     "body":       (best_msg.get("body", "") or "")[:5000],
                     "entries":    [list(e) for e in (best_entries or [])],
                     "confidence": "high",
+                    "parse_method": best_method,
                     "applied":    True,
                     "notes":      list(best_notes or []),
                     "fetched_at": _dt_arr.now().isoformat(),
