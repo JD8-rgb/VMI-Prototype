@@ -81,6 +81,22 @@ _DAY_ABBREV = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "S
 _DAY_KEYS_SORTED = sorted(_DAY_MAP.keys(), key=len, reverse=True)
 _DAY_PATTERN = r"\b(" + "|".join(_DAY_KEYS_SORTED) + r")\b"
 
+# Off-day phrases: BOTH day-first ("Thursday off", "Wed is down") AND
+# marker-first ("no run Thursday", "plant down Wednesday"). Single source
+# of truth — the regex parser AND the LLM-rescue gate use this same
+# regex so off-day handling can't drift between the two paths.
+# m.group(1) holds the day for the day-first branch; m.group(2) for
+# marker-first. Always use `m.group(1) or m.group(2)`.
+_DAY_OFF_RE = re.compile(
+    r'(?i)(?:'
+    r'\b(' + '|'.join(_DAY_KEYS_SORTED) + r')\b'
+    r'\s+(?:is\s+)?(?:off|no\s*run|shutdown|n/a|none|down)'
+    r'|'
+    r'(?:no\s*run|plant\s+down|shutdown|no\s+production)\s+'
+    r'\b(' + '|'.join(_DAY_KEYS_SORTED) + r')\b'
+    r')'
+)
+
 # Filler words that may appear between a day name and a time (e.g. "Saturday
 # at 4AM", "Sun on 0600"). Non-capturing, optional group; absorbed and ignored.
 _FILLER = r"(?:\s+(?:at|on|from|starting))?"
@@ -206,7 +222,10 @@ _SPLIT_SHIFT_RE = re.compile(
 #   "Production started Mon"            → no alias word
 _PRODUCT_ALIAS_RE = re.compile(
     r'(?im)\b(?:'
-    r'[A-Z]{1,3}[0-9]?\s+(?:resin|material|feed|product|grade|acid|base|catalyst)'
+    # Widened {1,3} → {1,12}: original cap rejected 4-letter chemical
+    # names like "Acid feed" / "Base feed" / "Lime feed", even though
+    # the comment block above explicitly listed them as target cases.
+    r'[A-Z]{1,12}[0-9]?\s+(?:resin|material|feed|product|grade|acid|base|catalyst)'
     r'|grade\s+[A-Z]'
     r'|material\s+[A-Z][0-9]?'
     r'|P-\d{1,4}'
@@ -1589,17 +1608,8 @@ def parse_schedule_text(text, now_dt=None):
     # _single_day_window only fires when an off marker is in the SAME
     # segment as the day name, so it can't subtract from a sibling
     # range-segment's entries. Do that subtraction here.
-    _DAY_OFF_RE = re.compile(
-        r'(?i)(?:'
-        # day-first: "Thursday off", "Wed is down", "Mon N/A"
-        r'\b(' + '|'.join(_DAY_KEYS_SORTED) + r')\b'
-        r'\s+(?:is\s+)?(?:off|no\s*run|shutdown|n/a|none|down)'
-        r'|'
-        # marker-first: "no run Thursday", "plant down Wednesday", "shutdown Mon"
-        r'(?:no\s*run|plant\s+down|shutdown|no\s+production)\s+'
-        r'\b(' + '|'.join(_DAY_KEYS_SORTED) + r')\b'
-        r')'
-    )
+    # Uses the module-level _DAY_OFF_RE (single source of truth shared
+    # with the LLM-rescue gate so off-day handling can't drift).
     off_weekdays = set()
     for m in _DAY_OFF_RE.finditer(cleaned):
         day_str = m.group(1) or m.group(2)   # one group per alternation branch
@@ -1743,6 +1753,58 @@ def _coverage_days(entries):
         duration = max(0, end_h - start_h)
         total += max(1, (duration + 23) // 24)   # round up, min 1 per window
     return total
+
+
+def _windows_overlap_any(entries):
+    """True iff any pair of (weekday, start_h, end_h) windows overlap
+    on absolute hours-from-week-start. Mirrors the app-side
+    _entries_overlap_pairs check; kept here so the parser module is
+    self-contained and doesn't depend on app.py."""
+    abs_ranges = [(int(wd) * 24 + int(sh), int(wd) * 24 + int(eh))
+                  for wd, sh, eh in entries]
+    for i in range(len(abs_ranges)):
+        for j in range(i + 1, len(abs_ranges)):
+            s_i, e_i = abs_ranges[i]
+            s_j, e_j = abs_ranges[j]
+            if s_i < e_j and s_j < e_i:
+                return True
+    return False
+
+
+def _validate_llm_windows(windows, cfg=None):
+    """Structural validator for LLM-returned windows.
+
+    Filters out individual entries that fail per-window range checks
+    (weekday out of [0,6], start_hour out of [0,24), end_hour <= start,
+    duration > plant max). On a window-overlap collision, drops the
+    entire set — we can't pick a "right" one without operator review.
+
+    Returns ``(kept_windows, errors)`` where errors is a list of
+    human-readable per-window or set-level reasons. Caller decides
+    whether errors mean "downgrade to LOW" or "discard entirely."
+    """
+    kept, errors = [], []
+    max_run = float(getattr(cfg, "plant_max_hours", 24 * 7)) if cfg else 24 * 7
+    for i, (wd, sh, eh) in enumerate(windows):
+        if not (0 <= wd <= 6):
+            errors.append(f"window {i}: weekday {wd} out of [0,6]")
+        elif not (0 <= sh < 24):
+            errors.append(f"window {i}: start_hour {sh} out of [0,24)")
+        elif eh <= sh:
+            errors.append(f"window {i}: end_hour {eh} <= start_hour {sh}")
+        elif (eh - sh) > max_run:
+            errors.append(
+                f"window {i}: duration {eh - sh}h exceeds plant_max_hours "
+                f"{max_run:.0f}h"
+            )
+        else:
+            kept.append((wd, sh, eh))
+
+    if _windows_overlap_any(kept):
+        errors.append("windows overlap on absolute hours")
+        return [], errors
+
+    return kept, errors
 
 
 def _entry_weekdays_covered(entries):
@@ -1966,9 +2028,21 @@ def parse_schedule_llm(text, api_key, few_shot_prefix=None, cfg=None):
         raise LLMParseError("schema", f"unexpected window shape: {e}",
                             raw_response=raw[:400])
 
+    # Structural validation: drop windows with out-of-range weekday /
+    # hour values, end <= start, or duration past plant_max; reject the
+    # whole set on overlap. Without this, a hallucinated weekday=15 or
+    # end_hour=500 would survive the int() coercion and could return as
+    # HIGH if it happened to pass the days-covered check. Bad windows
+    # are also stripped from the operator hint payload so the LOW review
+    # editor never pre-fills garbage.
+    parsed_hints, hint_errors = _validate_llm_windows(parsed_hints, cfg=cfg)
+    if hint_errors:
+        logger.warning("LLM windows failed validation: %s",
+                       "; ".join(hint_errors))
+
     # Gate: reject if LLM self-reports < 95% confidence. The rejected
-    # windows are still passed back as `hint_entries` so the operator UI
-    # can pre-fill them in the LOW review editor (clearly labeled).
+    # (validated-clean) windows are still passed back as `hint_entries`
+    # so the operator UI can pre-fill them in the LOW review editor.
     if confidence_pct < 95:
         logger.info(
             "LLM rescue rejected own result (confidence_pct=%d < 95). "
@@ -1977,6 +2051,14 @@ def parse_schedule_llm(text, api_key, few_shot_prefix=None, cfg=None):
         return [], "low", [
             f"  LLM self-reported confidence {confidence_pct}% < 95 — result discarded"
         ], parsed_hints
+
+    if not parsed_hints:
+        # LLM passed its own gate but every window failed validation.
+        # Don't trust the result — treat as malformed → LOW with a note.
+        return [], "low", [
+            "  LLM returned structurally invalid windows: "
+            + "; ".join(hint_errors or ["empty window list"])
+        ], []
 
     entries = parsed_hints
 
@@ -2060,14 +2142,15 @@ def parse_schedule(text, api_key=None, now_dt=None, customer_id=None, cfg=None):
     # the operator EXPLICITLY excluded — they SHOULD be missing from the
     # extracted entries. Don't count them as "missing mentioned" or we'd
     # downgrade every correctly-handled off-day schedule to LOW.
-    _DAY_OFF_RE_LOCAL = re.compile(
-        r'(?i)\b(' + '|'.join(_DAY_KEYS_SORTED) + r')\b'
-        r'\s+(?:is\s+)?(?:off|no\s*run|shutdown|n/a|none|down)\b'
-    )
-    off_mention_weekdays = {
-        _DAY_MAP[m.group(1).lower()]
-        for m in _DAY_OFF_RE_LOCAL.finditer(cleaned_for_count)
-    }
+    # Uses the module-level _DAY_OFF_RE (single source of truth shared
+    # with the regex parser). Covers BOTH day-first ("Thursday off") AND
+    # marker-first ("no run Thursday") phrasing — without this, an
+    # API-keyed run could route around the operator's "no run X" by
+    # treating X as a missing-mentioned day and inviting LLM rescue.
+    off_mention_weekdays = set()
+    for m in _DAY_OFF_RE.finditer(cleaned_for_count):
+        day_str = m.group(1) or m.group(2)
+        off_mention_weekdays.add(_DAY_MAP[day_str.lower()])
     effective_mentioned = mentioned_weekdays - off_mention_weekdays
     distinct_day_mentions = len(effective_mentioned)
     # Count days actually touched by regex entries — including spillover from

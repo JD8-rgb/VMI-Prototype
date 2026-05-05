@@ -1007,8 +1007,8 @@ def _tank_info(col, name, info, level_history=(), current_run_hour=0.0):
                 _age_str = f"{_hrs}h+" if _capped else f"{_hrs}h"
         if _age_str != "—":
             _age_html = (
-                f'<span style="font-size:0.68rem;color:var(--vmi-text-muted);'
-                f'margin-top:0.15rem;display:inline-block;" '
+                f'<span style="font-size:0.68rem;color:var(--vmi-text-secondary);'
+                f'font-weight:500;margin-top:0.15rem;display:inline-block;" '
                 f'title="Material age in tank (resets when level &lt; 2 000 lbs)">'
                 f'⏱ {_age_str}</span>'
             )
@@ -1103,7 +1103,7 @@ def _tank_info(col, name, info, level_history=(), current_run_hour=0.0):
                                                   font-weight:600;">
                         {info['current_level_lbs']:,.0f}
                     </span>
-                    <span style="color:var(--vmi-text-muted);font-size:0.72rem;">
+                    <span style="color:var(--vmi-text-secondary);font-size:0.72rem;">
                         / {info['max_capacity_lbs']:,} lbs · {pct*100:.0f}%
                     </span>
                 </div>

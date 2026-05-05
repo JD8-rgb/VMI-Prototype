@@ -27,7 +27,7 @@ test: test-parser test-pytest
 test-quick: test-pytest
 
 test-parser:
-	PYTHONIOENCODING=utf-8 $(PYTHON) test_schedule_parser.py --regex-only
+	PYTHONIOENCODING=utf-8 $(PYTHON) -m tests.test_schedule_parser --regex-only
 
 test-pytest:
 	PYTHONIOENCODING=utf-8 $(PYTHON) -m pytest tests/ -q
