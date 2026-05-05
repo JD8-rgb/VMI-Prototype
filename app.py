@@ -37,6 +37,15 @@ from projection import compute_level_history
 from time_utils import run_hour_to_dt, dt_to_run_hour, format_run_hour
 from email_client import OutlookClient, load_config
 
+# Defensive import: inventory_age_hours powers the per-tank "age" chip.
+# Hoisted to module top (was previously a late import inside _tank_info)
+# so a deployment-environment ImportError no longer takes down the
+# whole dashboard — the chip silently disappears instead.
+try:
+    from level_history import inventory_age_hours as _inv_age
+except ImportError:
+    _inv_age = None
+
 DEFAULTS_PATH = Path("defaults.json")
 CONFIG_PATH   = Path("email_config.json")
 APP_TIMEZONE  = "America/New_York"   # used for sim-clock anchor and display
@@ -332,6 +341,22 @@ if "session_start_real_utc" not in st.session_state:
 if "view" not in st.session_state: st.session_state.view = "roster"
 
 data = st.session_state.data
+
+# ── First-install bootstrap ───────────────────────────────────────────────────
+# A new install lands with empty level_history → 12-day projection chart is
+# blank, which is a confusing first impression. If the operator hasn't seen
+# the guided tour yet AND there's no history, backfill 4 weeks of synthetic
+# past so the chart is meaningful immediately. Idempotent: skipped on every
+# subsequent load because level_history is now populated.
+if (not data.get("level_history")
+        and not data.get("first_run_tour_complete", False)):
+    try:
+        from demo_history import generate_demo_history
+        generate_demo_history(data, weeks=4)
+        _save_data_state(data, _DATA_FILE)
+    except Exception as _bootstrap_err:
+        import sys
+        print(f"[first-install-bootstrap] {_bootstrap_err}", file=sys.stderr)
 
 
 # ── Customer roster (landing page) ────────────────────────────────────────────
@@ -946,8 +971,7 @@ def _tank_info(col, name, info, level_history=(), current_run_hour=0.0):
     # How long has material been sitting in this tank? Resets whenever
     # the tank dips below 2 000 lbs (proxy for near-empty = fresh fill).
     _age_html = ""
-    if level_history:
-        from level_history import inventory_age_hours as _inv_age
+    if level_history and _inv_age is not None:
         _age_h, _capped = _inv_age(name, level_history, current_run_hour)
         if _capped and _age_h < 1:
             _age_str = "—"        # no history → nothing meaningful to show
@@ -1426,6 +1450,256 @@ code {
 }
 </style>
 """, unsafe_allow_html=True)
+
+
+# ── First-run guided demo ─────────────────────────────────────────────────────
+# Three-step modal walking a new user through risk → schedule parsed →
+# trucks ordered, using LIVE data on a deep copy so real state isn't
+# mutated unless the user clicks "Apply to my dashboard". Triggered once
+# per install via the `first_run_tour_complete` flag in data.json.
+
+def _demo_advance_clock_to_friday(_ddata):
+    """Bump _ddata['current_run_hour'] to the next Friday 11:00 sim-time
+    WITHOUT running the side-effecting _advance() function (which would
+    poll the inbox, fire reminders, etc.). Pure clock arithmetic."""
+    _now_dt = run_hour_to_dt(_ddata, _ddata["current_run_hour"])
+    days_until = (4 - _now_dt.weekday()) % 7   # 4 = Friday
+    if days_until == 0 and _now_dt.hour >= 11:
+        days_until = 7
+    _target = _now_dt.replace(hour=11, minute=0, second=0, microsecond=0) \
+              + timedelta(days=days_until)
+    _delta_h = (_target - _now_dt).total_seconds() / 3600.0
+    _ddata["current_run_hour"] = float(_ddata["current_run_hour"]) + _delta_h
+
+
+def _demo_render_risk():
+    st.markdown("**Step 1 of 3 — ⚠️ Risk Detected**")
+    st.markdown("Your tank levels are dropping. The system has already flagged it.")
+    st.divider()
+
+    # Current alerts on the LIVE data (these are real, not simulated)
+    try:
+        _live_alerts = get_all_alerts(st.session_state.data)
+    except Exception:
+        _live_alerts = []
+    if _live_alerts:
+        for alert in _live_alerts[:3]:
+            _sev = (alert.get("severity") or "").upper()
+            _txt = alert.get("text") or alert.get("message") or str(alert)
+            st.error(f"**{_sev}** — {_txt}")
+    else:
+        # No active alerts — show current product totals as a fallback
+        _prod_levels = {}
+        for tname, tinfo in st.session_state.data.get("tanks", {}).items():
+            prod = tinfo.get("product", "")
+            _prod_levels.setdefault(prod, 0.0)
+            _prod_levels[prod] += float(tinfo.get("current_level_lbs", 0.0))
+        _cols = st.columns(max(len(_prod_levels), 1))
+        for _c, (prod, lvl) in zip(_cols, _prod_levels.items()):
+            with _c:
+                _delta = lvl - SAFETY_STOCK_LBS
+                st.metric(prod, f"{lvl:,.0f} lbs",
+                           delta=f"{_delta:+,.0f} vs safety stock",
+                           delta_color="inverse")
+
+    st.caption(
+        "The dashboard watches inventory 24/7 and projects forward. When a "
+        "product is on track to dip below safety stock, you see it here "
+        "before it becomes a problem."
+    )
+    st.divider()
+    _b1, _spacer, _b2 = st.columns([2, 4, 3])
+    with _b1:
+        if st.button("Skip — just explore", use_container_width=True,
+                      key="demo_skip_step0"):
+            _demo_finalize(apply=False)
+    with _b2:
+        if st.button("Next: Schedule arrives →", type="primary",
+                      use_container_width=True, key="demo_next_step0"):
+            st.session_state._demo_step = 1
+            st.rerun()
+
+
+def _demo_render_parse():
+    _ddata = st.session_state._demo_data
+    # Bump the demo copy's clock to Friday 11:00 (narrative device only)
+    if not st.session_state.get("_demo_advanced"):
+        try:
+            _demo_advance_clock_to_friday(_ddata)
+        except Exception:
+            pass
+        st.session_state._demo_advanced = True
+
+    # Parse a sample operator email (regex handles HIGH-confidence text)
+    if "_demo_parsed" not in st.session_state:
+        SIM_TEXT = (
+            "Monday 6am-10pm, Tuesday 6am-10pm,\n"
+            "Wednesday 6am-2pm, Thursday off,\n"
+            "Friday 6am-2pm"
+        )
+        try:
+            _result = parse_schedule(SIM_TEXT)
+            if len(_result) == 4:
+                entries, conf, notes, method = _result
+            else:
+                entries, conf, notes = _result
+                method = "regex"
+        except Exception:
+            entries, conf, notes = parse_schedule_text(SIM_TEXT)
+            method = "regex"
+        st.session_state._demo_parsed = (SIM_TEXT, entries, conf, notes, method)
+
+    SIM_TEXT, entries, conf, notes, method = st.session_state._demo_parsed
+
+    st.markdown("**Step 2 of 3 — 📧 Schedule Received & Parsed**")
+    st.markdown(
+        "It's now Friday morning. The system sent the weekly reminder; the "
+        "operator replied with next week's run schedule. Here's the email body:"
+    )
+    st.code(SIM_TEXT, language=None)
+    st.success(f"✓ Parsed with **{conf.upper()}** confidence (method: `{method}`)")
+
+    if entries:
+        _DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        _rows = [
+            {"Day": _DAY_NAMES[wd] if 0 <= wd < 7 else str(wd),
+             "Start": f"{int(sh):02d}:00",
+             "End":   f"{int(eh):02d}:00"}
+            for wd, sh, eh in entries
+        ]
+        st.dataframe(_rows, hide_index=True, use_container_width=True)
+
+    st.divider()
+    _b1, _spacer, _b2 = st.columns([2, 4, 3])
+    with _b1:
+        if st.button("← Back", use_container_width=True, key="demo_back_step1"):
+            st.session_state._demo_step = 0
+            st.rerun()
+    with _b2:
+        if st.button("Next: Truck recommendation →", type="primary",
+                      use_container_width=True, key="demo_next_step1"):
+            st.session_state._demo_step = 2
+            st.rerun()
+
+
+def _demo_render_plan():
+    _ddata = st.session_state._demo_data
+
+    if "_demo_planned" not in st.session_state:
+        _, entries, _, _, _ = st.session_state._demo_parsed
+        try:
+            _now_dt = run_hour_to_dt(_ddata, _ddata["current_run_hour"])
+            _ddata, _, _ = apply_schedule_to_data(
+                _ddata, entries, now_dt=_now_dt, mode="replace",
+            )
+            ws, we = get_target_week_bounds(_ddata)
+            wrh = get_run_hours_in_window(_ddata, ws, we)
+            tgt = get_target_for_week(wrh, state=_ddata)
+            _planned = []
+            for prod in _ddata.get("consumption_rates", {}):
+                _planned.extend(plan_for_product(_ddata, prod, tgt, ws, we, _planned))
+            _ddata["scheduled_trucks"] = (
+                list(_ddata.get("scheduled_trucks", [])) + _planned
+            )
+            st.session_state._demo_data = _ddata
+            st.session_state._demo_planned = _planned
+        except Exception as e:
+            st.error(f"Could not run planner on demo data: {e}")
+            st.session_state._demo_planned = []
+
+    planned = st.session_state._demo_planned
+
+    st.markdown("**Step 3 of 3 — 🚛 Trucks Recommended**")
+    if planned:
+        st.markdown(
+            "The planner ran against the parsed schedule and current tank "
+            "levels. Here's what it would order to keep you above safety stock:"
+        )
+        for truck in planned:
+            try:
+                _arr_dt = run_hour_to_dt(_ddata, truck.get("arrival_run_hour", 0))
+                _arr_str = _arr_dt.strftime("%a %b %d, %H:%M")
+            except Exception:
+                _arr_str = f"run-hour {truck.get('arrival_run_hour', 0):.1f}"
+            st.info(
+                f"**{truck.get('product', '?')}** — "
+                f"{int(truck.get('quantity_lbs', 0)):,} lbs — "
+                f"arriving **{_arr_str}**"
+            )
+    else:
+        st.success(
+            "Levels are sufficient — no trucks needed for the target week. "
+            "(The system orders only what's required.)"
+        )
+
+    st.caption(
+        "Click **Apply to my dashboard** to commit this parsed schedule and "
+        "the recommended trucks to your real state, or **Skip** to explore "
+        "from your current state."
+    )
+    st.divider()
+    _b1, _b2, _b3 = st.columns([2, 3, 3])
+    with _b1:
+        if st.button("← Back", use_container_width=True, key="demo_back_step2"):
+            st.session_state._demo_step = 1
+            st.rerun()
+    with _b2:
+        if st.button("Skip — just explore",
+                      use_container_width=True, key="demo_skip_step2"):
+            _demo_finalize(apply=False)
+    with _b3:
+        if st.button("✓ Apply to my dashboard", type="primary",
+                      use_container_width=True, key="demo_apply_step2"):
+            _demo_finalize(apply=True)
+
+
+def _demo_finalize(*, apply: bool):
+    """Mark tour complete, optionally swap demo copy in, save, clean up."""
+    if apply and "_demo_data" in st.session_state:
+        st.session_state.data = st.session_state._demo_data
+    st.session_state.data["first_run_tour_complete"] = True
+    try:
+        _save_data_state(st.session_state.data, _DATA_FILE)
+    except Exception as e:
+        import sys
+        print(f"[demo_finalize save] {e}", file=sys.stderr)
+    for k in ("_demo_step", "_demo_data", "_demo_advanced",
+              "_demo_parsed", "_demo_planned"):
+        st.session_state.pop(k, None)
+    st.rerun()
+
+
+@st.dialog("🏭 VMI Command Center — Quick Tour", width="large")
+def _demo_tour():
+    if "_demo_step" not in st.session_state:
+        st.session_state._demo_step = 0
+    if "_demo_data" not in st.session_state:
+        st.session_state._demo_data = copy.deepcopy(st.session_state.data)
+    _step = st.session_state._demo_step
+    if _step == 0:
+        _demo_render_risk()
+    elif _step == 1:
+        _demo_render_parse()
+    else:
+        _demo_render_plan()
+
+
+# Trigger the tour on first install. The decorator opens the modal when
+# the function is called; it pauses the rest of the page render until
+# dismissed via Apply/Skip (which set first_run_tour_complete and rerun).
+# Guarded by st.runtime.exists() so `import app` in tests doesn't try to
+# open a dialog without a script context (which raises StreamlitAPIException).
+def _streamlit_runtime_active():
+    try:
+        import streamlit.runtime as _rt
+        return _rt.exists()
+    except Exception:
+        return False
+
+if (not data.get("first_run_tour_complete", False)
+        and _streamlit_runtime_active()):
+    _demo_tour()
+
 
 # "Back to roster" breadcrumb — visible only when we got here from the
 # roster page so the operator can return without using browser back.

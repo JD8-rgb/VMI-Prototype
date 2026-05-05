@@ -45,6 +45,7 @@
   "schedule_parse_issue": null,
   "alerted_hashes": [],
   "scheduled_trucks": [],
+  "first_run_tour_complete": false,
   "run_schedule": [
     { "start_hour":   6.0, "end_hour":  22.0, "label": "Mon" },
     { "start_hour":  30.0, "end_hour":  46.0, "label": "Tue" },
