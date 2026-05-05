@@ -1709,7 +1709,7 @@ def _entry_weekdays_covered(entries):
     return covered
 
 
-def parse_schedule_llm(text, api_key, few_shot_prefix=None):
+def parse_schedule_llm(text, api_key, few_shot_prefix=None, cfg=None):
     """
     Use Claude to parse schedule text into run windows.
     Handles arbitrary natural language formats, time-first notation,
@@ -1740,17 +1740,44 @@ def parse_schedule_llm(text, api_key, few_shot_prefix=None):
     except Exception as e:
         raise LLMParseError("auth", f"could not create Anthropic client: {e}")
 
+    # Build optional customer-context block from PlantConfig when available.
+    ctx_lines = []
+    if cfg is not None:
+        ctx_lines.append("CUSTOMER CONTEXT (use to sanity-check your parse):")
+        ctx_lines.append(
+            f"  Typical weekly runtime  : {cfg.target_low_run_hours}–"
+            f"{cfg.target_high_run_hours} run-hours"
+        )
+        ctx_lines.append(
+            f"  Maximum continuous run  : {cfg.plant_max_hours} hours"
+        )
+        ctx_lines.append(
+            "  Schedules describe the coming Mon–Sun week."
+        )
+        ctx_lines.append(
+            "  If your parsed total exceeds the maximum continuous run, "
+            "re-check your arithmetic.\n"
+        )
+    customer_ctx = "\n".join(ctx_lines) + "\n" if ctx_lines else ""
+
     prompt = (
+        f"{customer_ctx}"
         "Parse this production run schedule into JSON run windows.\n\n"
         "IMPORTANT: The input may be a complete email containing greetings,\n"
         "sign-offs, quoted replies ('> ...'), and other prose. Extract ONLY\n"
         "the production run schedule and ignore everything else. If no run\n"
-        "schedule is present, return [].\n\n"
+        "schedule is present, return {\"confidence_pct\": 0, \"windows\": []}.\n\n"
         "Filler words like 'at', 'on', 'from', 'starting' may appear between\n"
         "a day and a time (e.g. 'Saturday at 4AM', 'Sun on 0600') — ignore\n"
         "them. Plural day names ('Mondays', 'Tuesdays') mean the same as\n"
         "singular.\n\n"
-        "Return a JSON array. Each item has:\n"
+        "Return a JSON object with two keys:\n"
+        "  \"confidence_pct\" : int 0–100 — your confidence this parse is correct.\n"
+        "                      Only include windows if confidence_pct >= 95.\n"
+        "                      If you are unsure of any window, set confidence_pct\n"
+        "                      below 95 and return \"windows\": [].\n"
+        "  \"windows\"        : array of run-window objects, or [] if confidence_pct < 95.\n\n"
+        "Each window object has:\n"
         "  weekday    : int 0–6 (Monday=0 … Sunday=6)\n"
         "  start_hour : int 0–23 (hour of day the window starts)\n"
         "  end_hour   : int, hours from midnight of start_weekday\n"
@@ -1771,22 +1798,30 @@ def parse_schedule_llm(text, api_key, few_shot_prefix=None):
         "  end_hour  = start_hour + days_diff*24 + (end_time - start_time)\n"
         "  Do NOT add an extra 24h for the final day.\n\n"
         "Examples:\n"
-        "  'Monday 6am-10pm'              → [{\"weekday\":0,\"start_hour\":6,\"end_hour\":22}]\n"
-        "  'wed 16:00-7:00pm'             → [{\"weekday\":2,\"start_hour\":16,\"end_hour\":19}]\n"
-        "  'Thu 22:00-06:00'              → [{\"weekday\":3,\"start_hour\":22,\"end_hour\":30}]\n"
-        "  'Mon 0600 - Tue 1600'          → [{\"weekday\":0,\"start_hour\":6,\"end_hour\":34}]\n"
+        "  'Monday 6am-10pm'\n"
+        "      → {\"confidence_pct\": 99, \"windows\": [{\"weekday\":0,\"start_hour\":6,\"end_hour\":22}]}\n"
+        "  'wed 16:00-7:00pm'\n"
+        "      → {\"confidence_pct\": 98, \"windows\": [{\"weekday\":2,\"start_hour\":16,\"end_hour\":19}]}\n"
+        "  'Thu 22:00-06:00'\n"
+        "      → {\"confidence_pct\": 97, \"windows\": [{\"weekday\":3,\"start_hour\":22,\"end_hour\":30}]}\n"
+        "  'Mon 0600 - Tue 1600'\n"
+        "      → {\"confidence_pct\": 98, \"windows\": [{\"weekday\":0,\"start_hour\":6,\"end_hour\":34}]}\n"
         "     (days_diff=1; end = 6 + 1*24 + (16-6) = 34)\n"
-        "  '0600 Mon - 0400 Fri'          → [{\"weekday\":0,\"start_hour\":6,\"end_hour\":94}]\n"
+        "  '0600 Mon - 0400 Fri'\n"
+        "      → {\"confidence_pct\": 97, \"windows\": [{\"weekday\":0,\"start_hour\":6,\"end_hour\":94}]}\n"
         "     (days_diff=4; end = 6 + 4*24 + (4-6) = 94)\n"
-        "  'monday 0500 thru Sun 0800'    → [{\"weekday\":0,\"start_hour\":5,\"end_hour\":152}]\n"
+        "  'monday 0500 thru Sun 0800'\n"
+        "      → {\"confidence_pct\": 96, \"windows\": [{\"weekday\":0,\"start_hour\":5,\"end_hour\":152}]}\n"
         "     (days_diff=6; end = 5 + 6*24 + (8-5) = 152)\n"
         "  'mon 0600-tues 1600 Wed 0600-1600 Thurs 0600-Fri 0400'\n"
-        "      → [{\"weekday\":0,\"start_hour\":6,\"end_hour\":34},\n"
+        "      → {\"confidence_pct\": 99, \"windows\": [{\"weekday\":0,\"start_hour\":6,\"end_hour\":34},\n"
         "         {\"weekday\":2,\"start_hour\":6,\"end_hour\":16},\n"
-        "         {\"weekday\":3,\"start_hour\":6,\"end_hour\":46}]\n"
+        "         {\"weekday\":3,\"start_hour\":6,\"end_hour\":46}]}\n"
         "  'Hi team, we are going to Monday 0600 to Saturday at 4AM. Thanks'\n"
-        "      → [{\"weekday\":0,\"start_hour\":6,\"end_hour\":124}]\n"
-        "        (days_diff=5; end = 6 + 5*24 + (4-6) = 124)\n\n"
+        "      → {\"confidence_pct\": 95, \"windows\": [{\"weekday\":0,\"start_hour\":6,\"end_hour\":124}]}\n"
+        "        (days_diff=5; end = 6 + 5*24 + (4-6) = 124)\n"
+        "  (something ambiguous or missing days)\n"
+        "      → {\"confidence_pct\": 72, \"windows\": []}\n\n"
         "Omit days marked off / down / no run / shutdown.\n"
         "Return ONLY valid JSON — no explanation, no markdown fences.\n\n"
         f"Schedule text:\n{text}"
@@ -1804,7 +1839,7 @@ def parse_schedule_llm(text, api_key, few_shot_prefix=None):
     try:
         msg = client.messages.create(
             model="claude-haiku-4-5",
-            max_tokens=512,
+            max_tokens=700,
             messages=[{"role": "user", "content": prompt}],
         )
     except _anthropic.AuthenticationError as e:
@@ -1826,16 +1861,39 @@ def parse_schedule_llm(text, api_key, few_shot_prefix=None):
     cleaned = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw, flags=re.MULTILINE).strip()
 
     try:
-        windows = _json.loads(cleaned)
+        payload = _json.loads(cleaned)
     except Exception as e:
         raise LLMParseError("json", f"response was not valid JSON: {e}",
                             raw_response=raw[:400])
 
+    # Support both old bare-array responses (legacy) and the new envelope.
+    if isinstance(payload, list):
+        # Legacy shape — no self-reported confidence; treat as failing the gate.
+        confidence_pct = 0
+        raw_windows = payload
+    else:
+        try:
+            confidence_pct = int(payload.get("confidence_pct", 0))
+            raw_windows    = payload.get("windows", [])
+        except Exception as e:
+            raise LLMParseError("schema", f"unexpected JSON envelope: {e}",
+                                raw_response=raw[:400])
+
+    # Gate: reject if LLM self-reports < 95% confidence.
+    if confidence_pct < 95:
+        logger.info(
+            "LLM rescue rejected own result (confidence_pct=%d < 95). "
+            "Falling back to regex.", confidence_pct
+        )
+        return [], "low", [
+            f"  LLM self-reported confidence {confidence_pct}% < 95 — result discarded"
+        ]
+
     try:
         entries = [(int(w["weekday"]), int(w["start_hour"]), int(w["end_hour"]))
-                   for w in windows]
+                   for w in raw_windows]
     except Exception as e:
-        raise LLMParseError("schema", f"unexpected JSON shape: {e}",
+        raise LLMParseError("schema", f"unexpected window shape: {e}",
                             raw_response=raw[:400])
 
     # Confidence: count calendar-days covered across all windows (so a single
@@ -1850,7 +1908,7 @@ def parse_schedule_llm(text, api_key, few_shot_prefix=None):
     return entries, confidence, notes
 
 
-def parse_schedule(text, api_key=None, now_dt=None, customer_id=None):
+def parse_schedule(text, api_key=None, now_dt=None, customer_id=None, cfg=None):
     """
     REGEX-FIRST strategy:
       1. Run the regex parser (parse_schedule_text). If it returns HIGH
@@ -1987,7 +2045,7 @@ def parse_schedule(text, api_key=None, now_dt=None, customer_id=None):
 
     try:
         llm_entries, llm_confidence, llm_notes = parse_schedule_llm(
-            text, api_key, few_shot_prefix=_few_shot,
+            text, api_key, few_shot_prefix=_few_shot, cfg=cfg,
         )
         logger.info(f"LLM rescue returned {llm_confidence} confidence "
               f"({len(llm_entries)} window(s)).")

@@ -323,3 +323,65 @@ def test_check_anthropic_api_messages_are_binary():
     # via the membership check above; assert no other identifying content
     # appears beyond those two exact strings.
     assert msg.startswith("API "), msg
+
+
+# ── LLM 95% confidence gate ─────────────────────────────────────────────────
+
+
+def test_llm_low_confidence_returns_no_entries(monkeypatch):
+    """LLM returning confidence_pct=80 → gate rejects the result and returns
+    no entries with confidence='low', even when the windows array is non-empty.
+    This prevents a plausible-looking but uncertain LLM result from auto-applying."""
+    import json
+    from unittest.mock import MagicMock
+    from read_schedule import parse_schedule_llm
+
+    low_conf_response = json.dumps({
+        "confidence_pct": 80,
+        "windows": [{"weekday": 0, "start_hour": 6, "end_hour": 22}],
+    })
+    mock_msg = MagicMock()
+    mock_msg.content = [MagicMock(text=low_conf_response)]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_msg
+    monkeypatch.setattr("anthropic.Anthropic", lambda **kw: mock_client)
+
+    entries, confidence, notes = parse_schedule_llm("Mon 6am-10pm", api_key="test-key")
+
+    assert entries == [], "Low-confidence LLM result must be discarded"
+    assert confidence == "low"
+    assert any("80" in n for n in notes), (
+        "Notes must mention the rejected confidence percentage"
+    )
+
+
+def test_llm_high_confidence_returns_entries(monkeypatch):
+    """LLM returning confidence_pct=97 → gate passes and entries are returned.
+    Uses 3 windows so _coverage_days scores 'high' externally as well."""
+    import json
+    from unittest.mock import MagicMock
+    from read_schedule import parse_schedule_llm
+
+    high_conf_response = json.dumps({
+        "confidence_pct": 97,
+        "windows": [
+            {"weekday": 0, "start_hour": 6, "end_hour": 22},
+            {"weekday": 1, "start_hour": 6, "end_hour": 22},
+            {"weekday": 2, "start_hour": 6, "end_hour": 22},
+        ],
+    })
+    mock_msg = MagicMock()
+    mock_msg.content = [MagicMock(text=high_conf_response)]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_msg
+    monkeypatch.setattr("anthropic.Anthropic", lambda **kw: mock_client)
+
+    entries, confidence, notes = parse_schedule_llm(
+        "Mon Tue Wed 6am-10pm", api_key="test-key"
+    )
+
+    assert len(entries) == 3
+    assert entries[0] == (0, 6, 22)
+    assert entries[1] == (1, 6, 22)
+    assert entries[2] == (2, 6, 22)
+    assert confidence == "high"
