@@ -126,8 +126,12 @@ class WeightedSeasonalForecaster(ForecastEngine):
         )
 
         # Step 1: parse the historical run_schedule into per-week,
-        # per-weekday run-hour totals.
-        weekly_by_dow = _bucket_run_schedule_by_week(state)
+        # per-weekday run-hour totals. Pass target_week_start so future
+        # weeks (e.g. a just-applied next-week schedule) don't pollute
+        # the lookback — only weeks strictly before the target are kept.
+        weekly_by_dow = _bucket_run_schedule_by_week(
+            state, target_week_start_run_hour=target_week_start_run_hour
+        )
 
         # Insufficient data → fall back to cfg.consumption_rates static
         # baseline. Operator sees a "no history yet, using defaults"
@@ -278,20 +282,40 @@ class WeightedSeasonalForecaster(ForecastEngine):
 _DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
-def _bucket_run_schedule_by_week(state) -> Dict[str, Dict[int, float]]:
+def _bucket_run_schedule_by_week(state, target_week_start_run_hour: float | None = None
+                                  ) -> Dict[str, Dict[int, float]]:
     """Bucket the customer's run_schedule into per-week, per-weekday
     run-hour totals.
 
     Returns: {week_monday_iso: {weekday: total_hours_for_that_day}}
 
     Two windows on the same day in the same week stack additively
-    (some operators send fragmented schedules)."""
+    (some operators send fragmented schedules).
+
+    target_week_start_run_hour : if provided, the target week itself is
+        excluded from the bucketed history. Without this exclusion,
+        applying next week's schedule would pollute the seasonal
+        lookback — the just-applied future week's run-hours would sort
+        as the most-recent kept week and dominate the weighted average,
+        so next week's forecast would echo whatever the operator just
+        applied. Only the target week is excluded; weeks before AND
+        weeks beyond the target stay (a future-future window doesn't
+        affect next-week's prediction the same way the target-week
+        window does).
+    """
     from time_utils import run_hour_to_dt
+    target_monday_iso = None
+    if target_week_start_run_hour is not None:
+        target_dt = run_hour_to_dt(state, target_week_start_run_hour)
+        target_monday_iso = (
+            target_dt - timedelta(days=target_dt.weekday())
+        ).date().isoformat()
     out: Dict[str, Dict[int, float]] = {}
     for window in state.run_schedule:
         start_dt = run_hour_to_dt(state, window.start_hour)
-        # Bucket by Monday of that week
         monday = (start_dt - timedelta(days=start_dt.weekday())).date().isoformat()
+        if target_monday_iso is not None and monday == target_monday_iso:
+            continue
         bucket = out.setdefault(monday, {d: 0.0 for d in range(7)})
         bucket[start_dt.weekday()] += float(window.end_hour - window.start_hour)
     return out

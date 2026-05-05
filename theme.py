@@ -395,6 +395,14 @@ footer {{ visibility: hidden; }}
    were too narrow to read. */
 .stApp .block-container {{ padding-top: 1.5rem; max-width: 1480px; }}
 .stApp [data-testid="stVerticalBlock"] {{ gap: 0.6rem; }}
+
+/* ── Mobile: avoid overlap with Streamlit Cloud's sticky Fork button + */
+/*           GitHub avatar pinned top-right at viewport edge.           */
+/* The cloud chrome is ~44px tall on small viewports; we push our       */
+/* content down so the brand header + first card aren't hidden under it.*/
+@media (max-width: 480px) {{
+    .stApp .block-container {{ padding-top: 3.5rem; }}
+}}
 </style>
 """
 

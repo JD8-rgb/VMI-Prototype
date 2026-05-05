@@ -371,17 +371,19 @@ def _render_roster():
     else:
         _acme_chip = _chip_html("🟢 ALL CLEAR", "success")
 
-    # Examples — static for visual-scale demonstration
+    # Examples — static for visual-scale demonstration. Chips are
+    # prefixed "DEMO" and rendered with a neutral 'info' style so they
+    # can't be mistaken for real alerts firing on these tenants.
     _examples = [
         {"name": "Customer 2",
           "subtitle": "Example tenant — visualization only",
-          "chip": _chip_html("🟢 ALL CLEAR", "success")},
+          "chip": _chip_html("DEMO · 🟢 ALL CLEAR", "info")},
         {"name": "Customer 3",
           "subtitle": "Example tenant — visualization only",
-          "chip": _chip_html("🟡 1 WARNING", "warning")},
+          "chip": _chip_html("DEMO · 🟡 1 WARNING", "info")},
         {"name": "Customer 4",
           "subtitle": "Example tenant — visualization only",
-          "chip": _chip_html("🔴 2 CRITICAL", "danger")},
+          "chip": _chip_html("DEMO · 🔴 2 CRITICAL", "info")},
     ]
 
     # Acme: live, clickable card. Use a Streamlit container with a
@@ -1037,14 +1039,32 @@ _DAY_NL = {
 }
 
 
+def _product_aliases(product_name):
+    """Tokens an operator might type to refer to `product_name`."""
+    aliases = [product_name.lower()]
+    # "Product U" → also accept "U"
+    m = re.match(r"product\s+(\S+)", product_name, re.IGNORECASE)
+    if m:
+        aliases.append(m.group(1).lower())
+    return aliases
+
+
 def _parse_nl(text, data):
     tl = text.lower().strip()
-    if re.search(r"\bproduct\s+u\b", tl) or re.search(r"\bu\b", tl):
-        product = "Product U"
-    elif re.search(r"\bproduct\s+m\b", tl) or re.search(r"\bm\b", tl):
-        product = "Product M"
-    else:
-        raise ValueError("Specify 'Product U' or 'Product M' (or just U / M).")
+    products = list(data.get("truck_quantities", {}).keys())
+    product = None
+    for p in products:
+        for alias in _product_aliases(p):
+            if re.search(r"\b" + re.escape(alias) + r"\b", tl):
+                product = p
+                break
+        if product:
+            break
+    if product is None:
+        if products:
+            quoted = ", ".join(f"'{p}'" for p in products)
+            raise ValueError(f"Specify a product: {quoted}.")
+        raise ValueError("No products configured for this customer.")
     day_num = None
     for word, num in _DAY_NL.items():
         if re.search(r"\b" + word + r"\b", tl):
@@ -2058,6 +2078,17 @@ with sp_col:
             pill_bg, pill_fg, pill_label = "#DCFCE7", "#166534", "HIGH CONFIDENCE"
         else:
             pill_bg, pill_fg, pill_label = "#FFE4E6", "#9F1239", "LOW CONFIDENCE"
+        # Surface partial-day rejections (e.g. "Wed: day found but no time
+        # range detected") at the headline level. Without this, the warning
+        # is buried inside the collapsed parse-details accordion and the
+        # "X window(s) parsed" headline gives no hint that input rows were
+        # silently dropped.
+        skip_phrases = ("no time range detected", "could not parse",
+                         "day found but")
+        skipped_notes = [
+            n.strip() for n in (notes or [])
+            if any(p in n.lower() for p in skip_phrases)
+        ]
         st.markdown(
             f"""
             <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.4rem;
@@ -2068,10 +2099,20 @@ with sp_col:
                 <span style="color:#64748B;font-size:0.85rem;">
                     {len(entries)} window(s) parsed
                 </span>
+                {('<span style="background:#FEF3C7;color:#92400E;font-size:0.7rem;'
+                  'font-weight:600;letter-spacing:0.05em;padding:3px 9px;'
+                  f'border-radius:999px;">⚠️ {len(skipped_notes)} line(s) skipped</span>')
+                  if skipped_notes else ''}
             </div>
             """,
             unsafe_allow_html=True,
         )
+        if skipped_notes:
+            st.warning(
+                "Some lines were skipped because they had a day but no readable "
+                "time range. Review them before applying:\n\n"
+                + "\n".join(f"- {n}" for n in skipped_notes)
+            )
         if entries:
             DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
             # Editable table: operator types Start / End as
@@ -2149,7 +2190,15 @@ with sp_col:
         # received; LOW = additive merge), but the button text no
         # longer requires the operator to interpret "Anyway".
         btn_lbl = "✅ Apply Schedule"
-        if st.button(btn_lbl, use_container_width=True):
+        _apply_entries_preview = st.session_state.get("_edited_entries", entries) or entries
+        _no_windows = not _apply_entries_preview
+        if _no_windows:
+            st.caption(
+                "⚠️ 0 windows parsed — Apply is disabled. "
+                "Edit the rows above to add at least one window, "
+                "or paste a different schedule."
+            )
+        if st.button(btn_lbl, use_container_width=True, disabled=_no_windows):
             sim_now = run_hour_to_dt(data, data["current_run_hour"])
             # HIGH confidence → full replace + mark week received.
             # LOW confidence "Apply Anyway" → additive merge: only the
@@ -2346,6 +2395,36 @@ def _alert_log_summary(data, window_days=_DASH_WINDOW_DAYS):
 
 
 _overfill_n, _safety_n, _weekly = _alert_log_summary(data)
+# Current cycle: include alerts that are firing right now but haven't yet
+# been persisted to alert_log (e.g. between fires of the email-sender that
+# does the logging, or after a fresh demo-history backfill that didn't
+# replay alert evaluation). Without this, a dashboard showing "0 alerts in
+# 180d" while 2 critical alerts are visible above is contradictory and
+# erodes trust. Dedupe by alert_hash against existing alert_log entries
+# in the window so currently-active alerts that ALREADY logged don't
+# get double-counted.
+from email_hooks import alert_hash as _alert_hash
+def _within_window(iso):
+    if not iso:
+        return False
+    try:
+        return _dt_dash.fromisoformat(iso) >= (
+            _dt_dash.now() - _td_dash(days=_DASH_WINDOW_DAYS)
+        )
+    except ValueError:
+        return False
+_logged_hashes_in_window = {
+    e.get("hash") for e in (data.get("alert_log") or [])
+    if e.get("hash") and _within_window(e.get("logged_at_iso"))
+}
+_current_alerts = get_all_alerts(data)
+for _a in _current_alerts:
+    if _alert_hash(_a.get("text", "")) in _logged_hashes_in_window:
+        continue
+    if _a.get("type") == "overfill":
+        _overfill_n += 1
+    elif _a.get("type") == "safety_stock":
+        _safety_n += 1
 _total_alerts_window = _overfill_n + _safety_n
 
 # Top row: three big-number cards
@@ -2614,6 +2693,7 @@ _notes_text = st.text_area(
     "Customer notes",
     value=_existing_notes,
     height=90,
+    max_chars=4000,
     key="customer_notes_input",
     label_visibility="collapsed",
     placeholder=("e.g. 'Anna out 4/22-4/26, expect manual schedules' or "

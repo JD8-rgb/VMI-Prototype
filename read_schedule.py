@@ -223,6 +223,47 @@ _PRODUCT_ALIAS_RE = re.compile(
 _NONZERO_MINUTES_COLON_RE = re.compile(r'(?<!\d)\d{1,2}[:.][0-5]\d(?!\d)')
 _NONZERO_MINUTES_HHMM_RE  = re.compile(r'(?<!\d)([0-2]\d)([0-5]\d)(?!\d)')
 
+# Same start/end time in a range — e.g. "6am-6am", "06:00-06:00", "0600-0600".
+# The parser interprets this as a 24-hour shift (end_h <= start_h → end_h += 24
+# in the segment parser), which is the most defensible numerical reading but
+# is just as likely an operator typo. Force LOW so the operator confirms.
+#
+# Three forms covered:
+#   "6am-6am" / "6 am - 6 am"   → 12-hour clock
+#   "06:00-06:00"               → HH:MM
+#   "0600-0600"                 → 4-digit military
+# We compare the captured number/period pairs and treat them as "same"
+# if they normalize to the same hour-of-day.
+_SAME_TIME_12H_RE   = re.compile(
+    r'(?i)(?<!\d)(\d{1,2})\s*(am|pm)\s*[-–—]\s*(\d{1,2})\s*(am|pm)\b'
+)
+_SAME_TIME_COLON_RE = re.compile(
+    r'(?<!\d)(\d{1,2}):([0-5]\d)\s*[-–—]\s*(\d{1,2}):([0-5]\d)(?!\d)'
+)
+_SAME_TIME_HHMM_RE  = re.compile(
+    r'(?<!\d)([0-2]\d)([0-5]\d)\s*[-–—]\s*([0-2]\d)([0-5]\d)(?!\d)'
+)
+
+
+def _has_same_start_end(text):
+    """
+    Detect a time range whose start equals its end — typically a typo
+    that the parser would otherwise silently expand to a 24-hour shift.
+    """
+    for m in _SAME_TIME_12H_RE.finditer(text):
+        h1, p1, h2, p2 = m.group(1), m.group(2).lower(), m.group(3), m.group(4).lower()
+        h1n = (int(h1) % 12) + (12 if p1 == "pm" else 0)
+        h2n = (int(h2) % 12) + (12 if p2 == "pm" else 0)
+        if h1n == h2n:
+            return True
+    for m in _SAME_TIME_COLON_RE.finditer(text):
+        if m.group(1) == m.group(3) and m.group(2) == m.group(4):
+            return True
+    for m in _SAME_TIME_HHMM_RE.finditer(text):
+        if m.group(1) == m.group(3) and m.group(2) == m.group(4):
+            return True
+    return False
+
 
 def _has_nonzero_minutes(text):
     """
@@ -1552,6 +1593,12 @@ def parse_schedule_text(text, now_dt=None):
                      "integer hours) — forcing low confidence so operator "
                      "can confirm the rounded windows.")
         forced_low = True
+    if _has_same_start_end(cleaned):
+        notes.append("  Same start/end time detected (e.g. '6am-6am'). "
+                     "The parser interprets this as a 24-hour shift, but "
+                     "it's commonly a typo — forcing low confidence so the "
+                     "operator can confirm whether a 24h run is intended.")
+        forced_low = True
     if _SPLIT_SHIFT_RE.search(cleaned):
         # Split-shift detection runs against the FULL cleaned text
         # (not the per-segment loop) because _split_segments breaks
@@ -2019,35 +2066,22 @@ def check_anthropic_api(api_key):
     full auth + network path.
     """
     if not api_key:
-        return False, ("No API key configured. Set ANTHROPIC_API_KEY in your "
-                       "environment, Streamlit secrets, or email_config.json "
-                       "(anthropic_api_key field).")
+        return False, "API unreachable."
     try:
         import anthropic as _anthropic
-    except ImportError as e:
-        return False, f"anthropic package not installed: {e}"
+    except ImportError:
+        return False, "API unreachable."
 
     try:
         client = _anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(
+        client.messages.create(
             model="claude-haiku-4-5",
             max_tokens=5,
             messages=[{"role": "user", "content": "Reply with the single word: ok"}],
         )
-        reply = msg.content[0].text.strip() if msg.content else "(empty)"
-        masked = api_key[:7] + "…" + api_key[-4:] if len(api_key) > 12 else "***"
-        return True, (f"Anthropic API reachable. Key {masked} accepted by "
-                      f"claude-haiku-4-5. Test reply: '{reply}'.")
-    except _anthropic.AuthenticationError as e:
-        return False, f"API key rejected (authentication failed): {e}"
-    except _anthropic.APIConnectionError as e:
-        return False, f"Network/connection error — check internet access: {e}"
-    except _anthropic.RateLimitError as e:
-        return False, f"Rate-limited by Anthropic: {e}"
-    except _anthropic.APIStatusError as e:
-        return False, f"API returned status {e.status_code}: {e}"
-    except Exception as e:
-        return False, f"Unexpected error ({type(e).__name__}): {e}"
+        return True, "API reachable."
+    except Exception:
+        return False, "API unreachable."
 
 
 # ── Apply schedule to data ────────────────────────────────────────────────────

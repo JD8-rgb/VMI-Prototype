@@ -144,3 +144,182 @@ def test_forecast_uses_product_membership_not_tank_name_prefix(defaults_dict):
             f"{prod}: forecast trucks duplicated at same arrival hour: "
             f"{sorted(times)}"
         )
+
+
+# ── Same-time-range fail-open (Playwright red-team, May 2026) ───────────────
+
+
+def test_same_start_end_time_forces_low():
+    """'Tue 6am-6am' silently became a 24-hour shift. Numerically the
+    parser's most defensible reading, but just as likely an operator
+    typo. Must demote to LOW with a same-time note so the operator
+    confirms whether a 24h run is intended."""
+    text = "Mon 6am-2pm; Tue 6am-6am"
+    _entries, conf, notes = parse_schedule(text, api_key=None)
+    assert conf == "low", (
+        f"Same start/end time must demote to LOW. Got conf={conf!r}, "
+        f"notes={notes}"
+    )
+    assert any("same start/end" in n.lower() for n in notes), (
+        "Expected a 'same start/end' note explaining the demotion."
+    )
+
+
+def test_same_start_end_military_forces_low():
+    """'Tue 0600-0600' — same time in 4-digit military format."""
+    _, conf, notes = parse_schedule("Mon 6am-4pm; Tue 0600-0600",
+                                     api_key=None)
+    assert conf == "low"
+    assert any("same start/end" in n.lower() for n in notes)
+
+
+def test_same_start_end_colon_forces_low():
+    """'Tue 06:00-06:00' — same time in HH:MM format."""
+    _, conf, notes = parse_schedule("Mon 6am-4pm; Tue 06:00-06:00",
+                                     api_key=None)
+    assert conf == "low"
+    assert any("same start/end" in n.lower() for n in notes)
+
+
+def test_overnight_window_does_not_trigger_same_time():
+    """Sanity: 'Mon 10pm-6am' is a legitimate cross-midnight 8h
+    window, NOT a same-time typo — must stay HIGH-eligible."""
+    text = "Mon 10pm-6am; Tue 6am-4pm; Wed 6am-4pm"
+    _, conf, notes = parse_schedule(text, api_key=None)
+    assert not any("same start/end" in n.lower() for n in notes), (
+        "Overnight windows must not trip the same-time guard."
+    )
+    assert conf == "high"
+
+
+# ── Forecast lookback: target week excluded ─────────────────────────────────
+
+
+def test_forecast_excludes_target_week_from_lookback(defaults_dict):
+    """Applying next week's schedule (windows whose Monday equals the
+    target week's Monday) must NOT pollute the seasonal lookback. The
+    target week is the prediction target — it can't also be a history
+    sample without making the forecast echo whatever was just applied."""
+    from forecast import _bucket_run_schedule_by_week
+    from state import PlantState
+    from time_utils import dt_to_run_hour
+    from datetime import datetime
+
+    d = deepcopy(defaults_dict)
+    d['simulation_epoch'] = '2026-05-04T00:00:00'   # Mon 5/4
+    d['current_run_hour'] = 0.0
+    state = PlantState.from_dict(d)
+    # Window whose Monday matches the target week (5/11) — simulating
+    # the operator just applied next week's schedule.
+    target_week_start = dt_to_run_hour(state, datetime(2026, 5, 11))
+    from state import RunWindow
+    state.run_schedule = [
+        RunWindow(start_hour=-168 + 6, end_hour=-168 + 22, label="prev-Mon"),
+        RunWindow(start_hour=6, end_hour=22, label="this-Mon"),
+        # A window in the TARGET week (5/11) — must be filtered out:
+        RunWindow(start_hour=target_week_start + 6,
+                   end_hour=target_week_start + 22, label="target-Mon"),
+    ]
+    bucketed = _bucket_run_schedule_by_week(
+        state, target_week_start_run_hour=target_week_start
+    )
+    target_iso = "2026-05-11"
+    assert target_iso not in bucketed, (
+        f"Target week ({target_iso}) leaked into lookback: {list(bucketed.keys())}"
+    )
+    # Other weeks should still be present
+    assert "2026-04-27" in bucketed
+    assert "2026-05-04" in bucketed
+
+
+def test_forecast_keeps_historical_weeks_when_no_target(defaults_dict):
+    """Without a target_week_start_run_hour, the bucketer keeps
+    everything (legacy callers)."""
+    from forecast import _bucket_run_schedule_by_week
+    from state import PlantState, RunWindow
+
+    d = deepcopy(defaults_dict)
+    d['simulation_epoch'] = '2026-05-04T00:00:00'
+    d['current_run_hour'] = 0.0
+    state = PlantState.from_dict(d)
+    state.run_schedule = [
+        RunWindow(start_hour=6, end_hour=22, label="this"),
+        RunWindow(start_hour=174, end_hour=190, label="next"),
+    ]
+    bucketed = _bucket_run_schedule_by_week(state)
+    assert len(bucketed) == 2
+
+
+# ── Truck NL: dynamic product matching ──────────────────────────────────────
+
+
+def test_truck_nl_uses_customer_products():
+    """The natural-language truck parser must accept whatever products
+    the customer has configured — not hardcoded 'Product U' / 'Product M'.
+    Error message also must list the configured products dynamically."""
+    import sys, pathlib
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+    from app import _parse_nl   # noqa: E402
+
+    # Customer with custom products: "Acid" and "Base"
+    data = {
+        "truck_quantities": {"Acid": 25000, "Base": 30000},
+        "current_run_hour": 0.0,
+        "simulation_epoch": "2026-05-04T00:00:00",
+    }
+    # _parse_nl returns (product, arrival_run_hour, friendly_time)
+    product, _, _ = _parse_nl("Acid monday 0800", data)
+    assert product == "Acid"
+    product, _, _ = _parse_nl("Base wed 1400", data)
+    assert product == "Base"
+
+
+def test_truck_nl_error_lists_configured_products():
+    """Error message for unmatched product must reference the actual
+    configured products, not the hardcoded 'U / M'."""
+    import sys, pathlib
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+    from app import _parse_nl   # noqa: E402
+
+    data = {
+        "truck_quantities": {"Acid": 25000, "Base": 30000},
+        "current_run_hour": 0.0,
+        "simulation_epoch": "2026-05-04T00:00:00",
+    }
+    with pytest.raises(ValueError) as exc:
+        _parse_nl("Z monday 0800", data)
+    msg = str(exc.value)
+    assert "Acid" in msg and "Base" in msg, (
+        f"Error must list configured products. Got: {msg!r}"
+    )
+    assert "'Product U'" not in msg, (
+        f"Error must not hardcode legacy U/M names. Got: {msg!r}"
+    )
+
+
+# ── Test API: binary message (no key fingerprint or model leak) ─────────────
+
+
+def test_check_anthropic_api_no_key_returns_unreachable():
+    """No key → must return ('API unreachable.', no fingerprint)."""
+    from read_schedule import check_anthropic_api
+    ok, msg = check_anthropic_api(None)
+    assert ok is False
+    assert msg == "API unreachable."
+
+
+def test_check_anthropic_api_messages_are_binary():
+    """Diagnostic messages must be exactly 'API reachable.' or
+    'API unreachable.' — never leak masked key, model name, or reply.
+    The previous code rendered 'sk-ant-…XXXX accepted by claude-haiku-4-5'
+    on a public Streamlit deployment (info-disclosure)."""
+    from read_schedule import check_anthropic_api
+    ok, msg = check_anthropic_api("")
+    assert msg in ("API reachable.", "API unreachable.")
+    # Defensive: even an explicit empty string mustn't leak any extra info
+    forbidden = ("sk-ant", "haiku", "opus", "sonnet", "key", "Reply",
+                  "reachable.", "Anthropic")
+    # The literal phrase "API reachable." / "API unreachable." is allowed
+    # via the membership check above; assert no other identifying content
+    # appears beyond those two exact strings.
+    assert msg.startswith("API "), msg
