@@ -14,7 +14,7 @@ This prototype demonstrates how an AI-driven VMI tool would handle that workload
 
 - Simulates hourly tank consumption against an advanceable sim clock
 - Parses schedule emails with a regex-first parser plus optional LLM rescue (common formats supported; safe-fail on anything ambiguous)
-- Projects 10-day tank levels and recommends truck orders
+- Projects 12-day tank levels and recommends truck orders
 - Fires live alerts before problems happen
 - Scales reorder targets dynamically with scheduled weekly run hours
 
@@ -48,7 +48,7 @@ Reorder targets scale with scheduled weekly run hours. Light weeks (≤ 28 run h
 - **Python + Streamlit** — core platform and UI
 - **LLM** — schedule-email parsing
 - **Microsoft Graph API** — inbox automation (production) / IMAP (prototype)
-- **SAP + EDI** — order verification and placement
+- **SAP + EDI** — order verification and placement *(production scope; demo emits a simulated SAP order number)*
 - **ReportLab** — load-entry and product-sheet PDF generation
 - **Plotly** — tank-level projection charts
 

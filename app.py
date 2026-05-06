@@ -3160,8 +3160,15 @@ with tab_form:
     with st.form("add_truck_form"):
         f1, f2 = st.columns(2)
         prod_in = f1.selectbox("Product", options=list(data["truck_quantities"].keys()))
+        # Default qty tracks the selected product (was hardcoded to Product U,
+        # which silently substituted the wrong size for non-Acme customers).
+        # Two-level fallback: selected product → first product → 33000 floor.
+        default_qty = int(data["truck_quantities"].get(
+            prod_in,
+            next(iter(data["truck_quantities"].values()), 33000),
+        ))
         qty_in  = f2.number_input("Qty (lbs)", min_value=1000, max_value=70000,
-                                   value=data["truck_quantities"].get("Product U", 33000), step=500)
+                                   value=default_qty, step=500)
         now_dt  = run_hour_to_dt(data, data["current_run_hour"])
         d1, d2  = st.columns(2)
         arr_date = d1.date_input("Arrival date", value=(now_dt + timedelta(hours=48)).date())

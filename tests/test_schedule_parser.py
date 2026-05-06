@@ -38,7 +38,14 @@ from typing import Callable, List, Optional, Tuple
 _RETRY_STATS = {"retried": 0, "final_429": 0}
 
 # ── Make sure we import the in-tree read_schedule, not any stale package ────
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Insert the repo root (parent of tests/) so direct invocation works:
+#     python tests/test_schedule_parser.py --regex-only
+# AND module-form invocation (used by Makefile) keeps working:
+#     python -m tests.test_schedule_parser --regex-only
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_HERE)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from read_schedule import (
     parse_schedule_text,

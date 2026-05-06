@@ -128,6 +128,54 @@ _LETTER_DAY_LIST_RE = re.compile(
     r'\b(M|T|W|Th|F)(?:\s*[,/\s]\s*(M|T|W|Th|F))+\b'
 )
 _LETTER_TO_DAY_NAME = {"M": "Mon", "T": "Tue", "W": "Wed", "Th": "Thu", "F": "Fri"}
+_LETTER_TO_WEEKDAY  = {"M": 0,    "T": 1,    "W": 2,    "Th": 3,   "F": 4}
+
+# Full-name day RANGES ("Mon-Fri", "Monday through Friday"). Used by the
+# LLM-rescue gate to expand "Mon-Fri" into the full {Mon..Fri} weekday
+# set so the "invented day" check doesn't reject correct LLM windows
+# whose regex parse failed for unrelated reasons (e.g. timezone suffix
+# in the source text). This is GATE-only — the parser itself segments
+# day-ranges through _try_day_range_with_time / _try_multiday_range.
+_FULL_DAY_RANGE_RE = re.compile(
+    r'(?i)\b(' + '|'.join(_DAY_KEYS_SORTED) + r')\b'
+    r'\s*(?:[-–—]|through|thru|to)\s*'
+    r'\b(' + '|'.join(_DAY_KEYS_SORTED) + r')\b'
+)
+
+
+def _expand_text_day_ranges(text: str) -> set[int]:
+    """Return weekdays implied by 'DAY-DAY' / 'DAY through DAY' patterns
+    in ``text``. Inclusive of both endpoints; wraps Sat-Mon → {Sat, Sun, Mon}.
+
+    Covers BOTH full-name ranges (Mon-Fri) and single-letter ranges
+    (M-F). Letter ranges are rewritten upstream of the parser by
+    ``_LETTER_DAY_RANGE_RE.sub(...)`` but the GATE looks at cleaned
+    text directly, so we re-expand them here too.
+    """
+    days: set[int] = set()
+
+    def _add_range(a: int, b: int) -> None:
+        # Inclusive walk a → b mod 7. Bounded loop guards against
+        # any degenerate case where neither endpoint is hit.
+        i = a
+        for _ in range(7):
+            days.add(i)
+            if i == b:
+                return
+            i = (i + 1) % 7
+
+    for m in _FULL_DAY_RANGE_RE.finditer(text):
+        a = _DAY_MAP[m.group(1).lower()]
+        b = _DAY_MAP[m.group(2).lower()]
+        _add_range(a, b)
+
+    for m in _LETTER_DAY_RANGE_RE.finditer(text):
+        a = _LETTER_TO_WEEKDAY[m.group(1)]
+        b = _LETTER_TO_WEEKDAY[m.group(2)]
+        _add_range(a, b)
+
+    return days
+
 
 # ── Force-low danger patterns ─────────────────────────────────────────────────
 #
@@ -2241,9 +2289,42 @@ def parse_schedule(text, api_key=None, now_dt=None, customer_id=None, cfg=None):
     # "Thu 6am → Fri 4am", LLM hallucinated "Thu 6am → Sat 4am"). Reject
     # any LLM weekday that's NOT in the source text mentions AND NOT
     # already covered by the regex result. Such days are inventions.
+    #
+    # Two refinements over a naive `mentioned - covered` check:
+    #   (a) Expand DAY-DAY ranges in the source text. "Mon-Fri 06:00-16:00 CDT"
+    #       only NAMES Mon and Fri; without expansion, the gate would reject a
+    #       valid LLM rescue that correctly returns Tue/Wed/Thu when the regex
+    #       choked on the timezone suffix.
+    #   (b) Reject — separately and earlier — any LLM result that covers an
+    #       explicitly-off day. "Mon-Wed 6am-4pm; no run Thursday" puts Thu
+    #       in `mentioned_weekdays`, so a Thursday hallucination would otherwise
+    #       slip through the invented-day check.
     llm_covered_weekdays = _entry_weekdays_covered(llm_entries)
+
+    # (b) Off-day intrusion guard — runs first and bails out unconditionally.
+    off_day_intrusions = llm_covered_weekdays & off_mention_weekdays
+    if off_day_intrusions:
+        intruded_names = sorted(_DAY_ABBREV[d] for d in off_day_intrusions)
+        logger.warning(
+            f"LLM rescue rejected — extended into explicitly off day(s) "
+            f"{', '.join(intruded_names)}. Keeping regex result."
+        )
+        combined_notes = (
+            [f"  LLM rescue rejected — covered explicit off-day(s): "
+             f"{', '.join(intruded_names)}. Kept regex result."]
+            + rx_notes + llm_notes
+        )
+        return rx_entries, rx_confidence, combined_notes, "regex"
+
+    # (a) Range-aware "what the source mentions" set. Includes weekdays
+    #     implied by Mon-Fri / M-F style ranges; excludes off-day mentions.
+    range_implied_weekdays = _expand_text_day_ranges(cleaned_for_count)
+    gate_mentioned = (
+        mentioned_weekdays | range_implied_weekdays
+    ) - off_mention_weekdays
+
     invented_weekdays = (
-        llm_covered_weekdays - mentioned_weekdays - rx_covered_weekdays
+        llm_covered_weekdays - gate_mentioned - rx_covered_weekdays
     )
     if invented_weekdays:
         invented_names = sorted(_DAY_ABBREV[d] for d in invented_weekdays)
