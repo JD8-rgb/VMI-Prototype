@@ -211,6 +211,29 @@ def _parsed_strs_to_entry(start_str, end_str):
     return (wd_s, h_s, end_in_day_offset)
 
 
+def _entries_overlap_pairs(entries):
+    """Detect overlapping (weekday, start_h, end_h) windows by converting
+    each to absolute hours from week start (Mon 00:00). This handles
+    multi-day windows correctly — e.g. (0, 6, 40) [Mon-Tue] and
+    (1, 6, 64) [Tue-Thu] map to abs ranges [6, 40] and [30, 88], which
+    overlap on [30, 40]. Returns 1-based (i, j) row index pairs.
+
+    The simple per-weekday check used previously missed these cross-day
+    overlaps because the windows had different `weekday` fields even
+    though their actual hour ranges intersected.
+    """
+    abs_ranges = [(int(wd) * 24 + int(sh), int(wd) * 24 + int(eh))
+                  for wd, sh, eh in entries]
+    pairs = []
+    for i in range(len(abs_ranges)):
+        for j in range(i + 1, len(abs_ranges)):
+            s_i, e_i = abs_ranges[i]
+            s_j, e_j = abs_ranges[j]
+            if s_i < e_j and s_j < e_i:
+                pairs.append((i + 1, j + 1))
+    return pairs
+
+
 def _has_fractional_minutes(s) -> bool:
     """True if `s` is a Day+time string whose time component carries
     a non-zero minute value (e.g. "Mon 6:30am", "Tue 14:45").
@@ -2133,39 +2156,12 @@ if _pending_lc:
                     for _n in _pending_lc["notes"]:
                         st.markdown(f"- {_n.strip()}")
 
-        # Overlap check — runs on every rerender before the button row so
-        # the error appears inline (no click required) and disables apply.
-        def _find_overlaps(rows):
-            """Return 1-based (i, j) pairs for rows whose windows overlap."""
-            parsed = []
-            for row in rows:
-                e = _parsed_strs_to_entry(row.get("Start"), row.get("End"))
-                if e is not None:
-                    parsed.append(e)
-            pairs = []
-            for i in range(len(parsed)):
-                for j in range(i + 1, len(parsed)):
-                    wd_i, s_i, e_i = parsed[i]
-                    wd_j, s_j, e_j = parsed[j]
-                    if wd_i != wd_j:
-                        continue
-                    if s_i < e_j and s_j < e_i:
-                        pairs.append((i + 1, j + 1))
-            return pairs
-
-        _overlap_pairs = _find_overlaps(_lc_edited)
-        if _overlap_pairs:
-            _pair_strs = ", ".join(f"rows {a}+{b}" for a, b in _overlap_pairs)
-            st.error(f"⛔ Overlapping windows detected ({_pair_strs}). "
-                     f"Fix before applying.")
-
         # Three-button row: confirm-and-apply, dismiss, or do nothing
         _lc_b1, _lc_b2, _lc_b3 = st.columns([2, 2, 5])
         with _lc_b1:
             if st.button("✓ Confirm & apply",
                           type="primary",
                           use_container_width=True,
-                          disabled=bool(_overlap_pairs),
                           key="lc_confirm_btn",
                           help="Apply the (possibly edited) entries as a "
                                "low-confidence merge. Other days' existing "
@@ -2180,6 +2176,20 @@ if _pending_lc:
                                                   _row.get("End"))
                     if _ent is not None:
                         _final_entries.append(_ent)
+
+                # Refuse to apply if any windows overlap. Validation
+                # runs ONLY on the click (not on every rerender) because
+                # data_editor doesn't commit values reliably during typing.
+                _overlaps = _entries_overlap_pairs(_final_entries)
+                if _overlaps:
+                    _pair_strs = ", ".join(f"rows {a}+{b}" for a, b in _overlaps)
+                    st.error(
+                        f"⛔ Did not apply — overlapping windows detected "
+                        f"({_pair_strs}). Edit the rows so each time range "
+                        f"is distinct, then click Apply again."
+                    )
+                    st.stop()
+
                 if _final_entries:
                     sim_now = run_hour_to_dt(data, data["current_run_hour"])
                     data, _r, _a = apply_schedule_to_data(
@@ -2577,6 +2587,18 @@ with sp_col:
             # touched; falls back to the original parser output if not.
             apply_entries = st.session_state.get(
                 "_edited_entries", entries) or entries
+
+            # Refuse to apply if any windows overlap (cross-day too).
+            _overlaps = _entries_overlap_pairs(apply_entries)
+            if _overlaps:
+                _pair_strs = ", ".join(f"rows {a}+{b}" for a, b in _overlaps)
+                st.error(
+                    f"⛔ Did not apply — overlapping windows detected "
+                    f"({_pair_strs}). Edit the rows so each time range "
+                    f"is distinct, then click Apply again."
+                )
+                st.stop()
+
             data, removed, added = apply_schedule_to_data(
                 data, apply_entries, now_dt=sim_now, mode=apply_mode
             )

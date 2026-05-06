@@ -341,6 +341,37 @@ def forecast(state, target_week_start_run_hour: float,
 
 # ── Augmented schedule for the integrated 12-day projection ─────────────────
 
+def _compute_forecast_cutoff(state, current_run_hour: float) -> float:
+    """Forecast starts at Monday 06:00 of the week immediately AFTER the
+    latest scheduled week.
+
+    Anchor week = the week containing the END of the latest future-going
+    window. End-of-window (not start) is the right boundary for windows
+    that span multiple weeks — e.g. a single Mon→Sat window covering
+    two weeks should be considered to "scheduled" both weeks. Forecast
+    cutoff = Monday 06:00 of (anchor_week + 7 days). If no future windows
+    exist, anchor = current sim-time so forecast starts Mon 06:00 of
+    next calendar week.
+
+    This guarantees forecast NEVER overlaps any week the operator has
+    touched: scheduled weeks own their own destiny (with gaps as
+    intentional down-time), forecast only fills the un-scheduled future.
+    """
+    from time_utils import run_hour_to_dt, dt_to_run_hour
+    future_ends = [w.end_hour for w in state.run_schedule
+                   if w.end_hour > current_run_hour]
+    if future_ends:
+        anchor_dt = run_hour_to_dt(state, max(future_ends))
+    else:
+        anchor_dt = run_hour_to_dt(state, current_run_hour)
+
+    anchor_week_mon = (anchor_dt - timedelta(days=anchor_dt.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    forecast_start_dt = anchor_week_mon + timedelta(days=7, hours=6)
+    return dt_to_run_hour(state, forecast_start_dt)
+
+
 def build_augmented_data(data: Dict[str, Any], cfg: PlantConfig = DEFAULT_CONFIG,
                           hours: int = 288) -> Tuple[Dict[str, Any], float]:
     """Extend data["run_schedule"] with forecast-derived run windows for
@@ -367,13 +398,11 @@ def build_augmented_data(data: Dict[str, Any], cfg: PlantConfig = DEFAULT_CONFIG
     current = float(state.current_run_hour)
     end_hour = current + hours
 
-    # Cutoff = end of latest parsed window after now. None means no
-    # future-going windows; cutoff = now.
-    future_window_ends = [
-        float(w.end_hour) for w in state.run_schedule
-        if w.end_hour > current
-    ]
-    cutoff = max(future_window_ends) if future_window_ends else current
+    # Cutoff = Monday 06:00 of the week AFTER the latest scheduled week.
+    # See _compute_forecast_cutoff() for the rule. The chart draws SOLID
+    # up to this cutoff (operator's domain — entered windows or down-time
+    # within a scheduled week) and DOTTED beyond it (forecast).
+    cutoff = _compute_forecast_cutoff(state, current)
 
     # If the parsed schedule already covers the full chart horizon,
     # no augmentation needed.
@@ -402,9 +431,13 @@ def build_augmented_data(data: Dict[str, Any], cfg: PlantConfig = DEFAULT_CONFIG
     forecast_windows: List[Dict[str, Any]] = []
     cutoff_dt = run_hour_to_dt(state, cutoff)
     end_dt    = run_hour_to_dt(state, end_hour)
-    # Start from the next 00:00 boundary at or after cutoff
+    # Start at cutoff's date, but only skip to the next day if cutoff is
+    # PAST today's 06:00 window-start. When cutoff == Mon 06:00 (the new
+    # default), this keeps day_dt at Monday so the first forecast window
+    # begins exactly at Mon 06:00 instead of being pushed to Tuesday.
     day_dt = cutoff_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    if day_dt < cutoff_dt:
+    _today_window_start = day_dt.replace(hour=6)
+    if cutoff_dt > _today_window_start:
         day_dt = day_dt + timedelta(days=1)
 
     while day_dt < end_dt:

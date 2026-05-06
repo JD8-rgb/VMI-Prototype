@@ -86,11 +86,15 @@ def test_holidays_in_forecast_period_skip_those_dates(defaults_dict):
 
 
 def test_empty_run_schedule_is_safe(defaults_dict):
-    """No parsed run windows at all — the function should not crash;
-    cutoff should equal current_run_hour (no future-going windows)."""
+    """No parsed run windows at all — the function should not crash.
+    With the new "Mon 06:00 of next un-scheduled week" cutoff rule,
+    cutoff is Mon 06:00 of next calendar week (not current_run_hour
+    as in the pre-fix behavior)."""
     d = _make_state(defaults_dict, run_schedule=[])
     aug, cutoff = build_augmented_data(d, hours=288)
-    assert cutoff == 0.0
+    # Fixture: simulation_epoch = Mon 2026-05-04, current_run_hour = 0.
+    # Anchor = now = Mon May 4. Forecast cutoff = Mon May 11 06:00 = 174 h.
+    assert cutoff == 174.0
     # forecast trucks may or may not be added (depends on whether
     # the forecaster falls back to a baseline) — what matters is
     # we didn't crash and we returned a valid dict.
@@ -145,22 +149,28 @@ def test_missing_truck_quantity_falls_back_to_default(defaults_dict):
 
 
 def test_cutoff_equals_end_hour_yields_zero_forecast_trucks(defaults_dict):
-    """If the parsed schedule's last window ends exactly at the chart
-    end_hour, the forecast period has zero hours and we emit nothing."""
+    """A parsed window covering the entire chart horizon should leave
+    no room for forecast trucks. With the new "Mon 06:00 of next
+    un-scheduled week" rule, the cutoff lands PAST the chart's
+    end_hour because the 12-day window spans two weeks (May 4-10
+    and May 11-17), so cutoff = Mon May 18 06:00 = 342 h."""
     d = _make_state(defaults_dict,
                     run_schedule=[{'start_hour': 0, 'end_hour': 288, 'label': 'edge'}])
     aug, cutoff = build_augmented_data(d, hours=288)
-    assert cutoff == 288.0
+    # Cutoff is at or beyond chart end; no forecast period exists.
+    assert cutoff >= 288.0
     assert _forecast_trucks(aug) == []
 
 
 def test_no_future_windows_means_cutoff_equals_current(defaults_dict):
     """When all parsed windows are in the past (end_hour <= current),
-    cutoff falls back to current_run_hour — entire chart is forecast."""
+    forecast falls back to "Mon 06:00 of next calendar week relative
+    to now". For current_run_hour=200 (= Tue May 12 08:00), next
+    Mon 06:00 is Mon May 18 06:00 = 342 h."""
     d = _make_state(defaults_dict, current_run_hour=200.0)
     d['run_schedule'] = [{'start_hour': 6, 'end_hour': 22, 'label': 'past'}]
     aug, cutoff = build_augmented_data(d, hours=288)
-    assert cutoff == 200.0
+    assert cutoff == 342.0
 
 
 # ── Forecast trucks always within chart range ───────────────────────────────
