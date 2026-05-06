@@ -3438,8 +3438,8 @@ with st.expander("📋 Alert Rules Reference"):
 | Alert | Triggers when | Threshold |
 |---|---|---|
 | **Safety Stock** | Projected combined product level drops below threshold within the next {PROJECTION_WINDOW_HOURS} h | **{SAFETY_STOCK_LBS:,} lbs** combined per product |
-| **Overfill — Product M** | Delivery projected to exceed combined capacity of both M tanks | Truck qty > projected space across M-Tank1 + M-Tank2 (Product M spans both tanks) |
-| **Overfill — Product U** | Delivery projected to exceed the lowest U tank's available space | Truck qty > projected space in lowest U tank (Product U must fit in one tank) |
+| **Overfill (multi-tank product)** | Delivery projected to exceed combined capacity across the product's tanks | Truck qty > projected combined space across all tanks holding that product |
+| **Overfill (single-tank product)** | Delivery projected to exceed the assigned tank's available space | Truck qty > projected space in the lowest tank holding that product |
 | **Plant State Mismatch** | Plant is running when the schedule says it's down, or down when the schedule says it's running | **> {PLANT_STATE_MISMATCH_HOURS} hours** off-schedule (reads live telemetry in production) |
 | **Lead-Time Warning** | On-hand usable + scheduled inbound < demand for the next **{LEAD_TIME_HOURS} scheduled run hours** | — |
 | **Late Truck** | A scheduled truck has not arrived | **> {LATE_TRUCK_HOURS} hours** past scheduled arrival |

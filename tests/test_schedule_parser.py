@@ -11,12 +11,15 @@ per-category pass rates and a list of top failure modes.
 
 Usage
 -----
-    python test_schedule_parser.py                    # full sweep (regex + LLM)
-    python test_schedule_parser.py --regex-only       # offline, seconds
-    python test_schedule_parser.py --llm-only         # skip regex sweep
-    python test_schedule_parser.py --sample 100       # random subset
-    python test_schedule_parser.py --out results.csv  # CSV dump of failures
-    python test_schedule_parser.py --verbose          # print every failure
+    python -m tests.test_schedule_parser                    # full sweep (regex + LLM)
+    python -m tests.test_schedule_parser --regex-only       # offline, seconds
+    python -m tests.test_schedule_parser --llm-only         # skip regex sweep
+    python -m tests.test_schedule_parser --sample 100       # random subset
+    python -m tests.test_schedule_parser --out results.csv  # CSV dump of failures
+    python -m tests.test_schedule_parser --verbose          # print every failure
+
+(Direct path invocation `python tests/test_schedule_parser.py ...` also
+works — the harness puts the repo root on sys.path either way.)
 
 Exit code 0 on pass (>=99% regex + 100% must-pass LLM), 1 otherwise.
 """
