@@ -44,6 +44,7 @@
   "schedule_email_id": null,
   "schedule_parse_issue": null,
   "alerted_hashes": [],
+  "alert_log": [],
   "scheduled_trucks": [],
   "first_run_tour_complete": false,
   "run_schedule": [

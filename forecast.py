@@ -568,10 +568,13 @@ def _generate_forecast_trucks(state, fc, cutoff: float, end_hour: float,
             for t in new_trucks:
                 arrival = float(t.get("arrival_run_hour", 0.0))
                 # Defensive: only return trucks whose arrival lands in
-                # the forecast portion (cutoff, end_hour]. The planner
+                # the forecast portion [cutoff, end_hour). The planner
                 # respects week_start/week_end so this is belt-and-
-                # braces.
-                if arrival <= cutoff or arrival >= end_hour:
+                # braces. The cutoff bound is INCLUSIVE because cutoff
+                # is Mon 06:00 of the forecast week (often a configured
+                # delivery slot) — a truck arriving exactly at cutoff
+                # is a legitimate first-Monday-morning forecast truck.
+                if arrival < cutoff or arrival >= end_hour:
                     continue
                 tagged = {
                     "sap_order":        f"FORECAST-{forecast_idx:03d}",

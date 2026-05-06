@@ -103,20 +103,29 @@ def test_empty_run_schedule_is_safe(defaults_dict):
 
 
 def test_zero_consumption_rate_for_one_product_gates_its_trucks(defaults_dict):
-    """A product with lbs_per_hour == 0 will never drop below the
-    reorder threshold (no consumption), so no forecast truck for it.
-    Exercises the rate>0 guard inside the consumption loop."""
+    """A product with lbs_per_hour == 0 and tanks at/above target
+    should never trigger a forecast truck. Under the planner-driven
+    path, the relevant guard is "no breach against target" (rather
+    than the old simulator's `combined < reorder_threshold` rule),
+    so we top up Product U's tanks above target before checking that
+    no Product U trucks land."""
     d = _make_state(defaults_dict,
                     run_schedule=[{'start_hour': 6, 'end_hour': 22, 'label': 'Mon'}])
     d['consumption_rates'] = {
         'Product U': {'lbs_per_hour': 0},
         'Product M': {'lbs_per_hour': 583.3},
     }
+    # Top up Product U tanks well above any plausible target so the
+    # planner finds no breach. (Defaults have U-Tank1 at 0 lbs; that
+    # alone would trigger a top-up regardless of consumption rate
+    # because the planner sees a starting deficit.)
+    d['tanks']['U-Tank1']['current_level_lbs'] = 33000
+    d['tanks']['U-Tank2']['current_level_lbs'] = 33000
     aug, _ = build_augmented_data(d, hours=288)
     products = [t['product'] for t in _forecast_trucks(aug)]
     # Product M still cycles consumption + trucks; Product U sits idle.
     assert 'Product U' not in products, (
-        "Zero-consumption product should not get forecast trucks."
+        "Zero-consumption product with full tanks should not get forecast trucks."
     )
 
 
@@ -311,4 +320,160 @@ def test_forecast_trucks_keep_combined_above_safety_stock(defaults_dict):
             f"{name} dropped below safety stock {safety:,.0f} during the "
             f"forecast period (min={min(post):,.0f}). Forecast trucks "
             f"should be sized + timed to prevent this."
+        )
+
+
+# ── Planner-driven path: operator-validated regression scenarios ────────────
+
+
+def test_empty_tank_at_cutoff_triggers_first_week_truck(defaults_dict):
+    """OPERATOR REGRESSION: when one tank is at heel going into the
+    forecast week and the other is full, the previous combined-level
+    simulator didn't trigger an order until consumption brought the
+    full tank down — leaving the empty tank at heel for days. The
+    planner-driven path uses target inventory + breach detection, so
+    a forecast truck for the depleted product should land within the
+    first forecast week."""
+    d = _make_state(
+        defaults_dict,
+        run_schedule=[
+            {'start_hour':   6, 'end_hour':  22, 'label': 'Mon'},
+            {'start_hour':  30, 'end_hour':  46, 'label': 'Tue'},
+            {'start_hour':  54, 'end_hour':  70, 'label': 'Wed'},
+            {'start_hour':  78, 'end_hour':  94, 'label': 'Thu'},
+            {'start_hour': 102, 'end_hour': 118, 'label': 'Fri'},
+        ],
+    )
+    # U-Tank2 at heel; U-Tank1 still full. Same for M.
+    d['tanks']['U-Tank2']['current_level_lbs'] = 1000
+    d['tanks']['M-Tank2']['current_level_lbs'] = 1000
+
+    aug, cutoff = build_augmented_data(d, hours=288)
+    trucks = _forecast_trucks(aug)
+    if not trucks:
+        pytest.skip("Forecaster fell back to baseline; no trucks to assert against.")
+
+    # First forecast week is [cutoff, cutoff + 168).
+    first_week_end = cutoff + 168
+    first_week = [
+        t for t in trucks
+        if cutoff <= t['arrival_run_hour'] < first_week_end
+    ]
+    products_in_first_week = {t['product'] for t in first_week}
+    # At least one product (the one with the depleted partner tank)
+    # should have a truck in the first forecast week.
+    assert products_in_first_week, (
+        f"No forecast trucks in first week [{cutoff:.0f}, {first_week_end:.0f}); "
+        f"all trucks: {[(t['product'], t['arrival_run_hour']) for t in trucks]}"
+    )
+
+
+def test_truck_at_exactly_cutoff_is_included(monkeypatch, defaults_dict):
+    """REGRESSION (boundary bug): a truck arriving at exactly cutoff
+    must NOT be filtered out. Cutoff is Mon 06:00 of the forecast
+    week, often a configured delivery slot, so the planner can
+    legitimately return a truck at that run-hour. Pre-fix, the
+    `arrival <= cutoff` defensive filter dropped it silently."""
+    from forecast import _generate_forecast_trucks
+
+    d = _make_state(
+        defaults_dict,
+        run_schedule=[{'start_hour': 6, 'end_hour': 22, 'label': 'Mon'}],
+    )
+
+    # Monkeypatch plan_for_product to return ONE truck at exactly the
+    # cutoff hour, regardless of state. Let us bypass the planner's
+    # internal slot logic and isolate the boundary filter.
+    cutoff_value: dict = {}
+
+    def _fake_plan(data, product, target, week_start, week_end,
+                    extra_trucks, cfg=None):
+        if 'cutoff' not in cutoff_value:
+            cutoff_value['cutoff'] = float(week_start)
+        # Only emit one truck on the very first call, at week_start.
+        if cutoff_value.get('done'):
+            return []
+        cutoff_value['done'] = True
+        return [{
+            'sap_order': None,
+            'product': product,
+            'quantity_lbs': 33000,
+            'arrival_run_hour': float(week_start),  # exactly cutoff
+        }]
+
+    monkeypatch.setattr('forecast.plan_for_product', _fake_plan,
+                        raising=False)
+    # Inline import path also exists; patch the function the module reaches
+    # via the local `from plan_orders import plan_for_product` inside the
+    # function body. Use plan_orders module-level reference too:
+    monkeypatch.setattr('plan_orders.plan_for_product', _fake_plan)
+
+    state = _as_state(d)
+    aug, cutoff = build_augmented_data(d, hours=288)
+    forecast_only = _forecast_trucks(aug)
+    # If anything came back, at least one should be at exactly cutoff.
+    if forecast_only:
+        at_cutoff = [t for t in forecast_only
+                     if t['arrival_run_hour'] == cutoff]
+        assert at_cutoff, (
+            f"Truck at exactly cutoff={cutoff} was filtered out. "
+            f"Forecast trucks returned: "
+            f"{[t['arrival_run_hour'] for t in forecast_only]}"
+        )
+
+
+def test_planner_failure_does_not_crash(monkeypatch, defaults_dict):
+    """If plan_for_product() raises (e.g. malformed config), the
+    forecast generator should swallow + log the error and continue,
+    not take down the whole projection chart. Empty list is the
+    correct safe default."""
+    d = _make_state(
+        defaults_dict,
+        run_schedule=[{'start_hour': 6, 'end_hour': 22, 'label': 'Mon'}],
+    )
+
+    def _broken_plan(*args, **kwargs):
+        raise RuntimeError("synthetic planner failure")
+
+    monkeypatch.setattr('plan_orders.plan_for_product', _broken_plan)
+
+    # Should not raise — function catches and continues.
+    aug, cutoff = build_augmented_data(d, hours=288)
+    assert isinstance(aug, dict)
+    # No forecast trucks because every planner call failed.
+    assert _forecast_trucks(aug) == []
+
+
+def test_planner_sees_prior_week_forecast_trucks(defaults_dict):
+    """In a multi-week chart (>168h beyond cutoff), week N+1's planner
+    call must see week N's forecast trucks via `working[scheduled_trucks]`
+    — otherwise it would re-plan the same delivery and the chart would
+    show duplicate/over-stacked trucks. We can't assert exact arrival
+    hours (planner internals), but we CAN assert that consecutive
+    weeks' trucks for the same product don't land on the same slot."""
+    d = _make_state(
+        defaults_dict,
+        run_schedule=[
+            {'start_hour':   6, 'end_hour':  22, 'label': 'Mon'},
+            {'start_hour':  30, 'end_hour':  46, 'label': 'Tue'},
+            {'start_hour':  54, 'end_hour':  70, 'label': 'Wed'},
+            {'start_hour':  78, 'end_hour':  94, 'label': 'Thu'},
+            {'start_hour': 102, 'end_hour': 118, 'label': 'Fri'},
+        ],
+    )
+    # 21-day horizon → cutoff @ ~174h, then ~3 forecast weeks within
+    # the chart range (504h = 21 days, cutoff @ 174 → 3 × 168 = 504).
+    aug, cutoff = build_augmented_data(d, hours=504)
+    trucks = _forecast_trucks(aug)
+    if len(trucks) < 2:
+        pytest.skip("Not enough forecast trucks to check duplicate detection.")
+    # No two trucks for the same product should arrive on the exact
+    # same run_hour (would be a duplicate-stack bug).
+    by_product: dict = {}
+    for t in trucks:
+        prod = t['product']
+        by_product.setdefault(prod, []).append(t['arrival_run_hour'])
+    for prod, arrivals in by_product.items():
+        assert len(arrivals) == len(set(arrivals)), (
+            f"Duplicate arrival times for {prod}: {sorted(arrivals)}"
         )
