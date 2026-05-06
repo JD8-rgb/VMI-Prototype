@@ -82,21 +82,29 @@ TOKENS = {
     "fill-receiving": "#22C55E",
 
     # ── Chart palette (Plotly traces — chart-only, no chrome use)
-    "chart-u-tank1":  "#1E3A8A",   # navy
-    "chart-u-tank2":  "#60A5FA",   # light blue
-    "chart-m-tank1":  "#0F766E",   # deep teal
-    "chart-m-tank2":  "#5EEAD4",   # light teal
 }
 
 
-# Public constants used by app.py to keep Plotly trace colors aligned with
-# the design tokens without importing the whole TOKENS dict.
-CHART_COLORS = {
-    "U-Tank1": TOKENS["chart-u-tank1"],
-    "U-Tank2": TOKENS["chart-u-tank2"],
-    "M-Tank1": TOKENS["chart-m-tank1"],
-    "M-Tank2": TOKENS["chart-m-tank2"],
-}
+# Customer-agnostic chart palette. Indexed by tank-position-in-customer
+# rather than by hard-coded tank name, so customers with topologies other
+# than Acme's 4-tank Product M / Product U setup get consistent colors
+# without theme.py needing to know their tank names.
+#
+# The previous CHART_COLORS dict (keyed by Acme's "U-Tank1" / "M-Tank2"
+# strings) was unused — Plotly was already falling through to its default
+# palette in practice. This palette is available for any chart that
+# wants a brand-aligned tank-color mapping; callers compute
+# `CHART_PALETTE[tank_index % len(CHART_PALETTE)]`.
+CHART_PALETTE = [
+    "#1E3A8A",  # navy
+    "#0F766E",  # deep teal
+    "#7C2D12",  # auburn
+    "#581C87",  # purple
+    "#60A5FA",  # light blue
+    "#5EEAD4",  # light teal
+    "#FB923C",  # orange
+    "#A78BFA",  # light purple
+]
 
 
 # ── CSS string ───────────────────────────────────────────────────────────────

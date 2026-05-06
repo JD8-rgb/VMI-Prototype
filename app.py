@@ -22,6 +22,7 @@ from alerts import (
     LEAD_TIME_HOURS, LATE_TRUCK_HOURS, PROJECTION_WINDOW_HOURS,
     PLANT_STATE_MISMATCH_HOURS,
 )
+from config import DEFAULT_CONFIG as _DEFAULT_CFG
 from plan_orders import (
     plan_for_product, get_target_week_bounds,
     get_target_for_week, get_run_hours_in_window,
@@ -327,9 +328,13 @@ def _switch_customer(new_customer_id: str) -> None:
 
     1. If currently on Acme, flush its in-flight mutations to data.json
        so we don't lose them.
-    2. Load the target customer's state into st.session_state.data.
-       For Acme: re-read data.json. For others: customers.load_customer().
-    3. Update st.session_state.current_customer.
+    2. Load the target customer's state AND its PlantConfig into
+       st.session_state. For Acme: re-read data.json + DEFAULT_CONFIG.
+       For others: customers.load_customer() returns (cfg, state_dict).
+    3. Re-anchor the simulation clock to wall-clock now, so a customer
+       JSON committed weeks ago doesn't display last-month timestamps.
+    4. Update st.session_state.current_customer + clear session caches
+       that key off "the active customer."
 
     The caller is responsible for st.rerun() after this returns.
     """
@@ -345,11 +350,18 @@ def _switch_customer(new_customer_id: str) -> None:
             pass
 
     if new_customer_id == "acme":
-        st.session_state.data = _initial_state()
+        st.session_state.data = _initial_state()    # already reanchors
+        st.session_state.cfg  = _DEFAULT_CFG        # Acme uses the defaults
     else:
         from customers import load_customer
-        _, _state_dict = load_customer(new_customer_id)
+        _cfg, _state_dict = load_customer(new_customer_id)
+        # Reanchor the new customer's simulation clock to wall-clock
+        # now — without this, switching to a customer whose JSON was
+        # committed weeks ago shows weeks-ago timestamps and misaligned
+        # schedule windows.
+        _state_dict = _reanchor_to_now(_state_dict)
         st.session_state.data = _state_dict
+        st.session_state.cfg  = _cfg
 
     st.session_state.current_customer = new_customer_id
     # Refresh the disk-mtime watchdog snapshot — we just wrote data.json
@@ -357,8 +369,13 @@ def _switch_customer(new_customer_id: str) -> None:
     # clobber the swap we just made.
     if _os_state.path.exists(_DATA_FILE):
         st.session_state._disk_mtime_seen = _os_state.path.getmtime(_DATA_FILE)
-    # Reset session-scoped caches that key off "the active customer"
-    for _k in ("_demo_data", "_demo_parsed"):
+    # Reset session-scoped caches that key off "the active customer".
+    # `_edited_entries` is the LOW-confidence editor's draft state; if
+    # the user edits Acme's schedule rows then switches before clicking
+    # Apply, those edits must NOT bleed into the new customer's editor.
+    # `parse_result` is the cached schedule-parse output. Both reset.
+    for _k in ("_demo_data", "_demo_parsed",
+                "_edited_entries", "parse_result"):
         st.session_state.pop(_k, None)
 
 def _reanchor_to_now(state):
@@ -434,9 +451,17 @@ if "view" not in st.session_state: st.session_state.view = "dashboard"
 
 # Active customer for the dashboard. Default = "acme" (the live demo).
 # Sidebar row click → _switch_customer() updates this and reloads
-# st.session_state.data from the appropriate source file.
+# st.session_state.data + st.session_state.cfg from the appropriate
+# source file.
 if "current_customer" not in st.session_state:
     st.session_state.current_customer = "acme"
+# Per-customer PlantConfig. Updated alongside `data` by
+# _switch_customer. Algorithm calls in the dashboard must always pass
+# `cfg=st.session_state.cfg` so a non-Acme customer's overrides
+# (lead_time_hours, safety_stock_lbs, plant_holidays, delivery_slots,
+# etc.) are honored instead of silently falling through to DEFAULT_CONFIG.
+if "cfg" not in st.session_state:
+    st.session_state.cfg = _DEFAULT_CFG
 
 data = st.session_state.data
 
@@ -446,7 +471,13 @@ data = st.session_state.data
 # the guided tour yet AND there's no history, backfill 4 weeks of synthetic
 # past so the chart is meaningful immediately. Idempotent: skipped on every
 # subsequent load because level_history is now populated.
-if (not data.get("level_history")
+#
+# Restricted to the live Acme customer: the demo tour and synthetic-history
+# bootstrap are part of Acme's first-run onboarding only. Switching to a
+# non-Acme customer must NOT re-trigger the modal or backfill its curated
+# state with Acme-style synthetic history.
+if (st.session_state.get("current_customer", "acme") == "acme"
+        and not data.get("level_history")
         and not data.get("first_run_tour_complete", False)):
     try:
         from demo_history import generate_demo_history
@@ -800,7 +831,8 @@ def _advance(data, hours, session_start_utc=None):
                     _sys.stdout = plan_cap
                     try:
                         new = plan_for_product(
-                            data, product, target, week_start, week_end, all_new
+                            data, product, target, week_start, week_end, all_new,
+                            cfg=st.session_state.cfg,
                         )
                     finally:
                         _sys.stdout = _old_stdout
@@ -1592,7 +1624,7 @@ def _demo_render_risk():
 
     # Current alerts on the LIVE data (these are real, not simulated)
     try:
-        _live_alerts = get_all_alerts(st.session_state.data)
+        _live_alerts = get_all_alerts(st.session_state.data, cfg=st.session_state.cfg)
     except Exception:
         _live_alerts = []
     if _live_alerts:
@@ -1710,7 +1742,10 @@ def _demo_render_plan():
             tgt = get_target_for_week(wrh, state=_ddata)
             _planned = []
             for prod in _ddata.get("consumption_rates", {}):
-                _planned.extend(plan_for_product(_ddata, prod, tgt, ws, we, _planned))
+                _planned.extend(plan_for_product(
+                    _ddata, prod, tgt, ws, we, _planned,
+                    cfg=st.session_state.cfg,
+                ))
             _ddata["scheduled_trucks"] = (
                 list(_ddata.get("scheduled_trucks", [])) + _planned
             )
@@ -1811,7 +1846,8 @@ def _streamlit_runtime_active():
     except Exception:
         return False
 
-if (not data.get("first_run_tour_complete", False)
+if (st.session_state.get("current_customer", "acme") == "acme"
+        and not data.get("first_run_tour_complete", False)
         and _streamlit_runtime_active()):
     _demo_tour()
 
@@ -1913,8 +1949,13 @@ with cl:
             key=f"ti_{name}",
         )
     if st.button("Apply Tank Levels", use_container_width=True):
+        _prev_levels = {n: data["tanks"][n]["current_level_lbs"]
+                         for n in tank_vals}
         for name, val in tank_vals.items():
             data["tanks"][name]["current_level_lbs"] = float(val)
+        _audit.record(data, _audit.A_TANK_LEVELS_APPLY,
+                       details={"prev": _prev_levels,
+                                 "new": {n: float(v) for n, v in tank_vals.items()}})
         st.success("Updated.")
         st.rerun()
 
@@ -1991,7 +2032,7 @@ st.divider()
 
 # ── Alerts ────────────────────────────────────────────────────────────────────
 
-alerts = get_all_alerts(data)
+alerts = get_all_alerts(data, cfg=st.session_state.cfg)
 n_alerts = len(alerts)
 st.subheader(f"🚨 Alerts {'(' + str(n_alerts) + ' active)' if n_alerts else ''}")
 if not alerts:
@@ -2043,8 +2084,12 @@ st.subheader("📈 12-Day Projection")
 # operator-parsed window with a dotted-line forecast period. cutoff
 # = end of last parsed run window (or now if no future windows). Solid
 # line up to cutoff; dotted line beyond.
-_augmented_data, _projection_cutoff = _build_augmented_data(data, hours=PROJECTION_CHART_HOURS)
-hist = compute_level_history(_augmented_data, hours=PROJECTION_CHART_HOURS)
+_augmented_data, _projection_cutoff = _build_augmented_data(
+    data, hours=PROJECTION_CHART_HOURS, cfg=st.session_state.cfg
+)
+hist = compute_level_history(
+    _augmented_data, hours=PROJECTION_CHART_HOURS, cfg=st.session_state.cfg
+)
 
 # Build product → [tank_name, ...] mapping from data["tanks"] so the
 # chart section works for any customer config, not just the Acme demo.
@@ -2077,7 +2122,9 @@ st.divider()
 # the shape so it doesn't take up vertical space.
 
 _fc_week_start, _fc_week_end = _gtwb(data)
-_fc_result = _forecast(data, target_week_start_run_hour=_fc_week_start)
+_fc_result = _forecast(
+    data, target_week_start_run_hour=_fc_week_start, cfg=st.session_state.cfg
+)
 
 _DAY_NAMES_FC = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 _fc_parts = []
@@ -2726,7 +2773,10 @@ with ap_col:
             for product in data["consumption_rates"]:
                 captured = io.StringIO()
                 with contextlib.redirect_stdout(captured):
-                    new = plan_for_product(data, product, target_lbs, week_start, week_end, all_new)
+                    new = plan_for_product(
+                        data, product, target_lbs, week_start, week_end, all_new,
+                        cfg=st.session_state.cfg,
+                    )
                 all_new.extend(new)
                 out = captured.getvalue().strip()
                 if out:
@@ -2741,6 +2791,9 @@ with ap_col:
             st.session_state.planned_trucks = all_new
             st.session_state.plan_reasoning = reasoning
             st.session_state.plan_log       = plan_log
+            _audit.record(data, _audit.A_PLAN,
+                           details={"trucks_proposed": len(all_new),
+                                     "products": list(data["consumption_rates"].keys())})
             if not all_new:
                 if plan_log:
                     # Planner hit a constraint — show what it found
@@ -2806,6 +2859,10 @@ with ap_col:
             st.session_state.planned_trucks = []
             st.session_state.plan_reasoning = []
             st.session_state.plan_log       = []
+            _audit.record(data, _audit.A_TRUCK_COMMIT,
+                           details={"saps": [t["sap_order"] for t in sorted_t],
+                                     "count": len(sorted_t),
+                                     "cs_email_status": cs_send_status})
             st.success(
                 f"Added {len(sorted_t)} truck(s) — "
                 f"SAP{next_n} through SAP{next_n + len(sorted_t) - 1}."
@@ -2887,7 +2944,7 @@ _logged_hashes_in_window = {
     e.get("hash") for e in (data.get("alert_log") or [])
     if e.get("hash") and _within_window(e.get("logged_at_iso"))
 }
-_current_alerts = get_all_alerts(data)
+_current_alerts = get_all_alerts(data, cfg=st.session_state.cfg)
 for _a in _current_alerts:
     if _alert_hash(_a.get("text", "")) in _logged_hashes_in_window:
         continue
@@ -3227,6 +3284,11 @@ with tab_nl:
                     "quantity_lbs": qty, "arrival_run_hour": arr_rh,
                 })
                 _record_sap(data, sap)
+                _audit.record(data, _audit.A_ADD_TRUCK,
+                               details={"sap": sap, "product": product,
+                                         "qty_lbs": qty,
+                                         "arrival_run_hour": arr_rh,
+                                         "via": "nl"})
                 st.success(f"Added {sap}: {product} — {qty:,} lbs arriving {display}")
                 st.rerun()
             except ValueError as e:
@@ -3262,6 +3324,11 @@ with tab_form:
                     "quantity_lbs": int(qty_in), "arrival_run_hour": arr_rh,
                 })
                 _record_sap(data, sap)
+                _audit.record(data, _audit.A_ADD_TRUCK,
+                               details={"sap": sap, "product": prod_in,
+                                         "qty_lbs": int(qty_in),
+                                         "arrival_run_hour": arr_rh,
+                                         "via": "form"})
                 st.success(f"Added {sap}.")
                 st.rerun()
 
@@ -3396,7 +3463,9 @@ with st.expander("🎛️ What-If Scenarios"):
     # Apply hypothetical target overrides for the projection chart
     wi_data["target_overrides"] = {"low": float(wi_low), "high": float(wi_high)}
 
-    wi_hist = compute_level_history(wi_data, hours=PROJECTION_CHART_HOURS)
+    wi_hist = compute_level_history(
+        wi_data, hours=PROJECTION_CHART_HOURS, cfg=st.session_state.cfg
+    )
 
     # ── Render: one chart per product so 3+-product customers work ────────
     _wi_products = list(wi_data.get("consumption_rates", {}).keys())
