@@ -303,6 +303,64 @@ from data_io import load_data as _load_data_state, save_data as _save_data_state
 _DATA_FILE   = "data.json"
 _disk_mtime  = _os_state.path.getmtime(_DATA_FILE) if _os_state.path.exists(_DATA_FILE) else None
 
+
+def _save_active_state(data) -> None:
+    """Persist mutations to disk — but only for the live Acme demo.
+
+    Stage 2 of the multi-customer roster: when a non-Acme customer is
+    selected via the sidebar, mutations to st.session_state.data stay
+    in-memory for the duration of that selection. Switching back to
+    Acme reloads its persisted state from data.json; switching to
+    another customer reloads it fresh from customers/<id>.json.
+
+    Trade-off: simulating actions on a non-Acme customer (advance
+    clock, add trucks, etc.) does not survive a customer-switch or
+    a page reload. This keeps the demo customer files clean and
+    prevents accidental overwrites of the curated example state.
+    """
+    if st.session_state.get("current_customer", "acme") == "acme":
+        _save_data_state(data, _DATA_FILE)   # underlying, not the wrapper
+
+
+def _switch_customer(new_customer_id: str) -> None:
+    """Sidebar customer-row click handler.
+
+    1. If currently on Acme, flush its in-flight mutations to data.json
+       so we don't lose them.
+    2. Load the target customer's state into st.session_state.data.
+       For Acme: re-read data.json. For others: customers.load_customer().
+    3. Update st.session_state.current_customer.
+
+    The caller is responsible for st.rerun() after this returns.
+    """
+    current = st.session_state.get("current_customer", "acme")
+    if current == "acme" and "data" in st.session_state:
+        # Flush Acme's pending mutations before swapping. Call the
+        # underlying save directly — _save_active_state would no-op
+        # in some edge cases here (we want to ensure Acme's state
+        # always lands on disk before we swap it out).
+        try:
+            _save_data_state(st.session_state.data, _DATA_FILE)
+        except Exception:
+            pass
+
+    if new_customer_id == "acme":
+        st.session_state.data = _initial_state()
+    else:
+        from customers import load_customer
+        _, _state_dict = load_customer(new_customer_id)
+        st.session_state.data = _state_dict
+
+    st.session_state.current_customer = new_customer_id
+    # Refresh the disk-mtime watchdog snapshot — we just wrote data.json
+    # (if leaving Acme) and any spurious reload after this point would
+    # clobber the swap we just made.
+    if _os_state.path.exists(_DATA_FILE):
+        st.session_state._disk_mtime_seen = _os_state.path.getmtime(_DATA_FILE)
+    # Reset session-scoped caches that key off "the active customer"
+    for _k in ("_demo_data", "_demo_parsed"):
+        st.session_state.pop(_k, None)
+
 def _reanchor_to_now(state):
     """Re-anchor simulation_epoch + current_run_hour so the displayed
     sim clock matches wall-clock "now" on every fresh app open.
@@ -339,9 +397,14 @@ def _initial_state():
 if "data" not in st.session_state:
     st.session_state.data = _initial_state()
     st.session_state._disk_mtime_seen = _disk_mtime
-elif _disk_mtime is not None and _disk_mtime != st.session_state.get("_disk_mtime_seen"):
+elif (st.session_state.get("current_customer", "acme") == "acme"
+        and _disk_mtime is not None
+        and _disk_mtime != st.session_state.get("_disk_mtime_seen")):
     # data.json changed under us (CLI mutation, manual edit, etc.).
-    # Reload so the dashboard reflects the on-disk truth.
+    # Reload so the dashboard reflects the on-disk truth. Only fires
+    # when the active customer IS Acme — for other customers, data.json
+    # holds Acme's persisted state, not theirs, so a mtime change
+    # there must NOT trigger a reload of the active customer's view.
     try:
         st.session_state.data = _load_data_state(_DATA_FILE)
         st.session_state._disk_mtime_seen = _disk_mtime
@@ -365,11 +428,15 @@ if "session_start_real_utc" not in st.session_state:
     from datetime import timezone as _tz_utc
     st.session_state.session_start_real_utc = datetime.now(_tz_utc.utc)
 
-# Customer roster / dashboard view toggle (Phase 2). Default: roster.
-# "Acme" is the live demo backed by data.json + defaults.json. The
-# other entries are static visual examples of multi-tenant scale —
-# clicking them does nothing (the click-to-run hint is on Acme).
-if "view" not in st.session_state: st.session_state.view = "roster"
+# View state. Today the only "view" is the dashboard; the customer
+# roster lives in the sidebar (always visible).
+if "view" not in st.session_state: st.session_state.view = "dashboard"
+
+# Active customer for the dashboard. Default = "acme" (the live demo).
+# Sidebar row click → _switch_customer() updates this and reloads
+# st.session_state.data from the appropriate source file.
+if "current_customer" not in st.session_state:
+    st.session_state.current_customer = "acme"
 
 data = st.session_state.data
 
@@ -384,22 +451,27 @@ if (not data.get("level_history")
     try:
         from demo_history import generate_demo_history
         generate_demo_history(data, weeks=4)
-        _save_data_state(data, _DATA_FILE)
+        _save_active_state(data)
     except Exception as _bootstrap_err:
         import sys
         print(f"[first-install-bootstrap] {_bootstrap_err}", file=sys.stderr)
 
 
-# ── Customer roster (landing page) ────────────────────────────────────────────
+# ── Customer roster (sidebar) ─────────────────────────────────────────────────
 #
-# Renders when view=="roster" and exits early. Click "Acme" → flips to
-# the dashboard view (the existing app below). Other entries are
-# decorative — they show what multi-tenant scale would look like, but
-# aren't backed by real state.
+# Always-visible left rail listing every customer with their name +
+# status signal + alert counts. Acme is the live demo (backed by
+# session_state.data). Other customers come from `customers/<id>.json`
+# via `customers.load_customer()`.
+#
+# Stage 1 — sidebar is purely visual: rows aren't clickable, the active
+# customer is fixed at Acme. Stage 2 will wire row-click → state-swap.
 
 def _roster_alert_count(d):
-    """Count of currently-firing alerts on the live data dict —
-    drives Acme's status indicator."""
+    """Count of currently-firing alerts on a state dict — drives the
+    sidebar status indicator. Returns (red, yellow) counts. Resilient
+    to alert-engine errors so a transient bug in one customer doesn't
+    blank out the whole sidebar."""
     try:
         from alerts import get_all_alerts as _gaa
         alerts = _gaa(d)
@@ -411,115 +483,121 @@ def _roster_alert_count(d):
         return 0, 0
 
 
-def _render_roster():
-    st.markdown(
-        """
-        <div style="padding:1.5rem 0 0.5rem;">
-            <div style="font-size:1.6rem;font-weight:700;color:#0F1629;
-                        font-family:'Inter',sans-serif;letter-spacing:-0.5px;
-                        line-height:1.1;">
-                🏭 &nbsp;VMI Automation
-            </div>
-            <div style="color:#475569;font-size:0.95rem;margin-top:0.4rem;">
-                Vendor-managed inventory — multi-customer roster.
-                Click <b>Customer 1 — Acme</b> to run the live demo.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown("<br>", unsafe_allow_html=True)
+def _customer_display_name(customer_id: str) -> str:
+    """Convert 'example_customer' → 'Example Customer' for sidebar display."""
+    return customer_id.replace("_", " ").title()
 
-    # Live: Acme — backed by data.json
-    _red, _yellow = _roster_alert_count(data)
-    if _red > 0:
-        _acme_chip = _chip_html(f"🔴 {_red} CRITICAL", "danger")
-    elif _yellow > 0:
-        _acme_chip = _chip_html(f"🟡 {_yellow} WARNING", "warning")
+
+def _render_sidebar_roster():
+    """Render the always-visible, interactive customer list in the
+    left sidebar.
+
+    Each row is a full-width Streamlit button styled by row state:
+      • Active row (== current_customer): primary type, disabled.
+      • Inactive row: secondary type, click swaps the active customer.
+
+    Caption below each button shows the alert counts ("2 red · 1
+    yellow" or "no alerts"). Status emoji (🔴/🟡/🟢) prefixes the name.
+    """
+    current = st.session_state.get("current_customer", "acme")
+
+    with st.sidebar:
+        st.markdown(
+            """<div style="font-size:1rem;font-weight:700;color:#0F172A;
+                          padding:0.5rem 0 0.75rem;letter-spacing:-0.2px;">
+                Customers
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+        # Build the customer list: Acme first, then everything else
+        # from the customers/ directory in alphabetical order.
+        try:
+            from customers import list_customers
+            _other_ids = [c for c in list_customers() if c != "acme"]
+        except Exception as _e:
+            import sys; print(f"[sidebar_roster] {_e}", file=sys.stderr)
+            _other_ids = []
+        _all_ids = ["acme"] + _other_ids
+
+        for _cid in _all_ids:
+            _is_active = (_cid == current)
+            _display   = "Acme Plastics" if _cid == "acme" \
+                          else _customer_display_name(_cid)
+            _r, _y = _alerts_for_sidebar_customer(_cid)
+            _render_sidebar_customer_row(_cid, _display, _r, _y, _is_active)
+
+
+def _alerts_for_sidebar_customer(customer_id: str):
+    """Return (red, yellow) alert counts for the sidebar row.
+
+    For the active customer, use the in-memory state (so counts reflect
+    live mutations). For inactive customers, load fresh from the
+    backing file. Errors return (0, 0) so a single broken customer
+    doesn't blank the whole sidebar."""
+    current = st.session_state.get("current_customer", "acme")
+    if customer_id == current:
+        return _roster_alert_count(data)
+    try:
+        if customer_id == "acme":
+            _state = _load_data_state(_DATA_FILE)
+        else:
+            from customers import load_customer
+            _, _state = load_customer(customer_id)
+        return _roster_alert_count(_state)
+    except Exception as _e:
+        import sys; print(f"[sidebar_alerts] {customer_id}: {_e}", file=sys.stderr)
+        return 0, 0
+
+
+def _render_sidebar_customer_row(customer_id: str, name: str,
+                                  red: int, yellow: int,
+                                  active: bool) -> None:
+    """One clickable sidebar row. Active row is disabled (you can't
+    click the customer you're already on). Inactive rows trigger
+    _switch_customer() + rerun on click."""
+    if red > 0:
+        _signal = "🔴"
+    elif yellow > 0:
+        _signal = "🟡"
     else:
-        _acme_chip = _chip_html("🟢 ALL CLEAR", "success")
+        _signal = "🟢"
 
-    # Examples — static for visual-scale demonstration. Chips are
-    # prefixed "DEMO" and rendered with a neutral 'info' style so they
-    # can't be mistaken for real alerts firing on these tenants.
-    _examples = [
-        {"name": "Customer 2",
-          "subtitle": "Example tenant — visualization only",
-          "chip": _chip_html("DEMO · 🟢 ALL CLEAR", "info")},
-        {"name": "Customer 3",
-          "subtitle": "Example tenant — visualization only",
-          "chip": _chip_html("DEMO · 🟡 1 WARNING", "info")},
-        {"name": "Customer 4",
-          "subtitle": "Example tenant — visualization only",
-          "chip": _chip_html("DEMO · 🔴 2 CRITICAL", "info")},
-    ]
+    if red == 0 and yellow == 0:
+        _count = "no alerts"
+    else:
+        _parts = []
+        if red:    _parts.append(f"{red} red")
+        if yellow: _parts.append(f"{yellow} yellow")
+        _count = " · ".join(_parts)
 
-    # Acme: live, clickable card. Use a Streamlit container with a
-    # dedicated button. Card visual is built with HTML for the right
-    # status chip + subtitle; the button below it handles the click.
-    with st.container(border=True):
-        _c1, _c2 = st.columns([5, 1])
-        with _c1:
-            st.markdown(
-                f"""
-                <div style="font-size:1.15rem;font-weight:600;
-                            color:#0F172A;line-height:1.4;">
-                    Customer 1 — Acme Plastics
-                </div>
-                <div style="color:#475569;font-size:0.85rem;margin-top:0.1rem;">
-                    Live demo customer · Mon 06:00 → Sat 04:00 shift · 4 tanks · 2 products
-                </div>
-                <div style="margin-top:0.6rem;">{_acme_chip}</div>
-                """,
-                unsafe_allow_html=True,
-            )
-        with _c2:
-            if st.button("▶ Open demo", key="open_acme",
-                          type="primary", use_container_width=True):
-                st.session_state.view = "dashboard"
-                st.rerun()
+    _label = f"{_signal}  {name}"
+    _btn_type = "primary" if active else "secondary"
+    _btn_help = ("Currently selected" if active
+                  else f"Switch to {name}")
 
-    # Three example cards — informational only
-    for _ex in _examples:
-        with st.container(border=True):
-            _c1, _c2 = st.columns([5, 1])
-            with _c1:
-                st.markdown(
-                    f"""
-                    <div style="font-size:1.05rem;font-weight:600;
-                                color:#475569;line-height:1.4;">
-                        {_ex["name"]}
-                    </div>
-                    <div style="color:#94A3B8;font-size:0.85rem;
-                                margin-top:0.1rem;">
-                        {_ex["subtitle"]}
-                    </div>
-                    <div style="margin-top:0.6rem;">{_ex["chip"]}</div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-            with _c2:
-                # Visually disabled — communicates "this is decoration"
-                st.button("View", key=f"view_{_ex['name']}",
-                           disabled=True, use_container_width=True,
-                           help="Demo placeholder — not connected to data.")
+    if st.sidebar.button(
+        _label,
+        key=f"customer_select_{customer_id}",
+        use_container_width=True,
+        type=_btn_type,
+        disabled=active,
+        help=_btn_help,
+    ):
+        _switch_customer(customer_id)
+        st.rerun()
 
-    st.markdown(
-        """
-        <div style="margin-top:1rem;color:#94A3B8;font-size:0.8rem;
-                    font-style:italic;">
-            Real customer onboarding is a JSON-config drop into <code>customers/</code>.
-            See <code>customers/example_customer.json</code> for the template
-            and <code>validate_customer.py</code> for the linter.
-        </div>
-        """,
+    # Alert-count caption under the button
+    st.sidebar.markdown(
+        f"""<div style="color:#94A3B8;font-size:0.78rem;
+                    margin:-0.4rem 0 0.7rem 0.65rem;">
+            {_count}
+        </div>""",
         unsafe_allow_html=True,
     )
 
 
-if st.session_state.view == "roster":
-    _render_roster()
-    st.stop()
+_render_sidebar_roster()
 
 
 # ── Advance simulation ────────────────────────────────────────────────────────
@@ -1696,7 +1774,7 @@ def _demo_finalize(*, apply: bool):
         st.session_state.data = st.session_state._demo_data
     st.session_state.data["first_run_tour_complete"] = True
     try:
-        _save_data_state(st.session_state.data, _DATA_FILE)
+        _save_active_state(st.session_state.data)
     except Exception as e:
         import sys
         print(f"[demo_finalize save] {e}", file=sys.stderr)
@@ -1737,16 +1815,6 @@ if (not data.get("first_run_tour_complete", False)
         and _streamlit_runtime_active()):
     _demo_tour()
 
-
-# "Back to roster" breadcrumb — visible only when we got here from the
-# roster page so the operator can return without using browser back.
-_back_col, _back_spacer = st.columns([1, 6])
-with _back_col:
-    if st.button("← Roster", key="back_to_roster",
-                  help="Return to the customer roster.",
-                  use_container_width=True):
-        st.session_state.view = "roster"
-        st.rerun()
 
 # Header — title row with Codebase tucked top-right, then centered Product Sheet CTA below
 _h_left, _h_right = st.columns([6, 1])
@@ -2077,7 +2145,7 @@ if _pending_lc and _applied_review_for_mutex:
             _audit.record(st.session_state.data, _audit.A_LC_PARSE_DISMISS,
                             details={"email_id": _email_id,
                                       "reason": "superseded_by_high_parse"})
-            _save_data_state(st.session_state.data, _DATA_FILE)
+            _save_active_state(st.session_state.data)
             st.rerun()
     _pending_lc = None   # suppress full LOW panel below
 if _pending_lc:
@@ -2236,7 +2304,7 @@ if _pending_lc:
                         )
                     except Exception:
                         pass
-                    _save_data_state(st.session_state.data, _DATA_FILE)
+                    _save_active_state(st.session_state.data)
                     st.success(
                         f"Confirmed: {_a and len(_a)} day(s) applied as merge "
                         f"({_r} old window(s) replaced). Week NOT marked "
@@ -2259,7 +2327,7 @@ if _pending_lc:
                 _audit.record(st.session_state.data,
                                 _audit.A_LC_PARSE_DISMISS,
                                 details={"email_id": _email_id_for_audit})
-                _save_data_state(st.session_state.data, _DATA_FILE)
+                _save_active_state(st.session_state.data)
                 st.rerun()
         with _lc_b3:
             st.caption(
@@ -2353,7 +2421,7 @@ if _applied_review:
                     _append_validation(email_id=_email_id_for_audit)
                 except Exception:
                     pass
-                _save_data_state(st.session_state.data, _DATA_FILE)
+                _save_active_state(st.session_state.data)
                 st.rerun()
         with _ar_b2:
             if st.button("✕ Dismiss",
@@ -2368,7 +2436,7 @@ if _applied_review:
                 _audit.record(st.session_state.data,
                                 "applied_parse_dismiss",
                                 details={"email_id": _email_id_for_audit})
-                _save_data_state(st.session_state.data, _DATA_FILE)
+                _save_active_state(st.session_state.data)
                 st.rerun()
         with _ar_b3:
             st.caption(
@@ -2907,7 +2975,7 @@ with _qf_col2:
                        details={"weeks": int(_qf_weeks),
                                 "snapshots_added": added,
                                 "mode": "backfill"})
-        _save_data_state(st.session_state.data, _DATA_FILE)
+        _save_active_state(st.session_state.data)
         st.toast(f"Backfilled {added} snapshots ({int(_qf_weeks)} weeks).",
                   icon="🎬")
         st.rerun()
@@ -3021,7 +3089,7 @@ with _toggle_col:
         st.session_state.data["vmi_automation_enabled"] = new_vmi
         _audit.record(st.session_state.data, _audit.A_VMI_TOGGLE,
                        details={"enabled": bool(new_vmi)})
-        _save_data_state(st.session_state.data, _DATA_FILE)
+        _save_active_state(st.session_state.data)
         st.rerun()
 
 # Bottom row: target sliders
@@ -3063,7 +3131,7 @@ with _apply_col:
         _audit.record(st.session_state.data, _audit.A_TARGET_APPLY,
                        details={"low": float(_new_low),
                                 "high": float(_new_high)})
-        _save_data_state(st.session_state.data, _DATA_FILE)
+        _save_active_state(st.session_state.data)
         st.rerun()
 with _reset_col:
     if st.button("↺ Reset",
@@ -3075,7 +3143,7 @@ with _reset_col:
         st.session_state.data["target_overrides"] = None
         _audit.record(st.session_state.data, _audit.A_TARGET_RESET,
                        details={"prior": _overrides or {}})
-        _save_data_state(st.session_state.data, _DATA_FILE)
+        _save_active_state(st.session_state.data)
         st.rerun()
 with _info_col:
     if _overrides is not None:
@@ -3112,7 +3180,7 @@ with _save_notes_col:
         st.session_state.data["customer_notes"] = _notes_text
         _audit.record(st.session_state.data, "customer_notes_save",
                        details={"length": len(_notes_text)})
-        _save_data_state(st.session_state.data, _DATA_FILE)
+        _save_active_state(st.session_state.data)
         st.rerun()
 with _notes_caption_col:
     if _notes_text == _existing_notes:
@@ -3624,7 +3692,7 @@ if st.session_state.pdf_bytes:
 # write. Save errors are surfaced as a warning rather than crashing the
 # UI — the operator can still see the dashboard even if disk is full.
 try:
-    _save_data_state(st.session_state.data, _DATA_FILE)
+    _save_active_state(st.session_state.data)
     if _os_state.path.exists(_DATA_FILE):
         st.session_state._disk_mtime_seen = _os_state.path.getmtime(_DATA_FILE)
 except Exception as _persist_err:
