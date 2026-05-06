@@ -57,10 +57,18 @@ def test_run_hours_silent_with_too_little_history(defaults_dict):
 
 
 def test_run_hours_fires_on_outlier(defaults_dict):
-    """3 weeks of 80h then 1 week of 200h → outlier."""
+    """3 weeks of 80h then 1 week of 160h → outlier.
+
+    The 160h is intentionally within the 168-hour-week ceiling so the
+    full duration lands in week 4. Earlier this test used a 200h window
+    that overflowed the week — the (now-fixed) bucketing bug attributed
+    the entire 200h to week 4, masking the overflow. After the fix in
+    `time_utils.distribute_window_across_days`, a multi-day window
+    correctly splits across weeks, so a true "single huge week" must
+    fit within 168 h."""
     sched = _multi_week_schedule(weeks=3)
-    # Week 4 has a single huge window (200h)
-    sched.append({"start_hour": 504.0, "end_hour": 704.0, "label": "huge"})
+    # Week 4 (Mon = run-hour 504) gets one near-continuous 160h window.
+    sched.append({"start_hour": 504.0, "end_hour": 664.0, "label": "huge"})
     d = _state_with_schedule(defaults_dict, sched)
     alerts = check_run_hours_unusual(d)
     assert len(alerts) == 1

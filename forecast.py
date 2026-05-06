@@ -32,26 +32,13 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from config import DEFAULT_CONFIG, PlantConfig
-from state import PlantState
+from state import PlantState, as_state
 
-
-def _as_state(data_or_state):
-    """Polymorphic dict→PlantState shim, inlined here.
-
-    Was `from alerts import _as_state` originally, but Streamlit Cloud
-    raised an opaque ImportError on the underscore-prefixed import even
-    though the symbol exists in alerts.py. Inlining removes the
-    cross-module dependency at import time. Behavior is identical to
-    alerts._as_state (which keeps its own copy for callers there).
-
-    KNOWN FRAGILITY: two implementations of the same shim can drift.
-    To fix: make `_as_state` a public function in state.py (rename to
-    `as_state`) so both alerts.py and forecast.py import from the same
-    source without triggering the Streamlit Cloud underscore-import bug.
-    """
-    if isinstance(data_or_state, PlantState):
-        return data_or_state
-    return PlantState.from_dict(data_or_state)
+# Single source of truth lives at `state.as_state` (public, no underscore
+# — sidesteps the Streamlit Cloud import bug that previously broke
+# `from alerts import _as_state` on cold-start). Local underscore alias
+# kept for back-compat with the existing in-module call sites.
+_as_state = as_state
 
 
 # ── Tunables (default values; PlantConfig will mirror these in Phase 8b) ────
@@ -308,7 +295,7 @@ def _bucket_run_schedule_by_week(state, target_week_start_run_hour: float | None
         affect next-week's prediction the same way the target-week
         window does).
     """
-    from time_utils import run_hour_to_dt
+    from time_utils import run_hour_to_dt, distribute_window_across_days
     target_monday_iso = None
     if target_week_start_run_hour is not None:
         target_dt = run_hour_to_dt(state, target_week_start_run_hour)
@@ -316,13 +303,15 @@ def _bucket_run_schedule_by_week(state, target_week_start_run_hour: float | None
             target_dt - timedelta(days=target_dt.weekday())
         ).date().isoformat()
     out: Dict[str, Dict[int, float]] = {}
+    # Multi-day and overnight-spanning windows must be split across the
+    # calendar days they actually cover; otherwise the seasonal model
+    # over-credits the start weekday and under-credits the rest.
     for window in state.run_schedule:
-        start_dt = run_hour_to_dt(state, window.start_hour)
-        monday = (start_dt - timedelta(days=start_dt.weekday())).date().isoformat()
-        if target_monday_iso is not None and monday == target_monday_iso:
-            continue
-        bucket = out.setdefault(monday, {d: 0.0 for d in range(7)})
-        bucket[start_dt.weekday()] += float(window.end_hour - window.start_hour)
+        for monday, weekday, hours in distribute_window_across_days(state, window):
+            if target_monday_iso is not None and monday == target_monday_iso:
+                continue
+            bucket = out.setdefault(monday, {d: 0.0 for d in range(7)})
+            bucket[weekday] += hours
     return out
 
 

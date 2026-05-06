@@ -19,7 +19,7 @@ next LEAD_TIME_HOURS of scheduled run time.
 import copy
 from time_utils import format_run_hour
 from config import DEFAULT_CONFIG, PlantConfig
-from state import PlantState
+from state import PlantState, as_state
 
 # Back-compat re-exports — deprecated in favor of passing a PlantConfig
 # instance to algorithm functions. Existing callers that import these
@@ -30,23 +30,11 @@ SAFETY_STOCK_LBS           = DEFAULT_CONFIG.safety_stock_lbs
 PROJECTION_WINDOW_HOURS    = DEFAULT_CONFIG.projection_window_hours
 PLANT_STATE_MISMATCH_HOURS = DEFAULT_CONFIG.plant_state_mismatch_hours
 
-
-def _as_state(data_or_state) -> PlantState:
-    """Polymorphic entry shim for the dict→dataclass migration.
-
-    Every public function in this module accepts either the legacy
-    `data` dict (loaded from data.json) OR a `PlantState` dataclass.
-    Internal code uses attribute access throughout. New code SHOULD
-    pass PlantState; old code (app.py, advance_time.py, the CLI
-    scripts) keeps working without changes.
-
-    The conversion is shallow-cheap: PlantState.from_dict walks the
-    top-level keys once. For hot loops, callers that already have a
-    PlantState should pass it directly to avoid the per-call walk.
-    """
-    if isinstance(data_or_state, PlantState):
-        return data_or_state
-    return PlantState.from_dict(data_or_state)
+# Back-compat re-export of the dict→PlantState shim. Canonical home is
+# `state.as_state`; callers (anomaly.py historically, others previously)
+# may still `from alerts import _as_state`. New code should import from
+# `state` directly.
+_as_state = as_state
 
 
 # ---------------------------------------------------------------------------

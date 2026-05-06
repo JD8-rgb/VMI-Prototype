@@ -2149,9 +2149,16 @@ def parse_schedule(text, api_key=None, now_dt=None, customer_id=None, cfg=None):
     the model gets nudged toward this customer's specific phrasings.
 
     Always returns (entries, confidence, notes, method) where method is
-    "regex" if the final result came from the regex parser, or "llm" if
-    the LLM rescue result was used. Use ``method`` to surface a warning
-    when a HIGH-confidence schedule was applied via LLM.
+    one of:
+      "regex"     — the regex result was used (LLM not called or rejected)
+      "llm"       — the LLM rescue improved on regex; LLM result is used
+      "llm_hint"  — regex returned nothing AND the LLM was gate-rejected;
+                    the LLM's windows are surfaced as a pre-fill HINT in
+                    the LOW-confidence review editor (operator must
+                    confirm before anything applies). Confidence is "low".
+    Use ``method`` to surface a warning when a HIGH-confidence schedule
+    was applied via LLM, or to label the editor when it's pre-filled
+    from a hinted LLM result.
     """
     # ── 1. Regex pass (always) ────────────────────────────────────────────
     rx_entries, rx_confidence, rx_notes = parse_schedule_text(text, now_dt=now_dt)

@@ -50,6 +50,14 @@ DEFAULTS_PATH = Path("defaults.json")
 CONFIG_PATH   = Path("email_config.json")
 APP_TIMEZONE  = "America/New_York"   # used for sim-clock anchor and display
 
+# How many hours forward the dashboard projection chart and the What-If
+# preview chart render. 288 = 12 days, matching the dashboard heading
+# ("📈 12-Day Projection") and the README. Distinct from
+# PROJECTION_WINDOW_HOURS (= cfg.projection_window_hours, default 168 / 7
+# days), which is the SAFETY-STOCK alert horizon — that's how far the
+# alert engine looks ahead, not how far the chart renders.
+PROJECTION_CHART_HOURS = 288
+
 
 def _get_anthropic_key():
     """
@@ -1967,8 +1975,8 @@ st.subheader("📈 12-Day Projection")
 # operator-parsed window with a dotted-line forecast period. cutoff
 # = end of last parsed run window (or now if no future windows). Solid
 # line up to cutoff; dotted line beyond.
-_augmented_data, _projection_cutoff = _build_augmented_data(data, hours=288)
-hist = compute_level_history(_augmented_data, hours=288)
+_augmented_data, _projection_cutoff = _build_augmented_data(data, hours=PROJECTION_CHART_HOURS)
+hist = compute_level_history(_augmented_data, hours=PROJECTION_CHART_HOURS)
 
 # Build product → [tank_name, ...] mapping from data["tanks"] so the
 # chart section works for any customer config, not just the Acme demo.
@@ -3320,7 +3328,7 @@ with st.expander("🎛️ What-If Scenarios"):
     # Apply hypothetical target overrides for the projection chart
     wi_data["target_overrides"] = {"low": float(wi_low), "high": float(wi_high)}
 
-    wi_hist = compute_level_history(wi_data, hours=240)
+    wi_hist = compute_level_history(wi_data, hours=PROJECTION_CHART_HOURS)
 
     # ── Render: one chart per product so 3+-product customers work ────────
     _wi_products = list(wi_data.get("consumption_rates", {}).keys())

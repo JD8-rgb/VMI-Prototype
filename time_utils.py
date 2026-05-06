@@ -46,6 +46,39 @@ def format_run_hour(data, run_hour):
     return dt.strftime(DISPLAY_FORMAT)
 
 
+def distribute_window_across_days(state, window):
+    """Split a run-window across the calendar days it touches.
+
+    Yields ``(week_monday_iso, weekday_int, hours)`` tuples — one per
+    calendar day the window spans — so multi-day and overnight-spanning
+    windows attribute hours to each day they actually run, not just the
+    start day. Total hours across yielded tuples equals the window's
+    duration.
+
+    Used by `forecast.py:_bucket_run_schedule_by_week` (per-weekday
+    seasonal model) and `anomaly.py:_weekly_run_hours_history` (per-week
+    totals — week boundary is the relevant split there). Single source
+    of truth so the two callers can't drift.
+
+    Empty windows (start_hour == end_hour) yield nothing.
+    """
+    start_dt = run_hour_to_dt(state, window.start_hour)
+    end_dt   = run_hour_to_dt(state, window.end_hour)
+    cur = start_dt
+    while cur < end_dt:
+        next_midnight = (cur + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        slice_end = min(next_midnight, end_dt)
+        hours = (slice_end - cur).total_seconds() / 3600.0
+        if hours > 0:
+            monday_iso = (
+                cur - timedelta(days=cur.weekday())
+            ).date().isoformat()
+            yield (monday_iso, cur.weekday(), hours)
+        cur = slice_end
+
+
 # Implausible run-hour magnitude. The simulation runs in hours; anything
 # above ~5 years (43,800 hours) is almost certainly a date typo without
 # separators rather than a real duration. Reject so we don't silently

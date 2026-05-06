@@ -315,3 +315,23 @@ class PlantState:
         """Total drawable lbs across every tank, clamped at 0 per tank."""
         return sum(max(0.0, t.current_level_lbs - t.heel_lbs)
                    for t in self.tanks_for(product))
+
+
+# ── Public dict→PlantState shim ──────────────────────────────────────────────
+#
+# Single source of truth for the dict-or-state polymorphic conversion used
+# by alerts.py / forecast.py / anomaly.py / projection.py during the
+# dataclass migration. Public name (`as_state`, no underscore) sidesteps
+# the Streamlit Cloud import bug that previously affected `_as_state`.
+
+def as_state(data_or_state) -> "PlantState":
+    """Polymorphic entry shim for the dict→dataclass migration.
+
+    Accepts either the legacy `data` dict (loaded from data.json) OR a
+    `PlantState` dataclass; returns a `PlantState` either way. Cheap when
+    already a `PlantState` (no copy). Single source of truth — alerts.py,
+    forecast.py, anomaly.py, projection.py all import from here.
+    """
+    if isinstance(data_or_state, PlantState):
+        return data_or_state
+    return PlantState.from_dict(data_or_state)

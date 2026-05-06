@@ -52,15 +52,18 @@ from config import DEFAULT_CONFIG, PlantConfig
 
 def _weekly_run_hours_history(state) -> List[float]:
     """Total run hours per ISO-week from the current run_schedule.
-    Returns a list of weekly totals (ascending by week-of)."""
+    Returns a list of weekly totals (ascending by week-of).
+
+    Week-spanning windows (e.g. Sun 22:00 → Mon 06:00) are split at the
+    Monday boundary so each week's total reflects only the hours
+    actually scheduled in THAT week.
+    """
+    from time_utils import distribute_window_across_days
     by_week: Dict[str, float] = {}
-    from time_utils import run_hour_to_dt
     for w in state.run_schedule:
-        start_dt = run_hour_to_dt(state, w.start_hour)
-        # Bucket by Monday of that week
-        monday = (start_dt - timedelta(days=start_dt.weekday())).date().isoformat()
-        by_week.setdefault(monday, 0.0)
-        by_week[monday] += float(w.end_hour - w.start_hour)
+        for monday, _, hours in distribute_window_across_days(state, w):
+            by_week.setdefault(monday, 0.0)
+            by_week[monday] += hours
     return [hrs for _, hrs in sorted(by_week.items())]
 
 
