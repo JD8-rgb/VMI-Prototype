@@ -1497,7 +1497,11 @@ def _demo_advance_clock_to_friday(_ddata):
 
 def _demo_render_risk():
     st.markdown("**Step 1 of 3 — ⚠️ Risk Detected**")
-    st.markdown("Your tank levels are dropping. The system has already flagged it.")
+    st.markdown(
+        "Your tank levels are dropping. The system has already flagged it and "
+        "alerted the larger distribution group by email — scheduler, backup, "
+        "operations, and shipping."
+    )
     st.divider()
 
     # Current alerts on the LIVE data (these are real, not simulated)
@@ -1577,7 +1581,7 @@ def _demo_render_parse():
     st.markdown("**Step 2 of 3 — 📧 Schedule Received & Parsed**")
     st.markdown(
         "It's now Friday morning. The system sent the weekly reminder; the "
-        "operator replied with next week's run schedule. Here's the email body:"
+        "customer replied with next week's schedule. Here's the email body:"
     )
     st.code(SIM_TEXT, language=None)
     st.success(f"✓ Parsed with **{conf.upper()}** confidence (method: `{method}`)")
@@ -1636,7 +1640,9 @@ def _demo_render_plan():
     if planned:
         st.markdown(
             "The planner ran against the parsed schedule and current tank "
-            "levels. Here's what it would order to keep you above safety stock:"
+            "levels. Here's what it would order to keep you above safety "
+            "stock. The schedule parsed with HIGH confidence, so these "
+            "trucks would be entered automatically."
         )
         for truck in planned:
             try:
@@ -3572,15 +3578,27 @@ with st.expander(
 
 if st.session_state.pdf_bytes:
     st.subheader("📄 CS Load Entry PDF")
-    b64 = base64.b64encode(st.session_state.pdf_bytes).decode()
-    st.components.v1.html(
-        f'<iframe src="data:application/pdf;base64,{b64}" '
-        f'width="100%" height="480px" '
-        f'style="border:1px solid #E2E8F0; border-radius:8px;"></iframe>',
-        height=500,
+    # Inline preview removed: Chrome (and most modern browsers) block
+    # data:application/pdf URLs inside iframes via CSP, leaving the
+    # operator with a gray "broken-image" panel. The download button
+    # works reliably across all browsers — make it the primary action
+    # and explain why there's no inline preview.
+    st.markdown(
+        "Your CS load-entry PDF is ready. Click below to open it in "
+        "your browser's PDF viewer."
     )
-    st.download_button("⬇️ Download PDF", data=st.session_state.pdf_bytes,
-                       file_name="cs_load_entry.pdf", mime="application/pdf")
+    st.download_button(
+        "⬇️ Download CS Load Entry PDF",
+        data=st.session_state.pdf_bytes,
+        file_name="cs_load_entry.pdf",
+        mime="application/pdf",
+        type="primary",
+        use_container_width=True,
+    )
+    st.caption(
+        "Inline preview is disabled — modern browsers block embedded "
+        "data-URL PDFs by default. Download to view."
+    )
 
 
 # ── Persist Streamlit-side mutations to data.json ─────────────────────────────
