@@ -1819,6 +1819,183 @@ def _demo_finalize(*, apply: bool):
     st.rerun()
 
 
+@st.dialog("✏️ Edit run windows", width="large")
+def _run_window_editor_dialog():
+    """Mid-week schedule override editor.
+
+    Renders 14 day-rows (this calendar week's Monday + next week's Sunday)
+    with editable Start/End time fields. The operator can:
+      - tweak any window's hours (shorter/longer shift)
+      - clear a row (no run that day)
+      - fill an empty row (add a new shift)
+
+    On Apply, every existing run_schedule window in the 14-day scope is
+    replaced with the rows the operator filled. Windows OUTSIDE the
+    scope (last-week history, week-3 lookahead) are preserved.
+
+    Constraints:
+      - One window per day max (overnight shifts go through the
+        Schedule Parser, which handles cross-midnight windows correctly).
+      - End must be after Start within the same day.
+      - Trucks are NOT auto-updated; operator adjusts those separately.
+    """
+    from read_schedule import (
+        apply_run_window_overrides,
+        _parse_time as _parse_time_token,
+    )
+
+    # Compute scope: this calendar week's Monday in sim-time + 14 days
+    _now_dt = run_hour_to_dt(data, data["current_run_hour"])
+    _week_monday = (_now_dt - timedelta(days=_now_dt.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    _scope_start_rh = dt_to_run_hour(data, _week_monday)
+    _scope_end_rh   = _scope_start_rh + 14 * 24
+
+    # Build 14 day-rows pre-filled with whatever's in run_schedule.
+    # Days with no window in scope start blank; days with overnight
+    # rollovers get a hint and are skipped on Apply (operator can
+    # use the Schedule Parser for those).
+    _rows = []
+    _overnight_days: list[str] = []
+    for _i in range(14):
+        _d = _week_monday + timedelta(days=_i)
+        _rows.append({
+            "Day":   _d.strftime("%a %b %d"),
+            "Start": "",
+            "End":   "",
+        })
+    for _w in data["run_schedule"]:
+        if not (_scope_start_rh <= _w["start_hour"] < _scope_end_rh):
+            continue
+        # Skip windows whose end is already in the past — can't usefully
+        # edit history.
+        if _w["end_hour"] <= data["current_run_hour"]:
+            continue
+        _rel_start = _w["start_hour"] - _scope_start_rh
+        _rel_end   = _w["end_hour"]   - _scope_start_rh
+        _scope_day = int(_rel_start // 24)
+        if not (0 <= _scope_day < 14):
+            continue
+        _start_h = int(_rel_start - _scope_day * 24)
+        _end_h   = int(_rel_end   - _scope_day * 24)
+        if _end_h > 24:
+            # Window spans midnight → can't fit in our same-day editor.
+            # Note it for the operator and leave the row blank so they
+            # don't clobber it accidentally on Apply.
+            _overnight_days.append(_rows[_scope_day]["Day"])
+            continue
+        # End at exactly 24:00 means the window ends at midnight; we
+        # store as "24:00" so the operator sees what they have.
+        _end_label = "24:00" if _end_h == 24 else f"{_end_h:02d}:00"
+        _rows[_scope_day]["Start"] = f"{_start_h:02d}:00"
+        _rows[_scope_day]["End"]   = _end_label
+
+    st.caption(
+        f"Showing run windows from **{_week_monday.strftime('%a %b %d')}** "
+        f"through **{(_week_monday + timedelta(days=13)).strftime('%a %b %d')}**. "
+        "Leave Start and End blank for days with no run. "
+        "Trucks are NOT auto-updated — adjust them separately if needed."
+    )
+    if _overnight_days:
+        st.warning(
+            "Existing overnight shift(s) on "
+            + ", ".join(sorted(set(_overnight_days)))
+            + " can't be edited here (cross-midnight windows). "
+            "Use the Schedule Parser for those, or click Cancel."
+        )
+
+    _edited = st.data_editor(
+        _rows,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        key="run_window_editor",
+        column_config={
+            "Day":   st.column_config.TextColumn("Day", disabled=True),
+            "Start": st.column_config.TextColumn(
+                "Start",
+                help="Time the run starts. e.g. '06:00' or '6am'. "
+                     "Leave blank if the plant is down that day."),
+            "End":   st.column_config.TextColumn(
+                "End",
+                help="Time the run ends. e.g. '16:00' or '4pm'. "
+                     "Must be after Start (same day)."),
+        },
+    )
+
+    # Validate + collect (scope_day, start_h, end_h) for filled rows
+    _edited_entries: list[tuple[int, int, int]] = []
+    _row_errors: list[tuple[str, str]] = []   # (day_label, reason)
+    for _i, _row in enumerate(_edited):
+        _s_str = (_row.get("Start") or "").strip()
+        _e_str = (_row.get("End")   or "").strip()
+        if not _s_str and not _e_str:
+            continue   # blank row → no run that day, skip
+        if not _s_str or not _e_str:
+            _row_errors.append((_row["Day"], "fill BOTH Start and End, or leave both blank"))
+            continue
+        _s_h = _parse_time_token(_s_str)
+        _e_h = _parse_time_token(_e_str)
+        if _s_h is None:
+            _row_errors.append((_row["Day"], f"can't parse Start '{_s_str}' — try '06:00' or '6am'"))
+            continue
+        if _e_h is None:
+            _row_errors.append((_row["Day"], f"can't parse End '{_e_str}' — try '16:00' or '4pm'"))
+            continue
+        if _e_h <= _s_h:
+            _row_errors.append((_row["Day"], f"End ({_e_str}) must be AFTER Start ({_s_str})"))
+            continue
+        _edited_entries.append((_i, int(_s_h), int(_e_h)))
+
+    # Show validation errors (max 3 to avoid overflowing the modal)
+    if _row_errors:
+        for _day, _reason in _row_errors[:3]:
+            st.error(f"**{_day}** — {_reason}")
+        if len(_row_errors) > 3:
+            st.caption(f"… and {len(_row_errors) - 3} more.")
+
+    # Diff caption: how many windows after edit vs before
+    _orig_filled = sum(1 for r in _rows if r["Start"] and r["End"])
+    _new_filled  = len(_edited_entries)
+    if _new_filled != _orig_filled and not _row_errors:
+        _diff = _new_filled - _orig_filled
+        _verb = "added" if _diff > 0 else "removed"
+        st.caption(
+            f"✏️ {_new_filled} window(s) after edit "
+            f"(was {_orig_filled} — {abs(_diff)} {_verb})"
+        )
+
+    _bcol1, _bcol2 = st.columns(2)
+    with _bcol1:
+        if st.button("Cancel", use_container_width=True, key="rwe_cancel"):
+            st.session_state._show_run_window_editor = False
+            st.rerun()
+    with _bcol2:
+        if st.button(
+            "Apply Changes",
+            use_container_width=True,
+            type="primary",
+            key="rwe_apply",
+            disabled=bool(_row_errors),
+        ):
+            _, _removed, _added = apply_run_window_overrides(
+                data, _edited_entries, _scope_start_rh, _scope_end_rh,
+            )
+            _audit.record(
+                data, _audit.A_SCHEDULE_OVERRIDE,
+                details={
+                    "scope_start_rh": _scope_start_rh,
+                    "scope_end_rh":   _scope_end_rh,
+                    "removed":        _removed,
+                    "added":          _added,
+                    "entries":        _edited_entries,
+                },
+            )
+            st.session_state._show_run_window_editor = False
+            st.rerun()
+
+
 @st.dialog("🏭 VMI Command Center — Quick Tour", width="large")
 def _demo_tour():
     if "_demo_step" not in st.session_state:
@@ -1846,10 +2023,20 @@ def _streamlit_runtime_active():
     except Exception:
         return False
 
+# Streamlit allows only ONE dialog per script run. The two triggers are
+# mutually exclusive via this elif chain: the demo tour takes precedence
+# (it's onboarding — gates everything else until dismissed); once
+# `first_run_tour_complete` is True, the run-window editor can open.
 if (st.session_state.get("current_customer", "acme") == "acme"
         and not data.get("first_run_tour_complete", False)
         and _streamlit_runtime_active()):
     _demo_tour()
+elif (st.session_state.get("_show_run_window_editor")
+        and _streamlit_runtime_active()):
+    # Mid-week schedule override dialog. Triggered by the "Edit run
+    # windows" button in the Auto-Planner panel; flag clears inside the
+    # dialog's Cancel / Apply handlers.
+    _run_window_editor_dialog()
 
 
 # Header — title row with Codebase tucked top-right, then centered Product Sheet CTA below
@@ -2762,6 +2949,32 @@ with ap_col:
                 f"{_ws_dt.strftime('%a')} {_ws_dt.month}/{_ws_dt.day}")
     ic2.metric("Scheduled run hrs", f"{week_rh:.0f} h")
     ic3.metric("Reorder target", f"{target_lbs:,.0f} lbs")
+
+    # Mid-week schedule override entry-point. Opens a dialog with this+next
+    # week's run windows in an editable grid. Disabled when a LOW-confidence
+    # parse is pending — those two paths shouldn't fight (operator should
+    # resolve the parse review first, then come back here for tweaks).
+    _pending_lc_present = bool(data.get("pending_low_confidence_parse"))
+    _ec1, _ec2 = st.columns([3, 5])
+    with _ec1:
+        if st.button(
+            "✏️ Edit run windows",
+            key="open_run_window_editor",
+            use_container_width=True,
+            disabled=_pending_lc_present,
+            help=("Resolve the pending schedule review first."
+                  if _pending_lc_present else
+                  "Edit current and next week's run windows directly. "
+                  "Use this when the customer changes their mid-week "
+                  "schedule. Trucks must be updated separately."),
+        ):
+            st.session_state._show_run_window_editor = True
+            st.rerun()
+    with _ec2:
+        st.caption(
+            "Customer changed schedule mid-week? Edit windows directly — "
+            "projection refreshes; trucks stay as-is."
+        )
 
     if week_rh == 0:
         st.warning("No run hours scheduled for the target week — apply a schedule first, then plan.")

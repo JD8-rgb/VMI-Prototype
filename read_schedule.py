@@ -2524,6 +2524,73 @@ def apply_schedule_to_data(data, entries, dry_run=False, now_dt=None,
     return data, removed, new_windows
 
 
+def apply_run_window_overrides(
+    data,
+    edited_entries,
+    scope_start_rh: float,
+    scope_end_rh: float,
+):
+    """Replace every run_schedule window whose start_hour falls in
+    [scope_start_rh, scope_end_rh) with the operator-edited list.
+
+    Used by the "Edit run windows" mid-week-update dialog. Distinct
+    from `apply_schedule_to_data`:
+      - that function targets the customer-provided schedule for the
+        upcoming week, sets `schedule_received_for_week`, and is the
+        terminal step of a parse-and-apply flow.
+      - this function targets ANY two-calendar-week scope around now,
+        is a manual operator edit (mid-week update). It does NOT touch
+        `schedule_received_for_week`, does NOT mark a fresh receipt,
+        and the operator is the audit subject.
+
+    Parameters
+    ----------
+    data : dict
+        State dict; mutated in place.
+    edited_entries : list of (scope_day, start_h, end_h)
+        `scope_day` is the day index relative to the scope start
+        (0 = scope_start_rh's calendar Monday, 13 = the Sunday two
+        weeks later). `start_h` and `end_h` are integer hours of that
+        scope_day, with `end_h > start_h` (overnight rollover into the
+        NEXT scope_day is supported by encoding end_h as 24-47 and
+        keeping start_h in 0-23 — same convention as
+        apply_schedule_to_data's day-range entries).
+    scope_start_rh, scope_end_rh : float
+        Half-open absolute-run-hour range. Windows whose `start_hour`
+        falls inside this range get replaced; windows whose start
+        falls outside are preserved verbatim.
+
+    Returns
+    -------
+    (data, removed_count, added_count)
+
+    Empty `edited_entries` IS allowed — it means "the customer cancelled
+    everything in this scope" (e.g. plant down all next week). The check
+    that prevents accidental empty applies lives in the dialog UI, not
+    here, so callers other than the dialog can use the helper for
+    legitimate full-clear scenarios.
+    """
+    # Convert (scope_day, start_h, end_h) → absolute run-hour windows.
+    # The scope's day-zero is `scope_start_rh` (callers compute this as
+    # the calendar Monday of the current week in sim-time).
+    new_windows = []
+    for scope_day, start_h, end_h in sorted(edited_entries):
+        new_windows.append({
+            "start_hour": float(scope_start_rh + scope_day * 24 + start_h),
+            "end_hour":   float(scope_start_rh + scope_day * 24 + end_h),
+            "label":      _DAY_ABBREV[scope_day % 7],
+        })
+
+    before = len(data["run_schedule"])
+    kept = [w for w in data["run_schedule"]
+             if not (scope_start_rh <= w["start_hour"] < scope_end_rh)]
+    removed = before - len(kept)
+    data["run_schedule"] = sorted(
+        kept + new_windows, key=lambda w: w["start_hour"]
+    )
+    return data, removed, len(new_windows)
+
+
 # ── Main fetch-and-apply function (importable) ────────────────────────────────
 
 def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc=None):
