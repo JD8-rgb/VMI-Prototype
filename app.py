@@ -584,9 +584,16 @@ def _alerts_for_sidebar_customer(customer_id: str):
 def _render_sidebar_customer_row(customer_id: str, name: str,
                                   red: int, yellow: int,
                                   active: bool) -> None:
-    """One clickable sidebar row. Active row is disabled (you can't
-    click the customer you're already on). Inactive rows trigger
-    _switch_customer() + rerun on click."""
+    """One sidebar row. Both rows are currently disabled buttons:
+    Acme (active) is primary-styled to communicate "this is the
+    customer you're looking at"; non-Acme rows are secondary-styled
+    and explicitly non-clickable to signal "platform supports more
+    customers, but only Acme is wired up live in this build."
+
+    The click→switch wiring exists in _switch_customer() and is left
+    intact; flipping `disabled=False` on non-Acme rows here would
+    re-enable interactive switching without any other changes.
+    """
     if red > 0:
         _signal = "🔴"
     elif yellow > 0:
@@ -605,16 +612,21 @@ def _render_sidebar_customer_row(customer_id: str, name: str,
     _label = f"{_signal}  {name}"
     _btn_type = "primary" if active else "secondary"
     _btn_help = ("Currently selected" if active
-                  else f"Switch to {name}")
+                  else "Demo customer — interactive switching is "
+                       "off in this build.")
 
+    # Both rows disabled: Acme because it's already selected; others
+    # because switching is intentionally off in this build.
     if st.sidebar.button(
         _label,
         key=f"customer_select_{customer_id}",
         use_container_width=True,
         type=_btn_type,
-        disabled=active,
+        disabled=True,
         help=_btn_help,
     ):
+        # Dead code path under disabled=True, kept so re-enabling
+        # interactive switching is a one-flag change.
         _switch_customer(customer_id)
         st.rerun()
 
