@@ -1973,7 +1973,7 @@ def _run_window_editor_dialog():
     scope (history, week-3 lookahead) are preserved.
 
     Operator affordances:
-      - Trash icon on each row deletes the window.
+      - Click a row to select, then press Delete to remove it.
       - "+ Add row" appends a blank row to fill in.
       - Day-name OR M/D OR both are accepted in the Start/End strings.
         Day-name alone picks the FIRST occurrence of that weekday in
@@ -2013,7 +2013,8 @@ def _run_window_editor_dialog():
         "Type each window as `Day M/D HH:MM` (e.g. `Mon 5/11 06:00`) — "
         "the day name OR the date alone also work. Multi-day shifts "
         "fit in ONE row (e.g. `Wed 5/13 06:00` → `Sat 5/16 04:00`). "
-        "Trash icon deletes a row. Trucks are NOT auto-updated."
+        "To remove a window, click its row to select then press Delete. "
+        "Trucks are NOT auto-updated."
     )
 
     _edited = st.data_editor(
