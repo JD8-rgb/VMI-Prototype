@@ -2580,19 +2580,41 @@ def apply_run_window_overrides(
     legitimate full-clear scenarios.
     """
     # Convert (scope_day, start_h, end_h) → absolute run-hour windows.
-    # The scope's day-zero is `scope_start_rh` (callers compute this as
-    # the calendar Monday of the current week in sim-time).
+    # `scope_day` is the 0-based offset from `scope_start_rh` (callers
+    # compute scope_start_rh as today-midnight in sim-time). `scope_day`
+    # CAN be negative when the editor pre-filled a spanning window that
+    # started before today (e.g. a Sun→Mon overnight surfaced on a
+    # Monday-anchored scope) — the start_hour math handles that
+    # correctly via float arithmetic.
+    #
+    # Label is the calendar weekday of the resolved start datetime, NOT
+    # `scope_day % 7` — the latter assumed scope_day=0 was Monday, which
+    # was true under the old Monday-anchored scope but breaks now that
+    # scope anchors to TODAY (could be any weekday).
     new_windows = []
     for scope_day, start_h, end_h in sorted(edited_entries):
+        _start_rh = float(scope_start_rh + scope_day * 24 + start_h)
+        _start_dt = time_utils.run_hour_to_dt(data, _start_rh)
         new_windows.append({
-            "start_hour": float(scope_start_rh + scope_day * 24 + start_h),
+            "start_hour": _start_rh,
             "end_hour":   float(scope_start_rh + scope_day * 24 + end_h),
-            "label":      _DAY_ABBREV[scope_day % 7],
+            "label":      _DAY_ABBREV[_start_dt.weekday()],
         })
 
+    # Removal uses an OVERLAP test, not start-in-scope. A window that
+    # started BEFORE scope_start_rh but extends INTO the scope (e.g. a
+    # Sun→Mon overnight when scope opens on Mon morning) overlaps with
+    # the editable scope and so is part of "what the operator is
+    # editing." Without overlap-based removal, a cleared editor would
+    # leave such tails in place — invisibly continuing to run.
     before = len(data["run_schedule"])
-    kept = [w for w in data["run_schedule"]
-             if not (scope_start_rh <= w["start_hour"] < scope_end_rh)]
+    kept = [
+        w for w in data["run_schedule"]
+        # Window is "outside" only if its END is at-or-before scope start
+        # OR its start is at-or-after scope end. Otherwise, it overlaps.
+        if w["end_hour"] <= scope_start_rh
+            or w["start_hour"] >= scope_end_rh
+    ]
     removed = before - len(kept)
     data["run_schedule"] = sorted(
         kept + new_windows, key=lambda w: w["start_hour"]

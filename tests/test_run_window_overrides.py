@@ -121,6 +121,57 @@ def test_empty_edited_entries_clears_scope_only():
     assert labels == {"last-week", "week-3"}
 
 
+def test_spanning_window_into_scope_is_removed_when_scope_cleared():
+    """Audit P1: a window whose start_hour is BEFORE scope_start but
+    whose end_hour is AFTER scope_start touches the editable scope
+    and must be removed when the operator clears the editor.
+
+    Pre-fix: the filter was `not (scope_start <= start_hour < scope_end)`,
+    which kept any window starting before scope. A Sun 22:00 → Mon
+    06:00 overnight opened on Mon morning would survive a 'clear all'
+    Apply, leaving the Mon-portion silently active.
+
+    Post-fix: overlap test removes any window that touches the scope."""
+    sched = [
+        # Spans into scope from 2 hours before scope_start (rh=-2 → rh=10)
+        {"start_hour": -2.0, "end_hour": 10.0, "label": "Sun-spans-in"},
+        {"start_hour": 24.0, "end_hour": 40.0, "label": "Tue-in-scope"},
+        # Fully outside scope (entirely before)
+        {"start_hour": -200.0, "end_hour": -150.0, "label": "way-back"},
+    ]
+    data = _state_with_schedule(sched)
+
+    # Operator clears all rows → empty edited_entries
+    _data, removed, added = apply_run_window_overrides(
+        data, [], scope_start_rh=0.0, scope_end_rh=14*24,
+    )
+    # Both the spanning AND the in-scope window are removed.
+    # The way-back window survives.
+    assert removed == 2
+    assert added   == 0
+    assert {w["label"] for w in data["run_schedule"]} == {"way-back"}
+
+
+def test_label_uses_calendar_weekday_not_scope_day():
+    """Audit P2a: the new windows' labels must reflect the calendar
+    weekday of their actual start datetime, not `scope_day % 7`. Under
+    the old code, scope_day=0 always rendered as 'Mon' regardless of
+    what calendar day scope_start_rh actually fell on."""
+    # Epoch is 2026-04-13 (Monday). If we call with scope_start_rh that
+    # points at Wednesday (rh=48 = Wed midnight), scope_day=0 should
+    # produce label='Wed', not 'Mon'.
+    data = _state_with_schedule([])
+
+    edited = [(0, 6, 16)]   # scope_day=0 at hour 6 to 16
+    _data, _r, _a = apply_run_window_overrides(
+        data, edited,
+        scope_start_rh=48.0,           # Wed midnight (epoch is Monday)
+        scope_end_rh=48.0 + 14*24,
+    )
+    assert len(data["run_schedule"]) == 1
+    assert data["run_schedule"][0]["label"] == "Wed"
+
+
 def test_windows_outside_scope_are_never_touched():
     """Editing this+next week must leave week-3 and prior weeks intact."""
     sched = [

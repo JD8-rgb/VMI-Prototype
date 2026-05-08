@@ -249,22 +249,39 @@ def _parse_scope_token(s, scope_start_dt, scope_days):
         return None
     day_parts = parts[:-1]
 
+    # Spanning-window back-tolerance: the editor surfaces windows that
+    # START before today but EXTEND into scope (e.g. a Sun→Mon overnight
+    # opened on Mon morning). Accepting dates up to 7 days before
+    # scope_start lets those windows render and parse without lying
+    # about their actual start. Dates further back are interpreted as
+    # year-rollover (operator typed "1/3" with scope_start in December).
+    _BACK_WINDOW_DAYS = 7
+
+    def _resolve_date(m, d):
+        try:
+            cand = scope_start_dt.replace(month=m, day=d)
+        except (ValueError, OverflowError):
+            return None
+        days_before = (scope_start_dt.date() - cand.date()).days
+        if days_before > _BACK_WINDOW_DAYS:
+            # Too far in the past relative to scope_start — operator
+            # almost certainly meant the same M/D in the next year
+            # (typical Dec→Jan boundary).
+            try:
+                cand = cand.replace(year=cand.year + 1)
+            except ValueError:
+                return None
+        return cand
+
     target_dt = None
     if len(day_parts) == 1:
         token = day_parts[0]
         if "/" in token:
             try:
                 m, d = (int(x) for x in token.split("/", 1))
-                target_dt = scope_start_dt.replace(month=m, day=d)
-            except (ValueError, OverflowError):
+            except ValueError:
                 return None
-            if target_dt.date() < scope_start_dt.date():
-                # Dec → Jan year rollover (operator typed "1/3" while
-                # scope_start is in late December).
-                try:
-                    target_dt = target_dt.replace(year=target_dt.year + 1)
-                except ValueError:
-                    return None
+            target_dt = _resolve_date(m, d)
         else:
             wd = _PARSER_DAY_TOKENS.get(token.lower().rstrip(",.;"))
             if wd is None:
@@ -282,21 +299,16 @@ def _parse_scope_token(s, scope_start_dt, scope_days):
             return None
         try:
             m, d = (int(x) for x in date_str.split("/", 1))
-            target_dt = scope_start_dt.replace(month=m, day=d)
-        except (ValueError, OverflowError):
+        except ValueError:
             return None
-        if target_dt.date() < scope_start_dt.date():
-            try:
-                target_dt = target_dt.replace(year=target_dt.year + 1)
-            except ValueError:
-                return None
+        target_dt = _resolve_date(m, d)
     else:
         return None
 
     if target_dt is None:
         return None
     scope_day = (target_dt.date() - scope_start_dt.date()).days
-    if not (0 <= scope_day < scope_days):
+    if not (-_BACK_WINDOW_DAYS <= scope_day < scope_days):
         return None
     return (scope_day, h)
 
@@ -1993,13 +2005,22 @@ def _run_window_editor_dialog():
     _SCOPE_DAYS     = 14
     _scope_end_rh   = _scope_start_rh + _SCOPE_DAYS * 24
 
-    # Pre-fill: every in-scope, future-going window becomes one row.
+    # Pre-fill: every window that OVERLAPS the editable scope, AND is
+    # not entirely in the past, becomes one row. Includes spanning
+    # windows that started before today but extend into scope (e.g. a
+    # Sun→Mon overnight opened on Mon morning) — without showing them,
+    # the operator could clear the row and inadvertently leave the
+    # spanning tail alive (the apply-side overlap test catches it,
+    # but the operator never saw what was being removed).
     _pre_rows = []
     for _w in data["run_schedule"]:
-        if not (_scope_start_rh <= _w["start_hour"] < _scope_end_rh):
-            continue
+        # Overlap: window touches scope range
+        if _w["end_hour"] <= _scope_start_rh:
+            continue   # entirely before scope
+        if _w["start_hour"] >= _scope_end_rh:
+            continue   # entirely after scope
         if _w["end_hour"] <= data["current_run_hour"]:
-            continue   # already past
+            continue   # entirely past (already consumed)
         _s_str, _e_str = _scope_window_to_strs(
             _w, _scope_start_rh, _today_midnight,
         )
@@ -3454,7 +3475,13 @@ else:
 # persist week-to-week via PlantState fields (target_overrides and
 # vmi_automation_enabled). Reset → back to cfg defaults / ON.
 
-from config import DEFAULT_CONFIG as _CFG
+# Read tunable bounds and target defaults from the ACTIVE customer's
+# config (st.session_state.cfg) — set by _switch_customer when the
+# operator selects a customer in the sidebar. For Acme this resolves
+# to DEFAULT_CONFIG; for any other customer it picks up the JSON's
+# config_overrides. Critical: don't pull from DEFAULT_CONFIG directly
+# here, otherwise non-Acme customers see Acme's tunable bounds.
+_CFG = st.session_state.cfg
 
 st.subheader("🎛️ VMI Controls")
 
@@ -3614,7 +3641,7 @@ with tab_nl:
             try:
                 product, arr_rh, display = _parse_nl(nl_text, data)
                 qty = data["truck_quantities"][product]
-                sap = _next_sap(data)
+                sap = _next_sap(data, cfg=st.session_state.cfg)
                 data["scheduled_trucks"].append({
                     "sap_order": sap, "product": product,
                     "quantity_lbs": qty, "arrival_run_hour": arr_rh,
@@ -3654,7 +3681,7 @@ with tab_form:
             if arr_rh < data["current_run_hour"] + 48:
                 st.error("Arrival must be at least 48 h from current time.")
             else:
-                sap = _next_sap(data)
+                sap = _next_sap(data, cfg=st.session_state.cfg)
                 data["scheduled_trucks"].append({
                     "sap_order": sap, "product": prod_in,
                     "quantity_lbs": int(qty_in), "arrival_run_hour": arr_rh,
