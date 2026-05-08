@@ -2003,9 +2003,9 @@ def _run_window_editor_dialog():
         _s_str, _e_str = _scope_window_to_strs(
             _w, _scope_start_rh, _today_midnight,
         )
-        _pre_rows.append({"Start": _s_str, "End": _e_str, "Delete": False})
+        _pre_rows.append({"Start": _s_str, "End": _e_str})
     if not _pre_rows:
-        _pre_rows = [{"Start": "", "End": "", "Delete": False}]
+        _pre_rows = [{"Start": "", "End": ""}]   # one blank starter row
 
     st.caption(
         f"Showing run windows from **{_today_midnight.strftime('%a %b %d')}** "
@@ -2013,8 +2013,7 @@ def _run_window_editor_dialog():
         "Type each window as `Day M/D HH:MM` (e.g. `Mon 5/11 06:00`) — "
         "the day name OR the date alone also work. Multi-day shifts "
         "fit in ONE row (e.g. `Wed 5/13 06:00` → `Sat 5/16 04:00`). "
-        "To remove a window, check its **Delete** box (or click the row "
-        "and press Delete on your keyboard). "
+        "To remove a window, click its row to select then press Delete. "
         "Trucks are NOT auto-updated."
     )
 
@@ -2022,7 +2021,7 @@ def _run_window_editor_dialog():
         _pre_rows,
         use_container_width=True,
         hide_index=True,
-        num_rows="dynamic",   # ← keyboard-Delete + add-row affordances
+        num_rows="dynamic",   # ← delete + add affordances
         key="run_window_editor",
         column_config={
             "Start": st.column_config.TextColumn(
@@ -2034,25 +2033,13 @@ def _run_window_editor_dialog():
                 "End",
                 help="Same format as Start. Can be a LATER day for "
                      "multi-day shifts. e.g. 'Sat 5/16 04:00'."),
-            "Delete": st.column_config.CheckboxColumn(
-                "Delete",
-                help="Check to remove this window when you click "
-                     "Apply Changes.",
-                default=False,
-                width="small",
-            ),
         },
     )
 
     # Parse + collect entries; record per-row errors for display.
-    # Rows with Delete=True are dropped silently (no error, no entry).
     _edited_entries: list[tuple[int, int, int]] = []
     _row_errors: list[tuple[int, str]] = []   # (1-based row idx, reason)
-    _marked_for_deletion = 0
     for _i, _row in enumerate(_edited):
-        if _row.get("Delete"):
-            _marked_for_deletion += 1
-            continue   # excluded from the result on Apply
         _s = (_row.get("Start") or "").strip()
         _e = (_row.get("End")   or "").strip()
         if not _s and not _e:
@@ -2069,12 +2056,6 @@ def _run_window_editor_dialog():
             )
             continue
         _edited_entries.append(ent)
-
-    if _marked_for_deletion:
-        st.caption(
-            f"🗑️ {_marked_for_deletion} row(s) marked for deletion — "
-            "click Apply Changes to commit."
-        )
 
     if _row_errors:
         for _idx, _reason in _row_errors[:3]:
