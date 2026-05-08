@@ -283,6 +283,29 @@ def test_age_zero_while_tank_stays_empty():
     assert capped is False
 
 
+def test_age_ignores_history_entries_in_the_future():
+    """Defensive: if level_history contains entries whose run_hour is
+    AFTER current_run_hour (happens when _reanchor_to_now shifts the
+    simulation_epoch and existing history is now interpreted relative
+    to a later anchor), those future entries must NOT be used to
+    compute age. Without the guard, max(0, negative) silently returns
+    0 and the chip lies about a "just refilled" state.
+
+    Scenario: history has a refill at rh=80 and a future-anchored
+    entry at rh=200; current_run_hour=100. Age should be measured
+    against the most recent reachable entry (the rh=80 refill),
+    yielding 100 - 80 = 20. The rh=200 entry is dropped."""
+    history = _make_history([
+        (10,  8000),
+        (50,  1500),    # dip
+        (80,  6000),    # refill — clock should anchor here
+        (200, 7000),    # FUTURE entry (after current_run_hour=100)
+    ])
+    age, capped = inventory_age_hours("T1", history, current_run_hour=100.0)
+    assert age == pytest.approx(20.0)
+    assert capped is False
+
+
 def test_age_after_two_dip_refill_cycles():
     """Tank dipped, refilled, dipped again, refilled again. Age = hours
     since the LAST refill (most-recent dip→refill transition)."""

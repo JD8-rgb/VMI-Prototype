@@ -110,11 +110,19 @@ def inventory_age_hours(
         - Empty history or tank absent from history → (0.0, True).
         - Tank always below threshold in history → (0.0, False).
     """
-    # Filter to entries that mention this tank, ordered oldest → newest
+    # Filter to entries that mention this tank, ordered oldest → newest.
+    # Drop entries whose run_hour is in the FUTURE relative to
+    # current_run_hour — that situation arises when level_history was
+    # anchored to a different simulation_epoch (e.g. _reanchor_to_now
+    # across week boundaries with stale history), and the entries are
+    # data we cannot meaningfully reason about. Without this filter,
+    # the age computation can silently clamp a negative value to 0 and
+    # report "just refilled" when actually the data anchor is wrong.
     relevant = [
         (float(e["run_hour"]), float(e["tanks"][tank_name]))
         for e in history
         if tank_name in e.get("tanks", {})
+        and float(e["run_hour"]) <= current_run_hour
     ]
     if not relevant:
         return (0.0, True)
