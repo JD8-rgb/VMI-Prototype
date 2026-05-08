@@ -222,6 +222,128 @@ def _parsed_strs_to_entry(start_str, end_str):
     return (wd_s, h_s, end_in_day_offset)
 
 
+def _parse_scope_token(s, scope_start_dt, scope_days):
+    """'Mon 06:00' / '5/11 06:00' / 'Mon 5/11 06:00' → (scope_day, hour) | None.
+
+    Used by the "Edit run windows" dialog to translate operator-typed
+    Start/End strings to a (scope_day_index, hour) tuple, where scope_day
+    is the 0-based day relative to `scope_start_dt`.
+
+    Variants accepted:
+      - 'Mon 06:00'      — picks the FIRST Monday in scope.
+      - '5/11 06:00'     — explicit M/D, year inferred from scope_start_dt.
+      - 'Mon 5/11 06:00' — both. Date is authoritative; the day name is
+                           accepted but not cross-validated against the date.
+
+    Returns None on parse failure or if the resolved date is outside
+    [scope_start_dt, scope_start_dt + scope_days).
+    """
+    from read_schedule import parse_time as _parse_time_token
+    if not s or not isinstance(s, str):
+        return None
+    parts = s.strip().split()
+    if len(parts) < 2:
+        return None
+    h = _parse_time_token(parts[-1])
+    if h is None:
+        return None
+    day_parts = parts[:-1]
+
+    target_dt = None
+    if len(day_parts) == 1:
+        token = day_parts[0]
+        if "/" in token:
+            try:
+                m, d = (int(x) for x in token.split("/", 1))
+                target_dt = scope_start_dt.replace(month=m, day=d)
+            except (ValueError, OverflowError):
+                return None
+            if target_dt.date() < scope_start_dt.date():
+                # Dec → Jan year rollover (operator typed "1/3" while
+                # scope_start is in late December).
+                try:
+                    target_dt = target_dt.replace(year=target_dt.year + 1)
+                except ValueError:
+                    return None
+        else:
+            wd = _PARSER_DAY_TOKENS.get(token.lower().rstrip(",.;"))
+            if wd is None:
+                return None
+            for offset in range(scope_days):
+                cand = scope_start_dt + timedelta(days=offset)
+                if cand.weekday() == wd:
+                    target_dt = cand
+                    break
+    elif len(day_parts) == 2:
+        # Either "Mon 5/11" or "5/11 Mon" — accept both orders.
+        a, b = day_parts
+        date_str = a if "/" in a else (b if "/" in b else None)
+        if date_str is None:
+            return None
+        try:
+            m, d = (int(x) for x in date_str.split("/", 1))
+            target_dt = scope_start_dt.replace(month=m, day=d)
+        except (ValueError, OverflowError):
+            return None
+        if target_dt.date() < scope_start_dt.date():
+            try:
+                target_dt = target_dt.replace(year=target_dt.year + 1)
+            except ValueError:
+                return None
+    else:
+        return None
+
+    if target_dt is None:
+        return None
+    scope_day = (target_dt.date() - scope_start_dt.date()).days
+    if not (0 <= scope_day < scope_days):
+        return None
+    return (scope_day, h)
+
+
+def _scope_strs_to_entry(s_str, e_str, scope_start_dt, scope_days):
+    """Wrapper that returns (scope_day, sh, eh_offset) for the
+    `apply_run_window_overrides` helper. Returns None on parse failure
+    or degenerate (zero-duration / end-before-start) windows.
+
+    `eh_offset` is hours past `scope_day`'s midnight, so a Wed→Sat
+    shift comes back as `(scope_day=2, sh=6, eh_offset=82)` for a Wed
+    06:00 → Sat 10:00 example — a single 76-hour multi-day window.
+    """
+    s_parsed = _parse_scope_token(s_str, scope_start_dt, scope_days)
+    e_parsed = _parse_scope_token(e_str, scope_start_dt, scope_days)
+    if s_parsed is None or e_parsed is None:
+        return None
+    s_day, s_h = s_parsed
+    e_day, e_h = e_parsed
+    if s_day == e_day and s_h == e_h:
+        return None    # degenerate
+    eh_offset = (e_day - s_day) * 24 + e_h
+    if eh_offset <= s_h:
+        return None    # end before/equal-to start
+    return (s_day, s_h, eh_offset)
+
+
+def _scope_window_to_strs(window, scope_start_rh, scope_start_dt):
+    """Format a run_schedule window as ('Mon 5/11 06:00', 'Sat 5/16 04:00')
+    for pre-filling editor rows. Inverse of _scope_strs_to_entry's input.
+
+    Day name comes from the calendar weekday of the resolved date so
+    the operator never sees a mismatched day-name + date pre-fill."""
+    rel_start = window["start_hour"] - scope_start_rh
+    s_day = int(rel_start // 24)
+    s_h   = int(rel_start - s_day * 24)
+    eh_offset = int(window["end_hour"] - scope_start_rh - s_day * 24)
+    e_day_offset, e_h = divmod(eh_offset, 24)
+    e_day = s_day + e_day_offset
+    s_dt = scope_start_dt + timedelta(days=s_day)
+    e_dt = scope_start_dt + timedelta(days=e_day)
+    return (
+        f"{_PARSER_DAYS[s_dt.weekday()]} {s_dt.month}/{s_dt.day} {s_h:02d}:00",
+        f"{_PARSER_DAYS[e_dt.weekday()]} {e_dt.month}/{e_dt.day} {e_h:02d}:00",
+    )
+
+
 def _entries_overlap_pairs(entries):
     """Detect overlapping (weekday, start_h, end_h) windows by converting
     each to absolute hours from week start (Mon 00:00). This handles
@@ -1837,148 +1959,126 @@ def _demo_finalize(*, apply: bool):
 def _run_window_editor_dialog():
     """Mid-week schedule override editor.
 
-    Renders 14 day-rows (this calendar week's Monday + next week's Sunday)
-    with editable Start/End time fields. The operator can:
-      - tweak any window's hours (shorter/longer shift)
-      - clear a row (no run that day)
-      - fill an empty row (add a new shift)
+    Dynamic-rows editor in the same shape as the LOW-confidence parse
+    review on the Schedule Parser page. Each row is a single window
+    expressed as Start/End strings (`Mon 5/11 06:00` → `Sat 5/16 04:00`).
+    Multi-day windows fit in one row.
+
+    Scope: 14 days starting from TODAY (the current sim-time calendar day
+    at midnight). Anchored to "now" rather than the calendar week's
+    Monday so the dialog re-anchors as the operator advances the clock.
 
     On Apply, every existing run_schedule window in the 14-day scope is
     replaced with the rows the operator filled. Windows OUTSIDE the
-    scope (last-week history, week-3 lookahead) are preserved.
+    scope (history, week-3 lookahead) are preserved.
 
-    Constraints:
-      - One window per day max (overnight shifts go through the
-        Schedule Parser, which handles cross-midnight windows correctly).
-      - End must be after Start within the same day.
-      - Trucks are NOT auto-updated; operator adjusts those separately.
+    Operator affordances:
+      - Trash icon on each row deletes the window.
+      - "+ Add row" appends a blank row to fill in.
+      - Day-name OR M/D OR both are accepted in the Start/End strings.
+        Day-name alone picks the FIRST occurrence of that weekday in
+        scope; date is unambiguous; date + day-name is most explicit.
+
+    Trucks are NOT auto-updated; the operator adjusts those separately.
     """
-    # Use the public `parse_time` alias; the underscore-prefixed name
-    # `_parse_time` triggers an opaque ImportError on Streamlit Cloud
-    # for cross-module imports (same bug previously seen with
-    # `_as_state` in alerts.py / forecast.py).
-    from read_schedule import apply_run_window_overrides, parse_time as _parse_time_token
+    from read_schedule import apply_run_window_overrides
 
-    # Compute scope: this calendar week's Monday in sim-time + 14 days
+    # Anchor scope to TODAY (sim-time calendar day at midnight) — NOT
+    # this calendar week's Monday. Without this, advancing the clock
+    # past Monday would still open the dialog showing last Monday as
+    # the first row.
     _now_dt = run_hour_to_dt(data, data["current_run_hour"])
-    _week_monday = (_now_dt - timedelta(days=_now_dt.weekday())).replace(
-        hour=0, minute=0, second=0, microsecond=0,
-    )
-    _scope_start_rh = dt_to_run_hour(data, _week_monday)
-    _scope_end_rh   = _scope_start_rh + 14 * 24
+    _today_midnight = _now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    _scope_start_rh = dt_to_run_hour(data, _today_midnight)
+    _SCOPE_DAYS     = 14
+    _scope_end_rh   = _scope_start_rh + _SCOPE_DAYS * 24
 
-    # Build 14 day-rows pre-filled with whatever's in run_schedule.
-    # Days with no window in scope start blank; days with overnight
-    # rollovers get a hint and are skipped on Apply (operator can
-    # use the Schedule Parser for those).
-    _rows = []
-    _overnight_days: list[str] = []
-    for _i in range(14):
-        _d = _week_monday + timedelta(days=_i)
-        _rows.append({
-            "Day":   _d.strftime("%a %b %d"),
-            "Start": "",
-            "End":   "",
-        })
+    # Pre-fill: every in-scope, future-going window becomes one row.
+    _pre_rows = []
     for _w in data["run_schedule"]:
         if not (_scope_start_rh <= _w["start_hour"] < _scope_end_rh):
             continue
-        # Skip windows whose end is already in the past — can't usefully
-        # edit history.
         if _w["end_hour"] <= data["current_run_hour"]:
-            continue
-        _rel_start = _w["start_hour"] - _scope_start_rh
-        _rel_end   = _w["end_hour"]   - _scope_start_rh
-        _scope_day = int(_rel_start // 24)
-        if not (0 <= _scope_day < 14):
-            continue
-        _start_h = int(_rel_start - _scope_day * 24)
-        _end_h   = int(_rel_end   - _scope_day * 24)
-        if _end_h > 24:
-            # Window spans midnight → can't fit in our same-day editor.
-            # Note it for the operator and leave the row blank so they
-            # don't clobber it accidentally on Apply.
-            _overnight_days.append(_rows[_scope_day]["Day"])
-            continue
-        # End at exactly 24:00 means the window ends at midnight; we
-        # store as "24:00" so the operator sees what they have.
-        _end_label = "24:00" if _end_h == 24 else f"{_end_h:02d}:00"
-        _rows[_scope_day]["Start"] = f"{_start_h:02d}:00"
-        _rows[_scope_day]["End"]   = _end_label
+            continue   # already past
+        _s_str, _e_str = _scope_window_to_strs(
+            _w, _scope_start_rh, _today_midnight,
+        )
+        _pre_rows.append({"Start": _s_str, "End": _e_str})
+    if not _pre_rows:
+        _pre_rows = [{"Start": "", "End": ""}]   # one blank starter row
 
     st.caption(
-        f"Showing run windows from **{_week_monday.strftime('%a %b %d')}** "
-        f"through **{(_week_monday + timedelta(days=13)).strftime('%a %b %d')}**. "
-        "Leave Start and End blank for days with no run. "
-        "Trucks are NOT auto-updated — adjust them separately if needed."
+        f"Showing run windows from **{_today_midnight.strftime('%a %b %d')}** "
+        f"through **{(_today_midnight + timedelta(days=_SCOPE_DAYS - 1)).strftime('%a %b %d')}**. "
+        "Type each window as `Day M/D HH:MM` (e.g. `Mon 5/11 06:00`) — "
+        "the day name OR the date alone also work. Multi-day shifts "
+        "fit in ONE row (e.g. `Wed 5/13 06:00` → `Sat 5/16 04:00`). "
+        "Trash icon deletes a row. Trucks are NOT auto-updated."
     )
-    if _overnight_days:
-        st.warning(
-            "Existing overnight shift(s) on "
-            + ", ".join(sorted(set(_overnight_days)))
-            + " can't be edited here (cross-midnight windows). "
-            "Use the Schedule Parser for those, or click Cancel."
-        )
 
     _edited = st.data_editor(
-        _rows,
+        _pre_rows,
         use_container_width=True,
         hide_index=True,
-        num_rows="fixed",
+        num_rows="dynamic",   # ← delete + add affordances
         key="run_window_editor",
         column_config={
-            "Day":   st.column_config.TextColumn("Day", disabled=True),
             "Start": st.column_config.TextColumn(
                 "Start",
-                help="Time the run starts. e.g. '06:00' or '6am'. "
-                     "Leave blank if the plant is down that day."),
+                help="Day + M/D + time. Examples: 'Mon 5/11 06:00', "
+                     "'5/11 06:00', or 'Mon 06:00' (picks the next "
+                     "Monday in scope)."),
             "End":   st.column_config.TextColumn(
                 "End",
-                help="Time the run ends. e.g. '16:00' or '4pm'. "
-                     "Must be after Start (same day)."),
+                help="Same format as Start. Can be a LATER day for "
+                     "multi-day shifts. e.g. 'Sat 5/16 04:00'."),
         },
     )
 
-    # Validate + collect (scope_day, start_h, end_h) for filled rows
+    # Parse + collect entries; record per-row errors for display.
     _edited_entries: list[tuple[int, int, int]] = []
-    _row_errors: list[tuple[str, str]] = []   # (day_label, reason)
+    _row_errors: list[tuple[int, str]] = []   # (1-based row idx, reason)
     for _i, _row in enumerate(_edited):
-        _s_str = (_row.get("Start") or "").strip()
-        _e_str = (_row.get("End")   or "").strip()
-        if not _s_str and not _e_str:
-            continue   # blank row → no run that day, skip
-        if not _s_str or not _e_str:
-            _row_errors.append((_row["Day"], "fill BOTH Start and End, or leave both blank"))
+        _s = (_row.get("Start") or "").strip()
+        _e = (_row.get("End")   or "").strip()
+        if not _s and not _e:
+            continue   # blank row, skip
+        if not _s or not _e:
+            _row_errors.append((_i + 1, "fill BOTH Start and End"))
             continue
-        _s_h = _parse_time_token(_s_str)
-        _e_h = _parse_time_token(_e_str)
-        if _s_h is None:
-            _row_errors.append((_row["Day"], f"can't parse Start '{_s_str}' — try '06:00' or '6am'"))
+        ent = _scope_strs_to_entry(_s, _e, _today_midnight, _SCOPE_DAYS)
+        if ent is None:
+            _row_errors.append(
+                (_i + 1,
+                 f"can't parse '{_s}' → '{_e}'. "
+                 f"Try 'Mon 5/11 06:00' or '5/11 06:00'.")
+            )
             continue
-        if _e_h is None:
-            _row_errors.append((_row["Day"], f"can't parse End '{_e_str}' — try '16:00' or '4pm'"))
-            continue
-        if _e_h <= _s_h:
-            _row_errors.append((_row["Day"], f"End ({_e_str}) must be AFTER Start ({_s_str})"))
-            continue
-        _edited_entries.append((_i, int(_s_h), int(_e_h)))
+        _edited_entries.append(ent)
 
-    # Show validation errors (max 3 to avoid overflowing the modal)
     if _row_errors:
-        for _day, _reason in _row_errors[:3]:
-            st.error(f"**{_day}** — {_reason}")
+        for _idx, _reason in _row_errors[:3]:
+            st.error(f"Row {_idx}: {_reason}")
         if len(_row_errors) > 3:
             st.caption(f"… and {len(_row_errors) - 3} more.")
 
+    # Overlap check (existing helper works on any (day_index, sh, eh) shape).
+    _overlaps = _entries_overlap_pairs(_edited_entries)
+    if _overlaps:
+        st.error(
+            f"Overlapping rows: {_overlaps[:3]} (1-based row indices). "
+            "Adjust so each window has a distinct time range."
+        )
+
     # Diff caption: how many windows after edit vs before
-    _orig_filled = sum(1 for r in _rows if r["Start"] and r["End"])
-    _new_filled  = len(_edited_entries)
-    if _new_filled != _orig_filled and not _row_errors:
-        _diff = _new_filled - _orig_filled
+    _orig_count = sum(1 for r in _pre_rows if r.get("Start") and r.get("End"))
+    _new_count  = len(_edited_entries)
+    if _new_count != _orig_count and not _row_errors and not _overlaps:
+        _diff = _new_count - _orig_count
         _verb = "added" if _diff > 0 else "removed"
         st.caption(
-            f"✏️ {_new_filled} window(s) after edit "
-            f"(was {_orig_filled} — {abs(_diff)} {_verb})"
+            f"✏️ {_new_count} window(s) after edit "
+            f"(was {_orig_count} — {abs(_diff)} {_verb})"
         )
 
     _bcol1, _bcol2 = st.columns(2)
@@ -1992,7 +2092,7 @@ def _run_window_editor_dialog():
             use_container_width=True,
             type="primary",
             key="rwe_apply",
-            disabled=bool(_row_errors),
+            disabled=bool(_row_errors or _overlaps),
         ):
             _, _removed, _added = apply_run_window_overrides(
                 data, _edited_entries, _scope_start_rh, _scope_end_rh,
