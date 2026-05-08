@@ -12,8 +12,10 @@ from alerts import (
     simulate_consume,
     simulate_delivery_no_alert,
     is_running_at,
-    _as_state,    # polymorphic dict/PlantState shim
 )
+# Use the public `as_state` alias; underscore-prefixed cross-module
+# imports trigger an opaque ImportError on Streamlit Cloud.
+from state import as_state as _as_state
 from config import DEFAULT_CONFIG, PlantConfig
 from time_utils import run_hour_to_dt, format_run_hour
 

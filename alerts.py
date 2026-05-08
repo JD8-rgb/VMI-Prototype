@@ -72,6 +72,12 @@ def _alert(text, type, severity, direction,
     }
 
 
+# Public re-export of the alert-dict factory. Same Streamlit Cloud
+# underscore-import precaution as `as_state` / `parse_time` / `migrate`:
+# cross-module callers (currently anomaly.py) import the public name.
+alert = _alert
+
+
 def get_lbs_per_hour(data, product):
     state = _as_state(data)
     return state.consumption_rates[product].lbs_per_hour

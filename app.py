@@ -180,7 +180,9 @@ def _parse_day_time(s):
     Reuses the existing time-token parser from read_schedule for
     the time half. Tolerant of trailing punctuation on the day
     name (',' '.' ';')."""
-    from read_schedule import _parse_time as _parse_time_token
+    # Use the public re-export name; underscore-prefixed cross-module
+    # imports trigger an opaque ImportError on Streamlit Cloud.
+    from read_schedule import parse_time as _parse_time_token
     if not s or not isinstance(s, str):
         return None
     parts = s.strip().lower().split(maxsplit=1)
@@ -1851,10 +1853,11 @@ def _run_window_editor_dialog():
       - End must be after Start within the same day.
       - Trucks are NOT auto-updated; operator adjusts those separately.
     """
-    from read_schedule import (
-        apply_run_window_overrides,
-        _parse_time as _parse_time_token,
-    )
+    # Use the public `parse_time` alias; the underscore-prefixed name
+    # `_parse_time` triggers an opaque ImportError on Streamlit Cloud
+    # for cross-module imports (same bug previously seen with
+    # `_as_state` in alerts.py / forecast.py).
+    from read_schedule import apply_run_window_overrides, parse_time as _parse_time_token
 
     # Compute scope: this calendar week's Monday in sim-time + 14 days
     _now_dt = run_hour_to_dt(data, data["current_run_hour"])
@@ -2108,21 +2111,23 @@ with st.expander("ℹ️ Workflow guide"):
     st.markdown(f"""
 **Typical demo flow:**
 
-1. **Roll forward to Thursday or Friday** using *Advance Clock*. This simulates time passing with consumption during scheduled run windows.
-2. **Set tank levels** (top-left) to a realistic mid-week inventory, then click *Apply Tank Levels*.
-3. **Enter next week's run schedule** — two ways:
-   - **Email (realistic):** Send the schedule to **vmiprototype@gmail.com**, then **advance at least 1 hour** — the system checks the inbox, parses the windows with AI, applies the schedule, and places orders automatically. No other steps needed.
-   - **Schedule Parser (manual/testing):** Paste the schedule text, click *Parse* → *Apply to Schedule*, then use *Plan Next Week* to place orders.
-4. **Auto-plan trucks** — if using the manual parser, click *Plan Next Week* after applying the schedule. The planner projects when each product breaches its reorder target and proposes deliveries with reasons. Click *Commit Trucks* to confirm (SAP numbers auto-assigned). A CS load-entry PDF is emailed automatically.
-5. **Alerts** fire automatically as the projection detects problems. An email goes to the distribution group on first occurrence.
-6. **Schedule reminder** — rolling the clock past **Friday 11 AM** (sim time) without a schedule on file automatically emails the customer contact. A second reminder fires at **3 PM**. No manual steps needed — just advance the clock.
-7. **CS load-entry email** — committed trucks generate a PDF emailed to CS, also shown at the bottom of this page.
+1. **Roll forward to Thursday or Friday** with *Advance Clock* — simulates time passing with consumption during scheduled run windows.
+2. **Set tank levels** (top-left) to a realistic mid-week inventory; click *Apply Tank Levels*.
+3. **Apply next week's schedule** — two paths:
+   - **Email (realistic):** send to **vmiprototype@gmail.com**, then advance ≥1 hour. The system parses, applies, and places orders automatically.
+   - **Schedule Parser (manual):** paste the email body, *Parse* → *Apply to Schedule*, then *Plan Next Week*.
+4. **Plan + commit trucks** — *Plan Next Week* projects breaches and proposes deliveries; *Commit Trucks* assigns SAP numbers and emails the CS load-entry PDF.
+5. **Mid-week schedule edits** — if the customer changes their mind after sending the schedule, click *✏️ Edit run windows* in the Auto-Planner panel to tweak this/next week's runs directly. Trucks are NOT auto-updated.
+6. **Alerts** fire automatically when a problem is projected.
+7. **Schedule reminder** — past **Friday 11 AM** sim-time without a schedule on file, the customer is auto-emailed.
 
 **Key rules:**
-- Truck deliveries are snapped to **06:00, 08:00, or 14:00** (Mon–Fri, inside a run window, ≥ 48 h ahead). No two trucks may arrive in the same slot. Overfill is never allowed — the planner skips a slot rather than overfill.
-- Apply next week's schedule *before* the week starts (Thursday or Friday is ideal).
-- Reorder target scales from **{TARGET_LOW_LBS:,} lbs** (light week, {TARGET_LOW_RUN_HOURS} run hrs)
-  to **{TARGET_HIGH_LBS:,} lbs** (heavy week, {TARGET_HIGH_RUN_HOURS} run hrs).
+- **Live customer:** only **Acme Plastics** in the left sidebar is interactive; the others demonstrate platform multi-tenancy.
+- **Truck slots:** 06:00 / 08:00 / 14:00 (Mon–Fri, inside a run window, ≥48 h ahead). No two trucks per slot; overfill skips slots.
+- **Reset:** clears alerts, history, and overrides — but PRESERVES this week's Mon–Fri schedule so the dashboard stays lived-in.
+- **Tank age chip:** ⏱ Xh/Xd shows hours since the last refill; resets to 0 while the tank is below 2,000 lbs.
+- **Reorder target:** scales from **{TARGET_LOW_LBS:,} lbs** (≤{TARGET_LOW_RUN_HOURS} hrs/wk)
+  to **{TARGET_HIGH_LBS:,} lbs** (≥{TARGET_HIGH_RUN_HOURS} hrs/wk).
 """)
 
 # ── Controls ──────────────────────────────────────────────────────────────────
@@ -2183,7 +2188,12 @@ with cr:
     if rst_col.button("🔄 Reset", use_container_width=True):
         from datetime import timezone as _tz_utc
         st.session_state.data                               = _defaults()
-        st.session_state.data["run_schedule"]               = []
+        # NOTE: Do NOT wipe run_schedule here. _defaults() returns the
+        # canonical demo starting state, which encodes THIS week's
+        # Mon-Fri run windows and an EMPTY next-week schedule. That's
+        # the operator's intended Reset behavior: dashboard looks
+        # lived-in (this week is running) and applying a fresh email
+        # schedule produces a visible delta on next week.
         st.session_state.data["schedule_received_for_week"] = None
         st.session_state.data["schedule_parse_issue"]       = None
         # Per the operator-controls spec: Reset clears the level
@@ -2207,7 +2217,7 @@ with cr:
         # fresh data dict (the audit_log lives in data; reset wipes
         # data so we record on the new instance).
         _audit.record(st.session_state.data, _audit.A_RESET,
-                       details={"wiped": ["run_schedule", "alert_log",
+                       details={"wiped": ["alert_log",
                                             "level_history",
                                             "target_overrides"]})
         st.rerun()

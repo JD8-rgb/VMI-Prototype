@@ -1,0 +1,61 @@
+{
+  "_comment": "Fourth example customer for the sidebar roster. Healthy levels and a clean schedule, but the most-recently-applied schedule was parsed via the LLM rescue path AND the operator hasn't acknowledged the review panel yet. That triggers ONE warning-severity alert (check_llm_schedule_applied in alerts.py) and nothing else — yields a yellow status indicator on the sidebar row.",
+  "config_overrides": {},
+  "state": {
+    "schema_version": 2,
+    "simulation_epoch": "2026-04-13T00:00:00",
+    "current_run_hour": 0.0,
+    "tanks": {
+      "Gamma-T1": {
+        "product": "Product Gamma",
+        "current_level_lbs": 27000,
+        "max_capacity_lbs": 34000,
+        "heel_lbs": 900,
+        "status": "draw"
+      },
+      "Delta-T1": {
+        "product": "Product Delta",
+        "current_level_lbs": 28000,
+        "max_capacity_lbs": 34000,
+        "heel_lbs": 900,
+        "status": "draw"
+      }
+    },
+    "consumption_rates": {
+      "Product Gamma": { "lbs_per_hour": 130.0 },
+      "Product Delta": { "lbs_per_hour": 140.0 }
+    },
+    "truck_quantities": {
+      "Product Gamma": 26000,
+      "Product Delta": 26000
+    },
+    "schedule_received_for_week": null,
+    "schedule_email_id": "demo-llm-applied-001",
+    "schedule_parse_issue": null,
+    "alerted_hashes": [],
+    "scheduled_trucks": [],
+    "sap_history": [],
+    "run_schedule": [
+      { "start_hour":   6.0, "end_hour":  20.0, "label": "Mon" },
+      { "start_hour":  30.0, "end_hour":  44.0, "label": "Tue" },
+      { "start_hour":  54.0, "end_hour":  68.0, "label": "Wed" },
+      { "start_hour":  78.0, "end_hour":  92.0, "label": "Thu" },
+      { "start_hour": 102.0, "end_hour": 116.0, "label": "Fri" }
+    ],
+    "last_parse_method": "llm",
+    "last_applied_parse_review": {
+      "email_id":   "demo-llm-applied-001",
+      "sender":     "scheduler@example4.com",
+      "subject":    "Weekly run schedule",
+      "body":       "Mon-Fri 6 to 8 (PM), single shift.",
+      "entries":    [[0, 6, 20], [1, 6, 20], [2, 6, 20], [3, 6, 20], [4, 6, 20]],
+      "confidence": "high",
+      "applied":    true,
+      "notes":      [
+        "  Used LLM rescue — regex was low confidence."
+      ],
+      "fetched_at": "2026-04-13T08:30:00",
+      "parse_method": "llm"
+    }
+  }
+}

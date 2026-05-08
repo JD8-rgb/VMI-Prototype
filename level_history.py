@@ -88,51 +88,61 @@ def inventory_age_hours(
     current_run_hour: float,
     threshold_lbs: float = 2000.0,
 ):
-    """Return how many hours it has been since the tank last dipped below
-    `threshold_lbs` (proxy for "near-empty = material turnover").
+    """Return how many hours of in-tank material the operator is
+    currently looking at — i.e. hours since the tank was last REFILLED
+    (transitioned from below `threshold_lbs` back up above it).
+
+    Behavior contract (operator-facing):
+      - Tank currently below `threshold_lbs` → (0.0, False).
+        An empty tank doesn't accumulate age. The clock starts when the
+        tank is filled, not while it's draining toward empty.
+      - Tank currently above threshold → age = hours since the most
+        recent refill. The refill point is the first entry above
+        threshold that follows the most recent below-threshold entry.
+      - Tank never dipped below threshold in the available history →
+        capped at hours since the oldest entry. (True age is at least
+        the reported value but the ring buffer doesn't go back further.)
 
     Returns:
         (age_hours: float, capped: bool)
 
-        age_hours  – hours since the last sub-threshold entry.
-        capped     – True when the oldest available history entry was
-                     already above the threshold; the true age is at
-                     least `age_hours` but the ring buffer doesn't go
-                     back far enough to find the actual dip.
-
     Edge cases:
         - Empty history or tank absent from history → (0.0, True).
-        - Tank always below threshold in history  → (0.0, False).
+        - Tank always below threshold in history → (0.0, False).
     """
-    if not history:
+    # Filter to entries that mention this tank, ordered oldest → newest
+    relevant = [
+        (float(e["run_hour"]), float(e["tanks"][tank_name]))
+        for e in history
+        if tank_name in e.get("tanks", {})
+    ]
+    if not relevant:
         return (0.0, True)
 
-    # Scan newest → oldest for the most recent sub-threshold entry
-    last_dip_run_hour: float | None = None
-    for entry in reversed(history):
-        tanks = entry.get("tanks", {})
-        if tank_name not in tanks:
-            continue
-        if tanks[tank_name] < threshold_lbs:
-            last_dip_run_hour = float(entry["run_hour"])
-            break
+    _latest_rh, latest_lvl = relevant[-1]
 
-    if last_dip_run_hour is not None:
-        return (max(0.0, current_run_hour - last_dip_run_hour), False)
+    # Currently empty — material turnover happening right now, age = 0.
+    # The clock doesn't start until the tank is filled back up.
+    if latest_lvl < threshold_lbs:
+        return (0.0, False)
 
-    # Tank was never below threshold in the available history.
-    # Age is at least (current_run_hour - oldest_run_hour).
-    # Find the oldest entry that contains this tank.
-    oldest_run_hour: float | None = None
-    for entry in history:
-        if tank_name in entry.get("tanks", {}):
-            oldest_run_hour = float(entry["run_hour"])
-            break
+    # Tank is currently above threshold. Find the most recent
+    # below-threshold entry; the entry IMMEDIATELY AFTER it (newer)
+    # is the refill point that the age clock should measure from.
+    for i in range(len(relevant) - 1, -1, -1):
+        rh, lvl = relevant[i]
+        if lvl < threshold_lbs:
+            # The next-newer entry is the first above-threshold reading
+            # following this dip — that's the refill moment.
+            fill_rh, _ = relevant[i + 1]
+            return (max(0.0, current_run_hour - fill_rh), False)
 
-    if oldest_run_hour is None:
-        return (0.0, True)
-
-    return (max(0.0, current_run_hour - oldest_run_hour), True)
+    # No below-threshold entry found in the visible history. Age is
+    # AT LEAST hours since the oldest known entry, but the true age
+    # could be older (the ring buffer was already full of fresh
+    # material when retention started). Mark capped=True.
+    oldest_rh, _ = relevant[0]
+    return (max(0.0, current_run_hour - oldest_rh), True)
 
 
 def downsample_for_chart(history, max_points: int = 720):

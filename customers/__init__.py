@@ -13,7 +13,9 @@ import re
 from typing import Any, Dict, List, Tuple
 
 from config import PlantConfig
-from data_io import _migrate
+# Use the public `migrate` alias; underscore-prefixed cross-module
+# imports trigger an opaque ImportError on Streamlit Cloud.
+from data_io import migrate as _migrate
 
 
 CUSTOMERS_DIR = os.path.dirname(__file__)

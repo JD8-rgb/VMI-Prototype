@@ -195,15 +195,21 @@ def test_age_empty_history():
 
 
 def test_age_dipped_recently():
-    """Tank dipped below threshold at run_hour=50; current=100 → age=50h."""
+    """Tank dipped at rh=50, refilled at rh=80, current=100 → age=20h.
+
+    The age clock measures hours of material currently in the tank,
+    starting from the REFILL point (rh=80) — not from the dip itself.
+    Operator wants to know "how old is the material I'm drawing from
+    right now," not "how long ago did this tank turn over."
+    """
     history = _make_history([
         (10, 5000),   # above threshold
-        (50, 1500),   # below 2000 lbs — most recent dip
-        (80, 8000),   # back above
+        (50, 1500),   # below 2000 lbs — turnover point (resets clock)
+        (80, 8000),   # refilled — age clock starts here
         (100, 9000),
     ])
     age, capped = inventory_age_hours("T1", history, current_run_hour=100.0)
-    assert age == pytest.approx(50.0)
+    assert age == pytest.approx(20.0)
     assert capped is False
 
 
@@ -221,25 +227,28 @@ def test_age_never_dipped():
 
 
 def test_age_dipped_at_start():
-    """Tank dipped below threshold only in the very first history entry."""
+    """Tank dipped only in the FIRST history entry (rh=0), refilled at
+    rh=24, current=100 → age=76h (= 100 - refill at 24)."""
     history = _make_history([
-        (0,   500),    # below 2000
-        (24,  5000),
+        (0,   500),    # below threshold — turnover
+        (24,  5000),   # refill — clock starts here
         (100, 8000),
     ])
     age, capped = inventory_age_hours("T1", history, current_run_hour=100.0)
-    assert age == pytest.approx(100.0)
+    assert age == pytest.approx(76.0)
     assert capped is False
 
 
 def test_age_currently_below_threshold():
-    """If the MOST RECENT entry is itself below threshold, age is ~0."""
+    """If the MOST RECENT entry is below threshold, the tank is empty
+    right now — age must be 0 (clock hasn't started yet; the operator
+    is watching the tank turn over, not draw from old material)."""
     history = _make_history([
         (80, 8000),
-        (99, 1000),   # below threshold
+        (99, 1000),   # currently below threshold — empty tank
     ])
     age, capped = inventory_age_hours("T1", history, current_run_hour=100.0)
-    assert age == pytest.approx(1.0)
+    assert age == pytest.approx(0.0)
     assert capped is False
 
 
@@ -251,14 +260,55 @@ def test_age_tank_absent_from_history():
     assert capped is True
 
 
-def test_age_custom_threshold():
-    """threshold_lbs is configurable."""
+def test_age_zero_while_tank_stays_empty():
+    """Regression: empty tank that's been at-or-below threshold for a
+    long time still shows age=0. Operator-reported behavior:
+    "the empty tanks should show zero days on the Age of Inventory.
+    It resets the Age of Inventory when it drops below 2,000 lb, but
+    the clock doesn't start until the tank is filled."
+
+    Old code would have returned 50h (= 100 - first dip at rh=50)."""
     history = _make_history([
-        (10, 4500),   # below custom threshold of 5000
-        (50, 7000),
+        (10, 8000),    # full
+        (50, 1500),    # dropped below threshold — clock resets
+        (60, 1200),    # still below
+        (80, 1000),    # still below — heel level
+        (100, 1000),   # still below at current_run_hour
+    ])
+    age, capped = inventory_age_hours("T1", history, current_run_hour=100.0)
+    assert age == pytest.approx(0.0), (
+        "Empty tank must show 0 hours of age — clock doesn't run "
+        "while the tank is below threshold."
+    )
+    assert capped is False
+
+
+def test_age_after_two_dip_refill_cycles():
+    """Tank dipped, refilled, dipped again, refilled again. Age = hours
+    since the LAST refill (most-recent dip→refill transition)."""
+    history = _make_history([
+        (0,   8000),   # full
+        (10,  1500),   # first dip
+        (15,  6000),   # first refill
+        (60,  1200),   # second dip
+        (65,  7000),   # SECOND REFILL — age clock anchored here
+        (100, 6500),
+    ])
+    age, capped = inventory_age_hours("T1", history, current_run_hour=100.0)
+    assert age == pytest.approx(35.0)   # 100 - 65
+    assert capped is False
+
+
+def test_age_custom_threshold():
+    """threshold_lbs is configurable. With threshold=5000:
+    rh=10 is below (4500), rh=50 is above (7000) → refill at rh=50.
+    Current=100 → age = 100-50 = 50h."""
+    history = _make_history([
+        (10, 4500),   # below custom threshold of 5000 — turnover
+        (50, 7000),   # above — refill, clock starts here
     ])
     age, capped = inventory_age_hours(
         "T1", history, current_run_hour=100.0, threshold_lbs=5000.0
     )
-    assert age == pytest.approx(90.0)   # 100 - 10
+    assert age == pytest.approx(50.0)
     assert capped is False

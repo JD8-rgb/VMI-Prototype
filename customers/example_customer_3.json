@@ -1,0 +1,37 @@
+{
+  "_comment": "Third example customer for the sidebar roster. Minimal-volume single-product tenant — one tank, one product, low consumption rate, healthy levels. Designed to render with a green status indicator (no alerts firing) so the sidebar shows variety across customer states.",
+  "config_overrides": {},
+  "state": {
+    "schema_version": 2,
+    "simulation_epoch": "2026-04-13T00:00:00",
+    "current_run_hour": 0.0,
+    "tanks": {
+      "Solo-T1": {
+        "product": "Product Solo",
+        "current_level_lbs": 26000,
+        "max_capacity_lbs": 32000,
+        "heel_lbs": 800,
+        "status": "draw"
+      }
+    },
+    "consumption_rates": {
+      "Product Solo": { "lbs_per_hour": 110.0 }
+    },
+    "truck_quantities": {
+      "Product Solo": 24000
+    },
+    "schedule_received_for_week": null,
+    "schedule_email_id": null,
+    "schedule_parse_issue": null,
+    "alerted_hashes": [],
+    "scheduled_trucks": [],
+    "sap_history": [],
+    "run_schedule": [
+      { "start_hour":   6.0, "end_hour":  18.0, "label": "Mon" },
+      { "start_hour":  30.0, "end_hour":  42.0, "label": "Tue" },
+      { "start_hour":  54.0, "end_hour":  66.0, "label": "Wed" },
+      { "start_hour":  78.0, "end_hour":  90.0, "label": "Thu" },
+      { "start_hour": 102.0, "end_hour": 114.0, "label": "Fri" }
+    ]
+  }
+}

@@ -34,10 +34,12 @@ from alerts import (
     simulate_consume, simulate_delivery_no_alert,
     is_running_at, get_combined_level_from_tanks,
     find_lowest_in, find_others_in,
-    _as_state,    # polymorphic dict/PlantState shim
 )
 from config import DEFAULT_CONFIG, PlantConfig
-from state import PlantState
+# Use the public `as_state` alias (state.py); the underscore-prefixed
+# `_as_state` triggers an opaque ImportError on Streamlit Cloud for
+# cross-module imports.
+from state import PlantState, as_state as _as_state
 
 # Back-compat re-exports — deprecated in favor of passing PlantConfig.
 LEAD_TIME_HOURS       = DEFAULT_CONFIG.lead_time_hours

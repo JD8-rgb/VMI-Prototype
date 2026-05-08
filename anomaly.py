@@ -44,7 +44,11 @@ import statistics
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from alerts import _alert, _as_state
+# Use the public aliases; underscore-prefixed cross-module imports
+# trigger an opaque ImportError on Streamlit Cloud (same bug
+# previously seen with _as_state, _parse_time, _migrate).
+from alerts import alert as _alert
+from state  import as_state as _as_state
 from config import DEFAULT_CONFIG, PlantConfig
 
 

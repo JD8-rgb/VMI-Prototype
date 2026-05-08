@@ -123,6 +123,14 @@ def _migrate(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+# Public re-export of the schema-migration function. The leading-
+# underscore form `_migrate` causes opaque ImportError on Streamlit
+# Cloud when imported cross-module (same bug previously seen with
+# `_as_state` and `_parse_time`). External callers (customers/__init__
+# and any future cross-module use) should import `migrate`.
+migrate = _migrate
+
+
 def load_data(path: str = DATA_PATH,
                fallback: str = DEFAULTS_PATH) -> Dict[str, Any]:
     """Load JSON state, run schema migrations, return the upgraded dict.

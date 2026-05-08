@@ -1,0 +1,46 @@
+{
+  "_comment": "Second example customer for the sidebar roster. Contrasts with example_customer.json: small customer (2 products, 2 tanks, low consumption rate) with healthy levels and a clean schedule, so the alert indicator typically shows green/yellow vs. example_customer's red. Demonstrates that the platform handles low-volume tenants without parameter retuning. Uses default PlantConfig (no overrides) to keep the file minimal.",
+  "config_overrides": {},
+  "state": {
+    "schema_version": 2,
+    "simulation_epoch": "2026-04-13T00:00:00",
+    "current_run_hour": 0.0,
+    "tanks": {
+      "Alpha-T1": {
+        "product": "Product Alpha",
+        "current_level_lbs": 28000,
+        "max_capacity_lbs": 35000,
+        "heel_lbs": 1000,
+        "status": "draw"
+      },
+      "Beta-T1": {
+        "product": "Product Beta",
+        "current_level_lbs": 30000,
+        "max_capacity_lbs": 35000,
+        "heel_lbs": 1000,
+        "status": "draw"
+      }
+    },
+    "consumption_rates": {
+      "Product Alpha": { "lbs_per_hour": 120.0 },
+      "Product Beta":  { "lbs_per_hour": 150.0 }
+    },
+    "truck_quantities": {
+      "Product Alpha": 28000,
+      "Product Beta":  28000
+    },
+    "schedule_received_for_week": null,
+    "schedule_email_id": null,
+    "schedule_parse_issue": null,
+    "alerted_hashes": [],
+    "scheduled_trucks": [],
+    "sap_history": [],
+    "run_schedule": [
+      { "start_hour":   6.0, "end_hour":  22.0, "label": "Mon" },
+      { "start_hour":  30.0, "end_hour":  46.0, "label": "Tue" },
+      { "start_hour":  54.0, "end_hour":  70.0, "label": "Wed" },
+      { "start_hour":  78.0, "end_hour":  94.0, "label": "Thu" },
+      { "start_hour": 102.0, "end_hour": 118.0, "label": "Fri" }
+    ]
+  }
+}

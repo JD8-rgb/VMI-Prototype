@@ -551,6 +551,15 @@ def _parse_time(token):
     return None
 
 
+# Public re-export of the time-token parser. The leading-underscore form
+# `_parse_time` causes opaque ImportError on Streamlit Cloud when imported
+# cross-module (same bug previously seen with `_as_state` in alerts.py /
+# forecast.py — fixed by promoting `as_state` to a public name in
+# state.py). app.py uses the public alias `parse_time` for any cross-
+# module imports of this helper.
+parse_time = _parse_time
+
+
 def _try_day_range_with_time(seg):
     """
     Detect a "day range + single time window" schedule like:
