@@ -89,12 +89,21 @@ class ForecastEngine:
 # ── Default: WeightedSeasonalForecaster ─────────────────────────────────────
 
 class WeightedSeasonalForecaster(ForecastEngine):
-    """Per-weekday weighted average over the last N weeks of
-    level_history, with week-level outlier exclusion + holiday gating.
+    """Per-weekday weighted average over the last N weeks of SCHEDULED
+    run hours (`state.run_schedule`), with week-level outlier exclusion
+    and `cfg.plant_holidays` gating.
 
     NOT to be confused with strict "seasonal naive" (textbook: just
     one-period lookback). This averages multiple weeks with recency
     weighting and filters down weeks.
+
+    Note: this forecaster reads from `run_schedule`, NOT from actual
+    drawdown (`level_history`). The product story implies a closed-loop
+    where actual consumption divergence feeds back into the forecast,
+    but the current implementation is purely schedule-derived. Future
+    enhancement: detect chronic over/underconsumption by comparing
+    `level_history` deltas to the scheduled run-hour bucket and
+    surface a calibration warning. Not in scope yet.
     """
     name = "weighted_seasonal"
 
@@ -230,21 +239,47 @@ class WeightedSeasonalForecaster(ForecastEngine):
         """Static-baseline fallback when not enough history. Uses
         cfg.consumption_rates × cfg.target_high_run_hours as a
         conservative "this is what an average heavy week looks like"
-        proxy. Marked as fallback in result.notes."""
+        proxy, gated by cfg.plant_holidays (target-week dates that
+        fall on a holiday get zeroed out and the remaining weekdays
+        absorb the load). Marked as fallback in result.notes."""
         result.notes.append(
             f"Forecast falling back to static baseline: {reason} "
             f"Once advance_time records >= 2 weeks of history, the "
             f"weighted seasonal estimate kicks in."
         )
-        baseline_hours_per_day = (
-            float(self.cfg.target_high_run_hours) / 5.0   # spread across Mon-Fri
-        )
+
+        # Identify which Mon-Fri weekdays of the target week are NOT holidays.
+        # `target_week_start_run_hour` is the Monday of the target week in
+        # run-hours; the actual calendar date comes from run_hour_to_dt.
+        from time_utils import run_hour_to_dt
+        _holiday_set = set(getattr(self.cfg, "plant_holidays", []) or [])
+        _holiday_weekdays: set[int] = set()
+        if target_week_start_run_hour is not None:
+            try:
+                target_monday_dt = run_hour_to_dt(state, float(target_week_start_run_hour))
+                for d in range(5):
+                    if (target_monday_dt + timedelta(days=d)).date().isoformat() in _holiday_set:
+                        _holiday_weekdays.add(d)
+            except Exception:
+                # Defensive: time_utils may raise on malformed state.
+                # Best-effort — fall through to no-holiday-gating.
+                _holiday_weekdays = set()
+
+        _non_holiday_count = 5 - len(_holiday_weekdays)
+        if _non_holiday_count > 0:
+            baseline_hours_per_day = (
+                float(self.cfg.target_high_run_hours) / _non_holiday_count
+            )
+        else:
+            # Every weekday is a holiday — degenerate; zero out the week.
+            baseline_hours_per_day = 0.0
+
         for product, rate in state.consumption_rates.items():
             lbs_per_hour = float(rate.lbs_per_hour)
             truck_size = int(state.truck_quantities.get(product, 0)) or 1
             by_weekday = {}
             for dow in range(7):
-                if dow < 5:   # Mon-Fri
+                if dow < 5 and dow not in _holiday_weekdays:
                     hours_d = baseline_hours_per_day
                 else:
                     hours_d = 0.0

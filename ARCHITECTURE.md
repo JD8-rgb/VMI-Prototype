@@ -15,7 +15,7 @@ SMTP server, or a real clock is at the edge.
 ```
                          ┌──────────────────────────────┐
                          │        Streamlit UI          │
-                         │   (app.py — ~3130 LOC)       │
+                         │   (app.py — ~4100 LOC)       │
                          └──────────────┬───────────────┘
    ┌──────────────────────┐             │
    │       CLI scripts    │─────────────┤
@@ -70,7 +70,7 @@ SMTP server, or a real clock is at the edge.
 | `email_client.py`   |  ~250 | IMAP/SMTP wrapper. Production target: MS Graph. |
 | `email_hooks.py`    |  ~220 | Wires alert/customer-success/reminder emails to `send_mail`. |
 | `pdf_generator.py`  |  ~140 | Load-entry PDF via reportlab. |
-| `app.py`            | ~3130 | Streamlit dashboard + automation loop. UI is heavily coupled to the 2-product 4-tank demo shape — this is fine for a prototype but is the main module the technical team will rewrite. |
+| `app.py`            | ~4100 | Streamlit dashboard + automation loop. UI is heavily coupled to the 2-product 4-tank demo shape — this is fine for a prototype but is the main module the technical team will rewrite. |
 | CLI scripts         | small | Thin wrappers over algorithm functions. `advance_time.py 1` is the canonical "tick the clock" command. |
 
 ## Polymorphic call shape (the rule)
@@ -141,7 +141,7 @@ expected to be the technical team's first job (see
 
 ## Schema versioning
 
-`data_io.CURRENT_SCHEMA_VERSION = 1`. Every load runs `_migrate`
+`data_io.CURRENT_SCHEMA_VERSION = 2`. Every load runs `_migrate`
 through the `_MIGRATIONS` chain. Files written before this field
 existed are treated as version 0. To bump the schema:
 

@@ -63,7 +63,7 @@ def _format_entry(idx: int, total: int, entry: dict) -> str:
         for e in entries:
             wd, s, end = int(e[0]), int(e[1]), int(e[2])
             day = _DAYS[wd] if 0 <= wd < 7 else f"?{wd}"
-            lines.append(f"    {day} {s:02d}:00 → {end:02d}:00 "
+            lines.append(f"    {day} {s:02d}:00 -> {end:02d}:00 "
                           f"({end - s}h)")
     lines.append("")
     notes = entry.get("notes") or []
@@ -91,7 +91,7 @@ def _interactive_triage(entries: List[dict]) -> None:
             if choice in ("p", "promote"):
                 decisions["promote"] += 1
                 print(
-                    "  → Marked PROMOTE. Add a must_pass case to "
+                    "  -> Marked PROMOTE. Add a must_pass case to "
                     "test_schedule_parser.py:\n"
                     f"    Case(\"must_NN_PRODUCTION_<short_label>\", "
                     f"\"<category>\",\n"
@@ -103,11 +103,11 @@ def _interactive_triage(entries: List[dict]) -> None:
                 break
             elif choice in ("d", "discard"):
                 decisions["discard"] += 1
-                print("  → Discarded.\n")
+                print("  -> Discarded.\n")
                 break
             elif choice in ("s", "skip"):
                 decisions["skip"] += 1
-                print("  → Skipped (stays in log).\n")
+                print("  -> Skipped (stays in log).\n")
                 break
             elif choice in ("q", "quit"):
                 print(f"\nQuit. Triage so far: {decisions}")

@@ -2231,25 +2231,24 @@ st.markdown(
 
 with st.expander("ℹ️ Workflow guide"):
     st.markdown(f"""
-**Typical demo flow:**
+**Demo flow**
 
-1. **Roll forward to Thursday or Friday** with *Advance Clock* — simulates time passing with consumption during scheduled run windows.
-2. **Set tank levels** (top-left) to a realistic mid-week inventory; click *Apply Tank Levels*.
-3. **Apply next week's schedule** — two paths:
-   - **Email (realistic):** send to **vmiprototype@gmail.com**, then advance ≥1 hour. The system parses, applies, and places orders automatically.
-   - **Schedule Parser (manual):** paste the email body, *Parse* → *Apply to Schedule*, then *Plan Next Week*.
-4. **Plan + commit trucks** — *Plan Next Week* projects breaches and proposes deliveries; *Commit Trucks* assigns SAP numbers and emails the CS load-entry PDF.
-5. **Mid-week schedule edits** — if the customer changes their mind after sending the schedule, click *✏️ Edit run windows* in the Auto-Planner panel to tweak this/next week's runs directly. Trucks are NOT auto-updated.
-6. **Alerts** fire automatically when a problem is projected.
-7. **Schedule reminder** — past **Friday 11 AM** sim-time without a schedule on file, the customer is auto-emailed.
+1. Use **▶ Advance** to roll the sim toward Thursday or Friday. Consumption runs only inside scheduled run windows.
+2. Set realistic mid-week tank levels, then click **Apply Tank Levels**.
+3. Add next week's schedule:
+   - **Email path:** send to `vmiprototype@gmail.com`, then advance ≥1 hour. **High-confidence** schedules auto-apply; **low-confidence** schedules wait for review.
+   - **Manual path:** paste the schedule text, click **Parse** → **✅ Apply Schedule**.
+4. Click **🔍 Plan Next Week** to propose trucks, then **✅ Commit Trucks** to assign SAP numbers and email the CS load-entry PDF.
+5. For schedule changes, use **✏️ Edit run windows**. Existing trucks are NOT automatically re-planned.
+6. Alerts and schedule reminders fire automatically as sim time advances.
 
-**Key rules:**
-- **Live customer:** only **Acme Plastics** in the left sidebar is interactive; the others demonstrate platform multi-tenancy.
-- **Truck slots:** 06:00 / 08:00 / 14:00 (Mon–Fri, inside a run window, ≥48 h ahead). No two trucks per slot; overfill skips slots.
-- **Reset:** clears alerts, history, and overrides — but PRESERVES this week's Mon–Fri schedule so the dashboard stays lived-in.
-- **Tank age chip:** ⏱ Xh/Xd shows hours since the last refill; resets to 0 while the tank is below 2,000 lbs.
-- **Reorder target:** scales from **{TARGET_LOW_LBS:,} lbs** (≤{TARGET_LOW_RUN_HOURS} hrs/wk)
-  to **{TARGET_HIGH_LBS:,} lbs** (≥{TARGET_HIGH_RUN_HOURS} hrs/wk).
+**Rules**
+
+- Only **Acme Plastics** is interactive in this demo; other customers show the multi-customer direction.
+- Truck slots are 06:00 / 08:00 / 14:00, Mon–Fri, inside a run window, ≥48 h ahead. One truck per slot.
+- **Reset** restores the lived-in demo state, clears alerts/history/overrides, and keeps this week's base schedule.
+- Tank age shows time since the tank last dipped below 2,000 lbs.
+- Reorder targets scale from **{TARGET_LOW_LBS:,} lbs** (≤{TARGET_LOW_RUN_HOURS} hrs/wk) to **{TARGET_HIGH_LBS:,} lbs** (≥{TARGET_HIGH_RUN_HOURS} hrs/wk).
 """)
 
 # ── Controls ──────────────────────────────────────────────────────────────────

@@ -1488,6 +1488,22 @@ def parse_schedule_text(text, now_dt=None):
     # and the "6 to 4" 12-hour-clock heuristic.
     cleaned, norm_notes = _normalize_phrasing(cleaned)
     notes.extend(norm_notes)
+    # Early short-circuit for operational full-week shorthand ("24/5",
+    # "24/7", "run all week", "full week", ...). Without this, the
+    # date-token rewrite below interprets "24/5" as a calendar date
+    # (May 24 in EU notation = a Sunday in 2026) and replaces it with
+    # "Sun", which the later detectors can't make sense of — the
+    # full-week fallback at the END of this function then never fires
+    # because the cleaned text no longer contains "24/5". Catching the
+    # full-week pattern HERE preserves the operator's intent.
+    if _FULL_WEEK_RE.search(cleaned):
+        notes.append(
+            "  Full-week phrasing detected ('24/5', 'run all week', "
+            "etc.); falling back to customer default template "
+            "(Mon 6am -> Sat 4am, 118 run-hrs). LOW confidence — "
+            "operator confirms via low-confidence panel."
+        )
+        return [_FULL_WEEK_TEMPLATE], "low", notes
     # Rewrite calendar-date tokens ("4/20", "April 20", "2026-04-20", ...) to
     # day-name abbreviations when they fall inside the target week. This runs
     # before the range / list joiners so downstream sees clean day names.
@@ -2666,8 +2682,14 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
     #   2. top=5 in anna-mode meant accumulated system emails (alerts,
     #      reminders, load-entries) pushed real schedule emails off the
     #      bottom of the fetch after a single demo cycle.
-    # The anna_email config entry is retained only as documentation/intent;
-    # it no longer constrains the fetch.
+    # DEMO MODE: schedule emails are accepted from ANY sender. This lets a
+    # reviewer email from any account during the demo. In production / pilot
+    # this MUST be gated to the customer's authoritative scheduler contact —
+    # either `config.anna_email` (single sender) or a per-customer contact
+    # mapping (`@{customer_domain}` if multiple senders are valid for one
+    # customer). See BACKLOG item B-PROD-1 for the production-mode flip.
+    # The anna_email config entry is loaded above and retained for that
+    # eventual switch; today it does not constrain the fetch.
     results = client.search_inbox(sender=None, top=50)
 
     if not results:
@@ -2744,18 +2766,24 @@ def fetch_and_apply_schedule(data, dry_run=False, now_dt=None, session_start_utc
     _HAS_DAY_RE   = re.compile(_DAY_PATTERN, re.IGNORECASE)
     _HAS_TIME_RE  = re.compile(_TIME_TOKEN, re.IGNORECASE)
     _ISO_DATE_RE  = re.compile(r'\b\d{4}-\d{2}-\d{2}\b')
+    # Operational shorthand that doesn't include explicit day/time tokens
+    # but DOES indicate a schedule: "run all week", "24/5 next week",
+    # "continuous", "shutdown", etc. Without this rescue, emails using
+    # this kind of phrasing get filtered out as not-a-schedule before
+    # the parser's full-week-template fallback can fire.
     before_shape = len(results)
     shape_kept = []
     for m in results:
         body = m.get("body", "") or ""
         body_no_dates = _ISO_DATE_RE.sub("", body)
-        has_day  = bool(_HAS_DAY_RE.search(body_no_dates))
-        has_time = bool(_HAS_TIME_RE.search(body_no_dates))
-        if has_day or has_time:
+        has_day        = bool(_HAS_DAY_RE.search(body_no_dates))
+        has_time       = bool(_HAS_TIME_RE.search(body_no_dates))
+        has_full_week  = bool(_FULL_WEEK_RE.search(body_no_dates))
+        if has_day or has_time or has_full_week:
             shape_kept.append(m)
         else:
             body_snip = body.replace("\r", "").replace("\n", " ⏎ ")[:100]
-            logger.info(f"  skip (no day or time tokens): "
+            logger.info(f"  skip (no day, time, or full-week shorthand): "
                   f"subject={m.get('subject','')!r} "
                   f"body[:100]={body_snip!r}")
     dropped_shape = before_shape - len(shape_kept)

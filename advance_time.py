@@ -31,6 +31,7 @@ import os
 import sys
 from time_utils import parse_time_input, format_run_hour
 from alerts import simulate_consume, simulate_delivery_no_alert
+from alerts import refresh_draw_status as _refresh_draw_status
 import email_hooks
 
 
@@ -118,19 +119,50 @@ def main(argv=None):
         _rls(data, run_hour)
 
     def deliver_truck(truck):
-        """Pour truck into the lowest-level tank via shared logic."""
+        """Pour truck into the lowest-level tank via shared logic.
+
+        Returns True if the truck was fully delivered (caller marks the
+        SAP delivered). Returns False if some lbs couldn't fit — the
+        delivery is REFUSED (operator must intervene), and the caller
+        retains the truck in scheduled_trucks for the operator to
+        cancel / split / reschedule. Audit entry recorded either way.
+        """
         product = truck["product"]
         quantity = truck["quantity_lbs"]
         sap = truck["sap_order"]
         print(f"  >> DELIVERY: {sap} | {product} | {quantity:,} lbs")
         before = {n: i["current_level_lbs"] for n, i in tanks.items()
                   if i["product"] == product}
-        simulate_delivery_no_alert(tanks, truck)
+        residual = simulate_delivery_no_alert(tanks, truck)
         for name, prev in before.items():
             now = tanks[name]["current_level_lbs"]
             if abs(now - prev) > 0.01:
                 print(f"     {name}: +{now - prev:,.1f} lbs -> {now:,.1f}  "
                       f"(status={tanks[name]['status']})")
+        if residual > 0:
+            # Overfill: every tank for this product is full and the
+            # cascade dropped `residual` lbs on the floor. Roll back
+            # the pour so the simulation faithfully reflects "truck
+            # refused at the gate", and retain the truck in
+            # scheduled_trucks so the operator sees it and decides
+            # (cancel / split / reschedule).
+            for name, prev in before.items():
+                tanks[name]["current_level_lbs"] = prev
+            _refresh_draw_status(tanks, product)
+            print(f"  !! REFUSED: {sap} | {residual:,.0f} lbs over "
+                  f"available tank space. Truck retained in schedule.")
+            try:
+                from audit_log import record as _audit_record, A_OVERFLOW_REFUSED
+                _audit_record(data, A_OVERFLOW_REFUSED, details={
+                    "sap": sap,
+                    "product": product,
+                    "quantity_lbs": float(quantity),
+                    "residual_lbs": float(residual),
+                })
+            except Exception:
+                pass
+            return False
+        return True
 
     # --- Build event queue: trucks + run-window edges, in [start_hour, end_hour] ---
     events = []
@@ -194,8 +226,9 @@ def main(argv=None):
             burning = False
             print(f"  ** Plant stopped running at {format_run_hour(data, ev_time)}")
         elif ev_type == "delivery":
-            deliver_truck(payload)
-            delivered_sap_orders.append(payload["sap_order"])
+            if deliver_truck(payload):
+                delivered_sap_orders.append(payload["sap_order"])
+            # else: refused truck stays in scheduled_trucks for operator action
         print()
 
     if clock < end_hour:

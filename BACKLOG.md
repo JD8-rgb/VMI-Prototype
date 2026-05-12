@@ -39,6 +39,55 @@ dialog logic gets non-trivial.
 
 ---
 
+## Production-readiness (from red-team audit `fd0066b`)
+
+Items raised by the audit that were verified legitimate but
+intentionally deferred (separate scope from quick prototype hardening).
+
+### B-PROD-1 — anna_email sender gating
+**Priority:** P0 for production / pilot; not needed for demo.
+
+The schedule-email ingestion currently accepts emails from any sender —
+intentional for demo convenience (reviewer can email from any account).
+Production must filter `fetch_and_apply_schedule` to the configured
+`anna_email` (single authoritative sender), or, if multiple senders at
+one customer are valid, to `@{customer_domain}`. Code already loads
+`anna_email` and a comment in `read_schedule.py` flags the demo-vs-
+production distinction.
+
+### B-PROD-2 — Order lifecycle states
+**Priority:** P0 for production.
+
+Today `Commit Trucks` appends a truck record with a SAP-style ID and
+that's the end of the lifecycle. Real operations need states:
+proposed → approved → submitted → acknowledged → rejected → scheduled
+→ shipped → arrived → reconciled → cancelled. Plus a per-order event
+log. Foundational for the multi-system integration story (Graph / SAP /
+EDI).
+
+### B-PROD-3 — PM handoff doc bundle
+**Priority:** P1 for work-sample polish.
+
+Audit recommends creating `PRODUCT_BRIEF.md`, `HANDOFF.md`,
+`PILOT_RUNBOOK.md`, plus a PowerApps screen map and a Dataverse /
+Azure SQL entity model. These translate the prototype into a
+PM-grade engineering handoff package.
+
+### B-PROD-4 — Reset confirmation + role separation
+**Priority:** P2.
+
+Reset is broad and immediate. Production needs a confirmation step
+and a split between operator path (no reset access) and admin / demo
+path (reset, advance, test email, etc.).
+
+### B-PROD-5 — Streamlit slider min/max/step warning
+**Priority:** P3.
+
+Console warning observed in audit. Clean up before any polished
+external demo.
+
+---
+
 ## Completed (recent reference)
 
 - **Audit Round 2** (commit `4bc0d15`): widened `_PRODUCT_ALIAS_RE`,

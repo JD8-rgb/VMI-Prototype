@@ -352,12 +352,24 @@ def simulate_delivery(tanks, truck, data=None):
 
 
 def simulate_delivery_no_alert(tanks, truck):
-    """Same as simulate_delivery but without the overfill check. For planner use."""
+    """Same as simulate_delivery but without the overfill check. For
+    planner / advance-time use.
+
+    Returns the residual overflow (lbs that could not be poured because
+    every tank for this product is full). Callers MUST check the return
+    value — a positive residual means the delivery was only partially
+    accepted, and the caller should retain the truck in
+    `scheduled_trucks` rather than mark it delivered.
+
+    Returns 0.0 when the truck fully fit. Returns 0.0 also when the
+    product has no tank in this topology (caller should refuse the
+    delivery upstream).
+    """
     product = truck["product"]
     quantity = truck["quantity_lbs"]
     target_name = find_lowest_in(tanks, product)
     if target_name is None:
-        return
+        return 0.0
     target = tanks[target_name]
     target_space = target["max_capacity_lbs"] - target["current_level_lbs"]
     pour_into_target = min(quantity, target_space)
@@ -374,6 +386,10 @@ def simulate_delivery_no_alert(tanks, truck):
         other["current_level_lbs"] += pour
         overflow -= pour
     _refresh_draw_status(tanks, product)
+    # Residual overflow > 0 means total tank space < truck quantity:
+    # the discarded lbs would be silently lost if the caller doesn't
+    # check. Real-world: a refused truck. Caller should retain it.
+    return float(overflow) if overflow > 0 else 0.0
 
 
 def _refresh_draw_status(tanks, product):
@@ -393,6 +409,12 @@ def _refresh_draw_status(tanks, product):
     draw_name, _ = min(pool, key=lambda p: p[1]["current_level_lbs"])
     for n, i in product_tanks:
         i["status"] = "draw" if n == draw_name else "standby"
+
+
+# Public alias bound to the function above. Cross-module callers should
+# import `refresh_draw_status` to avoid the Streamlit Cloud
+# underscore-import cold-start bug.
+refresh_draw_status = _refresh_draw_status
 
 
 def run_projection(data, cfg: PlantConfig = DEFAULT_CONFIG):

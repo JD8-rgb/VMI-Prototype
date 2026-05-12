@@ -199,7 +199,7 @@ already handles the Windows / POSIX corner cases.
 
 ## 7. Generalize the Streamlit UI
 
-`app.py` is 1620 LOC and assumes the demo's exact shape:
+`app.py` is now ~4100 LOC and still assumes much of the demo's shape:
 * 4 hardcoded tank colors, 4 hardcoded `_tank_info` calls
   (`app.py:65, 1100, 1106`).
 * Two hardcoded chart calls per product (`app.py:1098, 1104`).
