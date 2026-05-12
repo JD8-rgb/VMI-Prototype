@@ -60,6 +60,54 @@ def test_24_7_variant_also_routes_to_review():
     assert conf == "low"
 
 
+def test_full_week_with_except_clause_skips_excepted_day():
+    """Audit P2 follow-up: 'Run all week except Wednesday' must not
+    return the same full-week template as 'Run all week' — it must
+    represent the exception. Pre-fix: the parser ignored the
+    'except Wed' clause and returned [(0, 6, 124)] anyway, so the
+    operator's review prefill was materially wrong."""
+    entries, conf, notes = parse_schedule_text("Run all week except Wednesday")
+    weekdays = {e[0] for e in entries}
+    assert weekdays == {0, 1, 3, 4}, (
+        f"expected Mon/Tue/Thu/Fri (Wed excepted), got {weekdays}"
+    )
+    # Each entry should be 06:00-22:00 (the Acme day-shift default)
+    for e in entries:
+        assert e[1] == 6 and e[2] == 22
+    assert conf == "low"
+    assert any("exception" in n.lower() for n in notes)
+
+
+def test_full_week_with_except_off_variant():
+    """'Run all week except Wed off' — same expected output as above.
+    The trailing 'off' is part of the exception phrasing, not a
+    separate token."""
+    entries, _, _ = parse_schedule_text("Run all week except Wed off")
+    weekdays = {e[0] for e in entries}
+    assert weekdays == {0, 1, 3, 4}
+
+
+def test_full_week_24_5_with_except_friday():
+    """'24/5 except Friday' — Mon-Thu only."""
+    entries, _, _ = parse_schedule_text("24/5 except Friday")
+    weekdays = {e[0] for e in entries}
+    assert weekdays == {0, 1, 2, 3}
+
+
+def test_full_week_with_except_multiple_days():
+    """'Run all week except Wed and Fri' — Mon/Tue/Thu only."""
+    entries, _, _ = parse_schedule_text("Run all week except Wed and Fri")
+    weekdays = {e[0] for e in entries}
+    assert weekdays == {0, 1, 3}
+
+
+def test_bare_full_week_shorthand_still_returns_template():
+    """Regression: with no 'except' clause, the original full-week
+    template behavior is preserved."""
+    entries, _, _ = parse_schedule_text("Run all week")
+    assert entries == [_FULL_WEEK_TEMPLATE]
+
+
 def test_full_week_phrasing_in_email_prefilter():
     """The email prefilter (inside fetch_and_apply_schedule) must
     accept emails whose body contains full-week shorthand even when

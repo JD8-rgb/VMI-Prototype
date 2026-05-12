@@ -369,7 +369,11 @@ def simulate_delivery_no_alert(tanks, truck):
     quantity = truck["quantity_lbs"]
     target_name = find_lowest_in(tanks, product)
     if target_name is None:
-        return 0.0
+        # No tank for this product in this topology — the entire delivery
+        # is refused. Return the full quantity as residual so the caller's
+        # `if residual > 0` refusal branch fires (instead of treating
+        # this as a silent successful delivery).
+        return float(quantity)
     target = tanks[target_name]
     target_space = target["max_capacity_lbs"] - target["current_level_lbs"]
     pour_into_target = min(quantity, target_space)

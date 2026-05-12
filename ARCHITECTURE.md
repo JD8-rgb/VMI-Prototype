@@ -90,11 +90,13 @@ state = PlantState.from_dict(data)
 get_all_alerts(state)                # typed shape
 ```
 
-The shim is `_as_state(data_or_state)` defined in `alerts.py:34` and
-re-imported by `plan_orders.py` and `projection.py`. Inside the
-function body everything uses `state.attribute` access. Don't break
-this contract — every existing dict caller must keep working without
-changes.
+The canonical shim is `as_state(data_or_state)` in `state.py` (public,
+no leading underscore). `alerts.py` and `forecast.py` keep one-line
+`_as_state = as_state` back-compat aliases for in-module callers;
+`anomaly.py`, `plan_orders.py`, and `projection.py` import the public
+name. Inside function bodies everything uses `state.attribute` access.
+Don't break this contract — every existing dict caller must keep working
+without changes.
 
 ## Bridge points (where dict↔state conversion still happens)
 
@@ -162,9 +164,11 @@ load defaults  →  schedule email parses  →  Streamlit shows projection
               →  alerts fire on threshold breach  →  email send/receive
 ```
 
-Per HANDOFF.md Q1/Q2: never push without explicit approval, and email
-send/receive (IMAP/SMTP) is part of the demo path that mustn't break.
-The schedule parser stress harness must stay PASS before every commit.
+Operational guardrails (legacy reference was `HANDOFF.md Q1/Q2`, which
+doesn't yet exist — see `BACKLOG.md` B-PROD-3 for the handoff bundle):
+never push without explicit approval; email send/receive (IMAP/SMTP)
+is part of the demo path that mustn't break; the schedule-parser
+stress harness must stay PASS before every commit.
 
 ## Hard-won lessons (from prior session — keep in mind)
 

@@ -124,11 +124,35 @@ def test_read_all_skips_blank_lines(tmp_log):
 # ── clear ────────────────────────────────────────────────────────────────────
 
 def test_clear_wipes_log(tmp_log):
+    """With only MISS entries, clear() removes the file entirely."""
     append_miss(email_id="m", sender="s", subject="s", body="b",
                  entries=[], confidence="low", notes=[])
     assert tmp_log.exists()
     clear()
     assert not tmp_log.exists()
+
+
+def test_clear_preserves_correction_and_validation(tmp_log):
+    """clear() drops MISS entries only — CORRECTION and VALIDATION
+    records are training signal for parser_learning.py and must
+    survive. Pre-fix, clear() deleted the whole file (destroying the
+    per-customer few-shot examples the LLM rescue prompt enrichment
+    depends on)."""
+    from parser_misses import append_correction, append_validation
+    # Two misses, one correction (joined to m1 by email_id), one validation
+    append_miss(email_id="m1", sender="s", subject="s", body="vague",
+                 entries=[], confidence="low", notes=[])
+    append_miss(email_id="m2", sender="s", subject="s", body="also vague",
+                 entries=[], confidence="low", notes=[])
+    append_correction(email_id="m1", corrected_entries=[(0, 6, 16)])
+    append_validation(email_id="v1")
+    assert len(read_all()) == 4
+    clear()
+    after = read_all()
+    kinds = sorted(r.get("kind") for r in after)
+    assert kinds == ["correction", "validation"], (
+        f"expected correction + validation to survive; got kinds={kinds}"
+    )
 
 
 def test_clear_silent_when_log_missing(tmp_log):

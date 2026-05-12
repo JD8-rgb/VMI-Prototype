@@ -8,15 +8,6 @@ item gets explicitly deferred.
 
 ## Pending
 
-### B2 — `_as_state()` shim consolidation
-**Priority:** Low — drift risk, not a current bug.
-
-Two copies of the dict→PlantState shim exist (`alerts.py` and
-`forecast.py`). Comment in `forecast.py:38` documents the
-Streamlit-Cloud import bug that caused the duplication. Resolve by
-exporting a public `as_state()` from `state.py` and importing from
-there in both modules. ~30 LoC cleanup.
-
 ### B3 — Multi-customer text passes
 **Priority:** Low — single-customer prototype.
 
@@ -115,6 +106,14 @@ best-guess → approve / edit / dismiss.
 
 ## Completed (recent reference)
 
+- **B2 — `_as_state()` shim consolidation**: canonical `as_state()` now
+  lives in `state.py` (public, no leading underscore). `alerts.py` and
+  `forecast.py` keep one-line back-compat aliases (`_as_state = as_state`)
+  so existing in-module callers don't need touch-ups; `anomaly.py`,
+  `projection.py`, `plan_orders.py` import via the public name. The
+  Streamlit Cloud underscore-import bug that originally forced the
+  duplication no longer fires through this path. (Round-6 commit
+  `775cd5d` Audit round 6.)
 - **Audit Round 2** (commit `4bc0d15`): widened `_PRODUCT_ALIAS_RE`,
   promoted `_DAY_OFF_RE` to single source of truth, added
   `_validate_llm_windows()`, fixed Makefile path + removed root-level

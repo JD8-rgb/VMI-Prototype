@@ -84,11 +84,22 @@ def test_cascade_works_when_target_full_but_others_have_space():
     assert tanks["U-Tank1"]["current_level_lbs"] == 35000.0
 
 
-def test_no_tank_for_product_returns_zero_safely():
-    """Truck for a product with no tank in the topology returns
-    residual=0 (caller is expected to validate upstream)."""
+def test_no_tank_for_product_returns_full_residual():
+    """Truck for a product with no tank in the topology returns the
+    FULL truck quantity as residual — signaling the caller to refuse
+    the delivery (NOT silently mark it delivered).
+
+    Pre-fix: returned 0.0, which the caller couldn't distinguish from
+    a successful delivery, leading to the same silent-success failure
+    mode the audit flagged for the overflow case."""
     tanks = _two_tank_state(u1_lbs=10000, u2_lbs=10000)
     residual = simulate_delivery_no_alert(
         tanks, _truck(20000, product="Product Nonexistent")
     )
-    assert residual == 0.0
+    assert residual == 20000.0, (
+        "no-tank case must return the full truck quantity so the "
+        "caller's refusal branch fires"
+    )
+    # Tanks were not touched (nothing got poured)
+    assert tanks["U-Tank1"]["current_level_lbs"] == 10000
+    assert tanks["U-Tank2"]["current_level_lbs"] == 10000

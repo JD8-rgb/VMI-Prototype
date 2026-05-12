@@ -2236,16 +2236,15 @@ with st.expander("ℹ️ Workflow guide"):
 1. Use **▶ Advance** to roll the sim toward Thursday or Friday. Consumption runs only inside scheduled run windows.
 2. Set realistic mid-week tank levels, then click **Apply Tank Levels**.
 3. Add next week's schedule:
-   - **Email path:** send to `vmiprototype@gmail.com`, then advance ≥1 hour. **High-confidence** schedules auto-apply; **low-confidence** schedules wait for review.
-   - **Manual path:** paste the schedule text, click **Parse** → **✅ Apply Schedule**.
-4. Click **🔍 Plan Next Week** to propose trucks, then **✅ Commit Trucks** to assign SAP numbers and email the CS load-entry PDF.
-5. For schedule changes, use **✏️ Edit run windows**. Existing trucks are NOT automatically re-planned.
-6. Alerts and schedule reminders fire automatically as sim time advances.
+   - **Email path:** send to `vmiprototype@gmail.com`, then advance ≥1 hour. **High-confidence** schedules auto-apply, auto-plan trucks, AND auto-commit during the next **▶ Advance** (no further clicks). **Low-confidence** schedules wait for operator review.
+   - **Manual path:** paste the schedule text, click **Parse** → **✅ Apply Schedule**, then click **🔍 Plan Next Week** → **✅ Commit Trucks**.
+4. For schedule changes, use **✏️ Edit run windows**. Existing trucks are NOT automatically re-planned.
+5. Alerts and schedule reminders fire automatically as sim time advances.
 
 **Rules**
 
 - Only **Acme Plastics** is interactive in this demo; other customers show the multi-customer direction.
-- Truck slots are 06:00 / 08:00 / 14:00, Mon–Fri, inside a run window, ≥48 h ahead. One truck per slot.
+- **Planner-generated** trucks use slots at 06:00 / 08:00 / 14:00, Mon–Fri, inside a run window, ≥48 h ahead, one truck per slot. (Manual truck entries via the form / NL controls are validated only for the 48 h lead-time minimum.)
 - **Reset** restores the lived-in demo state, clears alerts/history/overrides, and keeps this week's base schedule.
 - Tank age shows time since the tank last dipped below 2,000 lbs.
 - Reorder targets scale from **{TARGET_LOW_LBS:,} lbs** (≤{TARGET_LOW_RUN_HOURS} hrs/wk) to **{TARGET_HIGH_LBS:,} lbs** (≥{TARGET_HIGH_RUN_HOURS} hrs/wk).

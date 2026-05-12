@@ -62,6 +62,7 @@ def append_miss(
     """
     path = log_path or PARSER_MISSES_LOG_PATH
     entry: Dict[str, Any] = {
+        "kind":        "miss",
         "logged_at":   datetime.now().isoformat(),
         "customer_id": customer_id,
         "email_id":    email_id,
@@ -108,15 +109,48 @@ def read_all(log_path: Optional[str] = None) -> List[Dict[str, Any]]:
 
 
 def clear(log_path: Optional[str] = None) -> None:
-    """Truncate the log file to empty. Used by `--clear` in the
-    triage CLI when an engineer has finished promoting / discarding
-    every entry."""
+    """Clear MISS entries from the log, PRESERVING CORRECTION and
+    VALIDATION records. Used by `--clear` in the triage CLI when an
+    engineer has finished promoting / discarding every entry.
+
+    Why selective: the parser_misses_log.jsonl stream carries three
+    `kind` values (see parser_learning.py for the full taxonomy):
+      - MISS         — low-confidence parse the operator cleaned up
+      - CORRECTION   — operator's authoritative final entries
+      - VALIDATION   — operator acknowledged a HIGH parse unchanged
+
+    The triage CLI's job is to walk MISS entries one at a time and
+    either PROMOTE (add must-pass case) or DISCARD them. After triage,
+    the MISS backlog should be empty — but the CORRECTION + VALIDATION
+    records are training signal for the per-customer learning loop and
+    must survive.
+
+    Previously this function deleted the whole log, wiping all three
+    kinds. That destroyed the customer-specific few-shot examples the
+    rescue prompt enrichment depends on.
+    """
     path = log_path or PARSER_MISSES_LOG_PATH
-    if os.path.exists(path):
-        try:
+    if not os.path.exists(path):
+        return
+    try:
+        # Read everything, drop MISS, rewrite. Records without an
+        # explicit `kind` field were written by older code (pre-fix);
+        # treat them as MISS — that was the only kind written without
+        # an explicit field.
+        records = read_all(path)
+        preserved = [r for r in records
+                     if r.get("kind") not in (None, "miss")]
+        if not preserved:
+            # Nothing to keep — remove the file entirely.
             os.remove(path)
-        except OSError as e:
-            logger.warning("parser_misses: clear failed (%s) — %s", path, e)
+            return
+        # Write the preserved records back. Append-mode is wrong here;
+        # we need to TRUNCATE then rewrite.
+        with open(path, "w", encoding="utf-8") as f:
+            for r in preserved:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    except OSError as e:
+        logger.warning("parser_misses: clear failed (%s) — %s", path, e)
 
 
 def append_correction(

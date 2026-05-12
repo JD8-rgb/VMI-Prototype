@@ -890,6 +890,59 @@ _FULL_WEEK_RE = re.compile(
 )
 _FULL_WEEK_TEMPLATE = (0, 6, 124)   # Mon 6am → Sat 4am, 118 run-hours
 
+# Exception clause after full-week shorthand: "except Wednesday",
+# "except Wed off", "without Friday", "no Thursday", etc. Captures the
+# list of day-name tokens following the exception marker. Operator phrasings
+# vary; we accept day-name(s) optionally suffixed with "off" or comma-/
+# slash-separated. The full match consumes the entire trailing exception
+# phrase so the parser doesn't reinterpret the remaining day names.
+_FULL_WEEK_EXCEPT_RE = re.compile(
+    r'(?ix)\b(?:except|without|no\s+run\s+on|skip(?:ping)?)\s+'
+    r'(?P<days>(?:'
+    + '|'.join(_DAY_KEYS_SORTED) +
+    r')(?:\s*(?:,|/|\s+and|\s+&)?\s*(?:'
+    + '|'.join(_DAY_KEYS_SORTED) +
+    r'))*)'
+    r'(?:\s+off)?'
+)
+
+
+def _try_full_week_with_exceptions(cleaned: str):
+    """If the cleaned text matches `_FULL_WEEK_RE` AND contains an
+    `except <day>` / `without <day>` / `skipping <day>` clause, return
+    (entries, note) where entries is per-day Mon-Fri at 06:00-22:00
+    EXCLUDING the excepted day(s). Else return None.
+
+    The note is a human-readable explanation for the operator review.
+    Confidence stays LOW (the caller routes through the same review
+    panel as the bare full-week shorthand)."""
+    if not _FULL_WEEK_RE.search(cleaned):
+        return None
+    m = _FULL_WEEK_EXCEPT_RE.search(cleaned)
+    if not m:
+        return None
+    raw = m.group("days")
+    excepted: set[int] = set()
+    for token in re.findall(r'[A-Za-z]+', raw):
+        wd = _DAY_MAP.get(token.lower())
+        if wd is not None:
+            excepted.add(wd)
+    if not excepted:
+        return None
+    # Per-day Mon-Fri 06:00-22:00 (Acme's typical day-shift), MINUS the
+    # excepted weekday(s). Five-day pattern is the realistic default
+    # when an operator writes "24/5 except Friday" — they're thinking
+    # weekday shifts, not a continuous Mon→Sat block.
+    entries = [(d, 6, 22) for d in range(5) if d not in excepted]
+    excepted_names = ", ".join(_DAY_ABBREV[d] for d in sorted(excepted))
+    note = (
+        f"  Full-week with exception detected; pre-filled Mon-Fri "
+        f"06:00-22:00 MINUS {excepted_names}. "
+        f"Verify the shift hours match your customer (default is the "
+        f"Acme 06:00-22:00 day shift)."
+    )
+    return entries, note
+
 
 def _strip_stale_context(text):
     """
@@ -1497,6 +1550,15 @@ def parse_schedule_text(text, now_dt=None):
     # because the cleaned text no longer contains "24/5". Catching the
     # full-week pattern HERE preserves the operator's intent.
     if _FULL_WEEK_RE.search(cleaned):
+        # "Run all week except Wednesday" / "24/5 except Friday" /
+        # "Run all week without Thursday" — generate per-day entries
+        # for Mon-Fri minus the excepted day(s) instead of the bare
+        # full-week template.
+        _exc = _try_full_week_with_exceptions(cleaned)
+        if _exc is not None:
+            _exc_entries, _exc_note = _exc
+            notes.append(_exc_note)
+            return _exc_entries, "low", notes
         notes.append(
             "  Full-week phrasing detected ('24/5', 'run all week', "
             "etc.); falling back to customer default template "
