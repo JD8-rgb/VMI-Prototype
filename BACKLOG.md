@@ -86,6 +86,31 @@ path (reset, advance, test email, etc.).
 Console warning observed in audit. Clean up before any polished
 external demo.
 
+### B-PROD-6 — "Same as usual" and other prior-schedule references
+**Priority:** P2.
+
+The full-week shorthand fix (`24/5`, `Run all week`, `24/7`) routes
+vague-but-plausible schedules to a LOW-confidence operator review
+with a pre-filled best-guess template. The audit's probe table
+flagged another vague-but-plausible class that the prototype does
+NOT yet handle:
+
+- `next week same as usual`
+- `regular schedule`
+- `no changes`
+- `same as last week`
+
+These imply "carry over the most-recent applied schedule." That's a
+different rescue: the system would need to look up the most-recent
+HIGH-confidence apply, copy its windows to next week, and present
+them at LOW confidence for confirmation. Distinct from the
+`_FULL_WEEK_TEMPLATE` fallback (which uses Acme's hardcoded shift
+template, not the actual recent schedule).
+
+Plan: add a separate "carry-prior-schedule" pattern + handler. Same
+operator-review flow at the end: vague-but-plausible → LOW with a
+best-guess → approve / edit / dismiss.
+
 ---
 
 ## Completed (recent reference)

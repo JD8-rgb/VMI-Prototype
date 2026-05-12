@@ -884,7 +884,7 @@ _FULL_WEEK_RE = re.compile(
         )
         | (?:entire|whole|full)\s+week\b
         | all\s+week\s+long
-        | 24\s*[/x-]\s*5    # 24/5, 24x5, 24-5
+        | 24\s*[/x-]\s*[4-7]   # 24/5, 24/6, 24/7, 24x5, 24-5, etc.
     )\b
     """
 )
