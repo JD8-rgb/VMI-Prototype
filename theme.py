@@ -174,7 +174,16 @@ html, body, [class*="css"], .stApp {{
 }}
 
 /* ── Buttons — single-blue primary + soft hover glow ───────────────────── */
-.stApp .stButton > button {{
+/* Selectors cover regular buttons, download buttons (`st.download_button`,
+   which Streamlit wraps in `.stDownloadButton`), and link buttons
+   (`st.link_button`, in `.stLinkButton`). Without explicitly targeting
+   `.stDownloadButton`, primary download buttons render with Streamlit's
+   default red — that was the cause of the "red Product Sheet button"
+   bug after the inline CSS block in app.py was removed. */
+.stApp .stButton > button,
+.stApp .stDownloadButton > button,
+.stApp .stLinkButton > a > button,
+.stApp a[data-testid="stLinkButton"] > button {{
     font-family: var(--vmi-font-ui);
     font-weight: 600;
     font-size: 0.875rem;
@@ -185,24 +194,31 @@ html, body, [class*="css"], .stApp {{
     color: var(--vmi-text-body);
     transition: all 120ms var(--vmi-ease);
 }}
-.stApp .stButton > button:hover {{
+.stApp .stButton > button:hover,
+.stApp .stDownloadButton > button:hover,
+.stApp .stLinkButton > a > button:hover,
+.stApp a[data-testid="stLinkButton"] > button:hover {{
     border-color: var(--vmi-action);
     color: var(--vmi-action);
     transform: none;
 }}
-.stApp .stButton > button[kind="primary"] {{
+.stApp .stButton > button[kind="primary"],
+.stApp .stDownloadButton > button[kind="primary"] {{
     background: var(--vmi-action);
     border-color: var(--vmi-action);
     color: #FFFFFF;
 }}
-.stApp .stButton > button[kind="primary"]:hover {{
+.stApp .stButton > button[kind="primary"]:hover,
+.stApp .stDownloadButton > button[kind="primary"]:hover {{
     background: var(--vmi-action-hover);
     border-color: var(--vmi-action-hover);
     color: #FFFFFF;
     box-shadow: 0 2px 8px var(--vmi-action-shadow);
 }}
 .stApp .stButton > button[disabled],
-.stApp .stButton > button[disabled]:hover {{
+.stApp .stButton > button[disabled]:hover,
+.stApp .stDownloadButton > button[disabled],
+.stApp .stDownloadButton > button[disabled]:hover {{
     opacity: 0.55;
     cursor: not-allowed;
     transform: none;
@@ -465,6 +481,231 @@ html, body, [class*="css"], .stApp {{
 .stApp [data-testid="stDataFrameContainer"] tbody td {{
     border-left: none !important;
     border-right: none !important;
+}}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Phase B — Linear-style dense alert rows.
+   ─────────────────────────────────────────────────────────────────────────
+   Replaces the multi-line `.vmi-banner` block layout with a single-row
+   pattern:
+       [ 2px severity bar │ glyph │ text … │ age │ ▸ ]
+   Used by the Alerts list (app.py:~1873) and re-used by the
+   Auto-Planner output rows (Phase E). */
+.vmi-alert-row {{
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    background: var(--vmi-bg-card);
+    border: 1px solid var(--vmi-border);
+    border-left: 2px solid var(--vmi-text-muted);
+    border-radius: 4px;
+    padding: 0.45rem 0.75rem;
+    margin-bottom: 0.35rem;
+    font-size: 0.875rem;
+    line-height: 1.3;
+    min-height: 36px;
+}}
+.vmi-alert-row.danger    {{ border-left-color: var(--vmi-danger);  background: var(--vmi-danger-bg); }}
+.vmi-alert-row.warning   {{ border-left-color: var(--vmi-warning); background: var(--vmi-warning-bg); }}
+.vmi-alert-row.success   {{ border-left-color: var(--vmi-success); background: var(--vmi-success-bg); }}
+.vmi-alert-row.info      {{ border-left-color: var(--vmi-info);    background: var(--vmi-info-bg); }}
+.vmi-alert-row .glyph {{
+    flex: 0 0 1.1em;
+    font-size: 1.05em;
+    line-height: 1;
+}}
+.vmi-alert-row .severity-label {{
+    flex: 0 0 auto;
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding-right: 0.4rem;
+    border-right: 1px solid rgba(0, 0, 0, 0.08);
+}}
+.vmi-alert-row .body {{
+    flex: 1 1 auto;
+    color: var(--vmi-text-body);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}}
+.vmi-alert-row .meta {{
+    flex: 0 0 auto;
+    font-family: var(--vmi-font-mono);
+    font-feature-settings: "tnum" 1;
+    font-size: 0.78rem;
+    color: var(--vmi-text-secondary);
+}}
+
+/* All-clear / empty-state row — same dense pattern as alerts, success tint. */
+.vmi-empty-row {{
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: var(--vmi-success-bg);
+    border: 1px solid var(--vmi-border);
+    border-left: 2px solid var(--vmi-success);
+    border-radius: 4px;
+    padding: 0.5rem 0.75rem;
+    color: var(--vmi-success-fg);
+    font-size: 0.875rem;
+    font-weight: 500;
+    min-height: 36px;
+}}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Phase D — Customer roster (sidebar) Fluent dense rows.
+   ─────────────────────────────────────────────────────────────────────────
+   Replaces the disabled-button + caption-below pattern with a single
+   row: severity bar │ name │ alert-count badge. The disabled `st.button`
+   underneath is kept for future re-activation of interactive switching
+   (see _render_sidebar_customer_row docstring) but is visually
+   hidden when this row renders above it. */
+.vmi-customer-row {{
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    background: var(--vmi-bg-card);
+    border: 1px solid var(--vmi-border);
+    border-left: 2px solid var(--vmi-text-muted);
+    border-radius: 4px;
+    padding: 0.5rem 0.65rem;
+    margin-bottom: 0.4rem;
+    font-size: 0.875rem;
+    line-height: 1.25;
+    min-height: 36px;
+}}
+.vmi-customer-row.red     {{ border-left-color: var(--vmi-danger);  background: var(--vmi-danger-bg); }}
+.vmi-customer-row.yellow  {{ border-left-color: var(--vmi-warning); background: var(--vmi-warning-bg); }}
+.vmi-customer-row.green   {{ border-left-color: var(--vmi-success); }}
+.vmi-customer-row.active  {{
+    border-left-color: var(--vmi-action);
+    background: var(--vmi-accent-bg);
+}}
+.vmi-customer-row .name {{
+    flex: 1 1 auto;
+    color: var(--vmi-text-body);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}}
+.vmi-customer-row.active .name {{
+    color: var(--vmi-action);
+}}
+.vmi-customer-row .badge {{
+    flex: 0 0 auto;
+    font-family: var(--vmi-font-mono);
+    font-feature-settings: "tnum" 1;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--vmi-text-meta);
+    background: var(--vmi-bg-subtle);
+    border: 1px solid var(--vmi-border);
+    border-radius: 999px;
+    padding: 1px 8px;
+    letter-spacing: 0.02em;
+}}
+.vmi-customer-row.red .badge    {{ color: var(--vmi-danger-fg);  background: #FFFFFF; border-color: var(--vmi-danger); }}
+.vmi-customer-row.yellow .badge {{ color: var(--vmi-warning-fg); background: #FFFFFF; border-color: var(--vmi-warning); }}
+
+/* Sidebar header tightening — matches the new dense roster rows. */
+.vmi-sidebar-title {{
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--vmi-text-headline);
+    padding: 0.4rem 0 0.5rem 0;
+    letter-spacing: -0.2px;
+    text-transform: none;
+}}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Phase G — list-summary caption rows (filter chip + counts).
+   ─────────────────────────────────────────────────────────────────────────
+   Quiet one-liner above list sections: "🔍 4 active · 1 critical · 3 warning".
+   Reinforces the "operational triage queue" frame without competing
+   visually with the rows below. */
+.vmi-list-summary {{
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: var(--vmi-font-ui);
+    font-size: 0.78rem;
+    color: var(--vmi-text-secondary);
+    margin: -0.1rem 0 0.4rem 0;
+    letter-spacing: 0.01em;
+}}
+.vmi-list-summary .pip {{
+    font-family: var(--vmi-font-mono);
+    font-feature-settings: "tnum" 1;
+    font-weight: 600;
+    color: var(--vmi-text-body);
+}}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Phase F — Email activity row tightening.
+   ─────────────────────────────────────────────────────────────────────────
+   Pulls the bespoke email-log HTML into a single set of utility classes
+   so the rendering loop stops re-emitting style= on every entry. The
+   tag pill now reads the Fluent tints via the same `kind` modifiers as
+   alerts; the timestamp/recipient line uses the mono font for
+   tabular figures. */
+.vmi-email-row {{
+    background: var(--vmi-bg-card);
+    border: 1px solid var(--vmi-border);
+    border-radius: 4px;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.4rem;
+    font-family: var(--vmi-font-ui);
+}}
+.vmi-email-row .hdr {{
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}}
+.vmi-email-row .tag {{
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 1px 7px;
+    border-radius: 3px;
+    color: #FFFFFF;
+}}
+.vmi-email-row .tag.alert     {{ background: var(--vmi-danger);  }}
+.vmi-email-row .tag.reminder  {{ background: var(--vmi-warning); color: #323130; }}
+.vmi-email-row .tag.applied   {{ background: var(--vmi-success); }}
+.vmi-email-row .tag.cs        {{ background: var(--vmi-bg-section); }}
+.vmi-email-row .tag.test      {{ background: var(--vmi-text-secondary); }}
+.vmi-email-row .tag.generic   {{ background: var(--vmi-text-secondary); }}
+.vmi-email-row .subject {{
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--vmi-text-headline);
+}}
+.vmi-email-row .status {{
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 1px 7px;
+    border-radius: 999px;
+}}
+.vmi-email-row .status.sent     {{ color: var(--vmi-success-fg); background: var(--vmi-success-bg); }}
+.vmi-email-row .status.notsent  {{ color: var(--vmi-warning-fg); background: var(--vmi-warning-bg); }}
+.vmi-email-row .status.logged   {{ color: var(--vmi-text-secondary); background: var(--vmi-bg-subtle); }}
+.vmi-email-row .meta {{
+    margin-top: 0.25rem;
+    font-size: 0.74rem;
+    color: var(--vmi-text-meta);
+    font-family: var(--vmi-font-mono);
+    font-feature-settings: "tnum" 1;
+}}
+.vmi-email-row .meta .lbl {{
+    color: var(--vmi-text-secondary);
+    font-family: var(--vmi-font-ui);
+    margin-right: 0.2rem;
 }}
 
 /* ── Hide Streamlit chrome we don't need ────────────────────────────────── */

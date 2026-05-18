@@ -667,10 +667,7 @@ def _render_sidebar_roster():
 
     with st.sidebar:
         st.markdown(
-            """<div style="font-size:1rem;font-weight:700;color:#0F172A;
-                          padding:0.5rem 0 0.75rem;letter-spacing:-0.2px;">
-                Customers
-            </div>""",
+            '<div class="vmi-sidebar-title">Customers</div>',
             unsafe_allow_html=True,
         )
 
@@ -717,58 +714,51 @@ def _alerts_for_sidebar_customer(customer_id: str):
 def _render_sidebar_customer_row(customer_id: str, name: str,
                                   red: int, yellow: int,
                                   active: bool) -> None:
-    """One sidebar row. Both rows are currently disabled buttons:
-    Acme (active) is primary-styled to communicate "this is the
-    customer you're looking at"; non-Acme rows are secondary-styled
-    and explicitly non-clickable to signal "platform supports more
-    customers, but only Acme is wired up live in this build."
+    """One sidebar row — Fluent dense single-row pattern:
+        [ severity bar │ name │ alert-count badge ]
 
-    The click→switch wiring exists in _switch_customer() and is left
-    intact; flipping `disabled=False` on non-Acme rows here would
-    re-enable interactive switching without any other changes.
+    Severity bar color encodes alert state:
+      - active: brand blue (the currently-selected customer; overrides
+                severity so the focus is unambiguous)
+      - red:    any red alerts present
+      - yellow: yellow alerts only
+      - green:  no alerts
+
+    The row renders as static HTML rather than an `st.sidebar.button`
+    because interactive customer switching is off in this build (only
+    Acme is wired up; the other rows are demo-roster placeholders).
+    To re-enable interactive switching, replace this static row with
+        if st.sidebar.button(name, key=f"customer_select_{customer_id}",
+                              use_container_width=True, type=...):
+            _switch_customer(customer_id); st.rerun()
+    The click→switch wiring in `_switch_customer()` is intact.
     """
-    if red > 0:
-        _signal = "🔴"
+    if active:
+        row_class = "active"
+    elif red > 0:
+        row_class = "red"
     elif yellow > 0:
-        _signal = "🟡"
+        row_class = "yellow"
     else:
-        _signal = "🟢"
+        row_class = "green"
 
-    if red == 0 and yellow == 0:
-        _count = "no alerts"
+    # Compact alert badge — counts at a glance without stacking a
+    # full-text caption under each row. "—" for an all-clear customer.
+    if red > 0:
+        badge = f"{red}R" + (f"·{yellow}Y" if yellow > 0 else "")
+    elif yellow > 0:
+        badge = f"{yellow}Y"
     else:
-        _parts = []
-        if red:    _parts.append(f"{red} red")
-        if yellow: _parts.append(f"{yellow} yellow")
-        _count = " · ".join(_parts)
+        badge = "—"
 
-    _label = f"{_signal}  {name}"
-    _btn_type = "primary" if active else "secondary"
-    _btn_help = ("Currently selected" if active
-                  else "Demo customer — interactive switching is "
-                       "off in this build.")
-
-    # Both rows disabled: Acme because it's already selected; others
-    # because switching is intentionally off in this build.
-    if st.sidebar.button(
-        _label,
-        key=f"customer_select_{customer_id}",
-        use_container_width=True,
-        type=_btn_type,
-        disabled=True,
-        help=_btn_help,
-    ):
-        # Dead code path under disabled=True, kept so re-enabling
-        # interactive switching is a one-flag change.
-        _switch_customer(customer_id)
-        st.rerun()
-
-    # Alert-count caption under the button
+    safe_name = (name.replace("&", "&amp;")
+                      .replace("<", "&lt;")
+                      .replace(">", "&gt;"))
     st.sidebar.markdown(
-        f"""<div style="color:#94A3B8;font-size:0.78rem;
-                    margin:-0.4rem 0 0.7rem 0.65rem;">
-            {_count}
-        </div>""",
+        f'<div class="vmi-customer-row {row_class}">'
+        f'<span class="name">{safe_name}</span>'
+        f'<span class="badge">{badge}</span>'
+        f'</div>',
         unsafe_allow_html=True,
     )
 
@@ -1861,35 +1851,53 @@ st.divider()
 
 alerts = get_all_alerts(data, cfg=st.session_state.cfg)
 n_alerts = len(alerts)
-st.subheader(f"🚨 Alerts {'(' + str(n_alerts) + ' active)' if n_alerts else ''}")
+n_red    = sum(1 for a in alerts if a.get("severity") == "red_flag")
+n_yellow = n_alerts - n_red
+
+# Section-header band (Fluent operational-triage pattern).
+_alerts_title = f"🚨 Alerts ({n_alerts})" if n_alerts else "🚨 Alerts"
+st.markdown(
+    f'<div class="vmi-section-header">{_alerts_title}</div>',
+    unsafe_allow_html=True,
+)
+
 if not alerts:
-    st.markdown("""
-    <div style="background:#F0FDF4;border-left:4px solid #22C55E;border-radius:8px;
-                padding:0.75rem 1rem;color:#14532D;font-family:'Inter',sans-serif;
-                font-size:0.92rem;font-weight:500;">
-        ✅ &nbsp; All clear — no active alerts.
-    </div>""", unsafe_allow_html=True)
+    st.markdown(
+        '<div class="vmi-empty-row">✅ All clear — no active alerts.</div>',
+        unsafe_allow_html=True,
+    )
 else:
+    # Filter-chip summary row — "4 active · 1 critical · 3 warning".
+    _summary_parts = [f'<span class="pip">{n_alerts}</span> active']
+    if n_red:
+        _summary_parts.append(f'<span class="pip">{n_red}</span> critical')
+    if n_yellow:
+        _summary_parts.append(f'<span class="pip">{n_yellow}</span> warning')
+    st.markdown(
+        f'<div class="vmi-list-summary">🔍 {" · ".join(_summary_parts)}</div>',
+        unsafe_allow_html=True,
+    )
     for a in alerts:
-        # Alerts are structured dicts (see alerts._alert). Severity keys
-        # the styling via the .vmi-banner class (4px left-border per
-        # design system); the text field strips legacy prefixes.
+        # Linear-style dense row: severity bar | glyph | label | body
+        # text with ellipsis. Full text remains accessible on hover via
+        # the `title` attribute (browser-native tooltip).
         is_red = a.get("severity") == "red_flag"
         kind   = "danger" if is_red else "warning"
-        label  = "🔴 &nbsp; CRITICAL" if is_red else "🟡 &nbsp; WARNING"
-        accent = "#F43F5E" if is_red else "#F59E0B"
+        glyph  = "🔴" if is_red else "🟡"
+        label  = "CRITICAL" if is_red else "WARNING"
         raw    = a.get("text", "")
         text   = (raw.replace("RED FLAG: ", "")
                      .replace("YELLOW FLAG: ", "")
                      .replace("WARNING: ", ""))
+        safe_text = (text.replace("&", "&amp;")
+                          .replace("<", "&lt;")
+                          .replace(">", "&gt;")
+                          .replace('"', "&quot;"))
         st.markdown(
-            f'<div class="vmi-banner vmi-banner-{kind}">'
-            f'<div>'
-            f'<span style="font-size:0.7rem;font-weight:600;color:{accent};'
-            f'letter-spacing:0.05em;text-transform:uppercase;">{label}</span>'
-            f'<div style="font-size:0.875rem;font-weight:400;margin-top:0.2rem;">'
-            f'{text}</div>'
-            f'</div>'
+            f'<div class="vmi-alert-row {kind}" title="{safe_text}">'
+            f'<span class="glyph">{glyph}</span>'
+            f'<span class="severity-label">{label}</span>'
+            f'<span class="body">{safe_text}</span>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -2657,11 +2665,30 @@ with ap_col:
                     st.success("Levels are sufficient — no trucks needed for the target week.")
 
     if st.session_state.planned_trucks:
-        st.markdown(f"**{len(st.session_state.planned_trucks)} truck(s) proposed:**")
+        n_planned = len(st.session_state.planned_trucks)
+        st.markdown(
+            f'<div class="vmi-list-summary">🚛 '
+            f'<span class="pip">{n_planned}</span> '
+            f'truck{"s" if n_planned != 1 else ""} proposed</div>',
+            unsafe_allow_html=True,
+        )
         for item in st.session_state.plan_reasoning:
-            st.info(
-                f"🚛 **{item['product']}**  ·  {format_run_hour(data, item['arrival_run_hour'])}"
-                f"  ·  {item['qty']:,} lbs  \n_{item['reason']}_"
+            # Dense single-row planner-proposal pattern (matches Phase B
+            # alert rows; info tint marks "informational, not actionable
+            # alert"). Hover reveals the full reason.
+            _arr  = format_run_hour(data, item['arrival_run_hour'])
+            _body = (f"{item['product']} · {item['qty']:,} lbs · "
+                      f"arrives {_arr} — {item['reason']}")
+            _safe = (_body.replace("&", "&amp;")
+                            .replace("<", "&lt;")
+                            .replace(">", "&gt;")
+                            .replace('"', "&quot;"))
+            st.markdown(
+                f'<div class="vmi-alert-row info" title="{_safe}">'
+                f'<span class="glyph">🚛</span>'
+                f'<span class="body">{_safe}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
             )
         if st.button("✅ Commit Trucks  (SAP numbers auto-assigned)", type="primary", key="commit_btn"):
             # Check both scheduled trucks AND sap_history so delivered
@@ -3114,17 +3141,43 @@ st.divider()
 
 # ── Upcoming Trucks + Add ─────────────────────────────────────────────────────
 
-st.subheader("🚛 Trucks")
+_n_trucks = len(data["scheduled_trucks"])
+st.markdown(
+    f'<div class="vmi-section-header">🚛 Scheduled Trucks'
+    f'{f" ({_n_trucks})" if _n_trucks else ""}</div>',
+    unsafe_allow_html=True,
+)
 if data["scheduled_trucks"]:
+    _trucks_sorted = sorted(
+        data["scheduled_trucks"], key=lambda t: t["arrival_run_hour"]
+    )
+    # Filter-chip summary — count + next-arrival timestamp.
+    _next_arr = format_run_hour(data, _trucks_sorted[0]["arrival_run_hour"])
+    st.markdown(
+        f'<div class="vmi-list-summary">📦 '
+        f'<span class="pip">{_n_trucks}</span> scheduled · '
+        f'next arrival <span class="pip">{_next_arr}</span></div>',
+        unsafe_allow_html=True,
+    )
     st.dataframe(
         [{"SAP": t["sap_order"] or "—", "Product": t["product"],
           "Qty (lbs)": f"{t['quantity_lbs']:,}",
           "Arrival": format_run_hour(data, t["arrival_run_hour"])}
-         for t in sorted(data["scheduled_trucks"], key=lambda t: t["arrival_run_hour"])],
+         for t in _trucks_sorted],
+        column_config={
+            "SAP":     st.column_config.TextColumn("SAP", width="small"),
+            "Product": st.column_config.TextColumn("Product", width="small"),
+        },
         use_container_width=True, hide_index=True,
     )
 else:
-    st.caption("No trucks scheduled.")
+    st.markdown(
+        '<div class="vmi-empty-row" style="background:var(--vmi-bg-subtle);'
+        'color:var(--vmi-text-secondary);'
+        'border-left-color:var(--vmi-text-muted);">'
+        'No trucks scheduled.</div>',
+        unsafe_allow_html=True,
+    )
 
 tab_nl, tab_form = st.tabs(["💬 Natural Language", "📝 Form"])
 
@@ -3535,52 +3588,51 @@ with st.expander(
     else:
         for entry in reversed(st.session_state.email_log):
             etype = entry.get("type", "Email")
-            # Tag color by type, themed to the new palette
+            # Map email type to a .tag CSS modifier; the actual color
+            # values come from the Fluent palette in theme.py so the
+            # tags stay coherent with the rest of the chrome.
             if etype.startswith("Alert"):
-                tag_color = "#F43F5E"   # rose
+                _tag_cls = "alert"
             else:
-                tag_color = {
-                    "Schedule Reminder": "#F59E0B",   # amber
-                    "Schedule Applied":  "#22C55E",   # green
-                    "CS Load Entry":     "#1E3A8A",   # navy
-                    "Test Email":        "#64748B",   # slate
-                }.get(etype, "#64748B")
-            # Status badge
-            status = entry.get("status", "")
-            if status == "sent":
-                status_html = (
-                    ' <span style="color:#15803D;font-size:0.72em;font-weight:600;'
-                    'background:#DCFCE7;padding:1px 6px;border-radius:999px;">✓ sent</span>'
-                )
-            elif status and "not sent" in status:
-                status_html = (
-                    ' <span style="color:#92400E;font-size:0.72em;font-weight:600;'
-                    'background:#FEF3C7;padding:1px 6px;border-radius:999px;">⚠ not sent</span>'
-                )
+                _tag_cls = {
+                    "Schedule Reminder": "reminder",
+                    "Schedule Applied":  "applied",
+                    "CS Load Entry":     "cs",
+                    "Test Email":        "test",
+                }.get(etype, "generic")
+            # Status pill — same .vmi-banner severity grouping.
+            _status = entry.get("status", "")
+            if _status == "sent":
+                _status_html = '<span class="status sent">✓ sent</span>'
+            elif _status and "not sent" in _status:
+                _status_html = '<span class="status notsent">⚠ not sent</span>'
             else:
-                status_html = (
-                    ' <span style="color:#475569;font-size:0.72em;font-weight:600;'
-                    'background:#F1F5F9;padding:1px 6px;border-radius:999px;">• logged</span>'
-                )
+                _status_html = '<span class="status logged">• logged</span>'
+            _safe_subj = (entry.get("subject", "")
+                           .replace("&", "&amp;")
+                           .replace("<", "&lt;")
+                           .replace(">", "&gt;"))
+            _safe_to = (entry.get("to", "")
+                         .replace("&", "&amp;")
+                         .replace("<", "&lt;")
+                         .replace(">", "&gt;"))
+            _safe_etype = (etype.replace("&", "&amp;")
+                                 .replace("<", "&lt;")
+                                 .replace(">", "&gt;"))
+            _safe_sim = entry.get("sim_time", "")
             st.markdown(
-                f'''
-                <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:8px;
-                            padding:0.6rem 0.85rem;margin-bottom:0.5rem;
-                            font-family:'Inter',sans-serif;">
-                    <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
-                        <span style="background:{tag_color};color:#fff;padding:2px 8px;
-                                     border-radius:4px;font-size:0.7em;font-weight:600;
-                                     letter-spacing:0.04em;">{etype}</span>
-                        <strong style="color:#0F1629;font-size:0.92rem;">{entry.get("subject","")}</strong>
-                        {status_html}
-                    </div>
-                    <div style="margin-top:0.3rem;font-size:0.78rem;color:#64748B;">
-                        <span style="color:#475569;">To:</span> {entry.get("to","")}
-                        &nbsp;·&nbsp;
-                        <span style="color:#475569;">Sim time:</span> {entry.get("sim_time","")}
-                    </div>
-                </div>
-                ''',
+                f'<div class="vmi-email-row">'
+                f'<div class="hdr">'
+                f'<span class="tag {_tag_cls}">{_safe_etype}</span>'
+                f'<span class="subject">{_safe_subj}</span>'
+                f'{_status_html}'
+                f'</div>'
+                f'<div class="meta">'
+                f'<span class="lbl">To:</span>{_safe_to}'
+                f' &middot; '
+                f'<span class="lbl">Sim time:</span>{_safe_sim}'
+                f'</div>'
+                f'</div>',
                 unsafe_allow_html=True,
             )
             if entry.get("body"):
