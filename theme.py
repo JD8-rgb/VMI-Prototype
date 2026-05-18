@@ -43,8 +43,15 @@ TOKENS = {
     "text-primary":   "#323130",
     "text-headline":  "#323130",
     "text-body":      "#323130",
-    "text-secondary": "#605E5C",
-    "text-meta":      "#605E5C",
+    # Secondary / meta intentionally darker than Fluent's neutralSecondary
+    # (#605E5C) because our page bg sits at #D5DCE3 — Fluent's published
+    # secondary text is tuned for a near-white bg. On our darker page,
+    # captions and meta lines (Schedule-Parser format hints, "To:" /
+    # "Sim time:" rows, run-window expander helper text) reverted to
+    # near-illegible. #3B3A39 is Fluent's neutralPrimaryAlt — still
+    # softer than primary #323130 so hierarchy remains, but readable.
+    "text-secondary": "#3B3A39",
+    "text-meta":      "#3B3A39",
     "text-muted":     "#8A8886",
 
     # ── Brand + action — Microsoft Action Blue
@@ -564,12 +571,18 @@ html, body, [class*="css"], .stApp {{
    (see _render_sidebar_customer_row docstring) but is visually
    hidden when this row renders above it. */
 .vmi-customer-row {{
+    /* Neutral row by default — the badge carries the alert signal, not
+       the whole line. Operator feedback: tinting the entire row in the
+       severity color reads as "this customer is on fire" even when only
+       a few alerts are open, and it competes visually with the active-
+       selection indicator. The colored signal lives in `.badge` only.
+       The .active state still gets the blue accent treatment because
+       that's a different signal (current selection, not alert state). */
     display: flex;
     align-items: center;
     gap: 0.55rem;
     background: var(--vmi-bg-card);
     border: 1px solid var(--vmi-border);
-    border-left: 2px solid var(--vmi-text-muted);
     border-radius: 4px;
     padding: 0.5rem 0.65rem;
     margin-bottom: 0.4rem;
@@ -577,11 +590,8 @@ html, body, [class*="css"], .stApp {{
     line-height: 1.25;
     min-height: 36px;
 }}
-.vmi-customer-row.red     {{ border-left-color: var(--vmi-danger);  background: var(--vmi-danger-bg); }}
-.vmi-customer-row.yellow  {{ border-left-color: var(--vmi-warning); background: var(--vmi-warning-bg); }}
-.vmi-customer-row.green   {{ border-left-color: var(--vmi-success); }}
 .vmi-customer-row.active  {{
-    border-left-color: var(--vmi-action);
+    border-left: 2px solid var(--vmi-action);
     background: var(--vmi-accent-bg);
 }}
 .vmi-customer-row .name {{
@@ -608,8 +618,18 @@ html, body, [class*="css"], .stApp {{
     padding: 1px 8px;
     letter-spacing: 0.02em;
 }}
-.vmi-customer-row.red .badge    {{ color: var(--vmi-danger-fg);  background: #FFFFFF; border-color: var(--vmi-danger); }}
-.vmi-customer-row.yellow .badge {{ color: var(--vmi-warning-fg); background: #FFFFFF; border-color: var(--vmi-warning); }}
+/* Severity-tinted badges — solid Fluent red/yellow fills so they read
+   as "the signal" without the row needing any other treatment. */
+.vmi-customer-row.red .badge    {{
+    color: #FFFFFF;
+    background: var(--vmi-danger);
+    border-color: var(--vmi-danger);
+}}
+.vmi-customer-row.yellow .badge {{
+    color: #323130;
+    background: var(--vmi-warning);
+    border-color: var(--vmi-warning);
+}}
 
 /* Sidebar header tightening — matches the new dense roster rows. */
 .vmi-sidebar-title {{
@@ -706,6 +726,23 @@ html, body, [class*="css"], .stApp {{
     color: var(--vmi-text-secondary);
     font-family: var(--vmi-font-ui);
     margin-right: 0.2rem;
+}}
+
+/* ── Inline code pills (`backtick` content in markdown / captions) ───────
+   Streamlit's default inline-code styling renders as a teal-tinted
+   pill — not Fluent-aligned. The deleted inline <style> block in
+   app.py had overridden this; restoring it here in token form keeps
+   the format hints under the Schedule Parser ("Mon 6am-10pm",
+   "Mon 0600-2200", etc.) on the Fluent neutral palette. */
+.stApp code {{
+    background-color: var(--vmi-bg-subtle);
+    color: var(--vmi-text-body);
+    border-radius: 3px;
+    font-family: var(--vmi-font-mono);
+    font-size: 0.85em;
+    font-weight: 500;
+    padding: 0.1em 0.4em;
+    border: 1px solid var(--vmi-border);
 }}
 
 /* ── Hide Streamlit chrome we don't need ────────────────────────────────── */
