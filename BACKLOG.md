@@ -21,13 +21,6 @@ when the multi-customer roster goes live; until then, low value.
 need different chart horizons, lift to `PlantConfig`. No customer is
 asking for this today.
 
-### B5 — Demo dialog state-machine unit tests
-**Priority:** Low — UI tests are noisy.
-
-The `@st.dialog` 3-step demo modal has manual-only verification.
-Streamlit testing is high-cost relative to value. Skip unless the
-dialog logic gets non-trivial.
-
 ---
 
 ## Production-readiness (from red-team audit `fd0066b`)

@@ -25,57 +25,66 @@ from __future__ import annotations
 # ── Design tokens (single source of truth) ───────────────────────────────────
 
 TOKENS = {
-    # ── Surfaces
-    "bg-app":         "#F8FAFC",
+    # ── Surfaces — Microsoft Fluent palette (bg-app kept at the operator's
+    # explicit choice from the prior contrast pass)
+    "bg-app":         "#D5DCE3",
     "bg-app-warm":    "#F7F3EC",
     "bg-card":        "#FFFFFF",
-    "bg-subtle":      "#F1F5F9",
-    "border":         "#E2E8F0",
-    "border-strong":  "#CBD5E1",
+    "bg-subtle":      "#F3F2F1",
+    "border":         "#E1DFDD",
+    "border-strong":  "#C8C6C4",
+    # Section-header band (dark navy / white text) for above-list headers.
+    # Defined as a token; applied via the `.vmi-section-header` utility
+    # class (Phase B+ wires it into Alerts / Trucks / Parse Review).
+    "bg-section":     "#1F2A44",
+    "fg-section":     "#FFFFFF",
 
-    # ── Text
-    "text-primary":   "#0F172A",
-    "text-headline":  "#0F1629",
-    "text-body":      "#1E2A45",
-    "text-secondary": "#475569",
-    "text-meta":      "#64748B",
-    "text-muted":     "#94A3B8",
+    # ── Text — Microsoft neutralPrimary / secondary
+    "text-primary":   "#323130",
+    "text-headline":  "#323130",
+    "text-body":      "#323130",
+    "text-secondary": "#605E5C",
+    "text-meta":      "#605E5C",
+    "text-muted":     "#8A8886",
 
-    # ── Brand + action — single-blue identity
-    "accent":         "#1E40AF",
-    "accent-hover":   "#1E3A8A",
-    "accent-bg":      "#DBEAFE",
-    "accent-fg":      "#1E40AF",
-    "action":         "#1E40AF",
-    "action-hover":   "#1E3A8A",
-    "action-shadow":  "rgba(30, 64, 175, 0.25)",
+    # ── Brand + action — Microsoft Action Blue
+    "accent":         "#0078D4",
+    "accent-hover":   "#106EBE",
+    "accent-bg":      "#DEECF9",
+    "accent-fg":      "#0078D4",
+    "action":         "#0078D4",
+    "action-hover":   "#106EBE",
+    "action-shadow":  "rgba(0, 120, 212, 0.25)",
 
-    # ── Semantic — success
-    "success":     "#15803D",
-    "success-bg":  "#DCFCE7",
-    "success-fg":  "#166534",
-    # ── Semantic — warning
-    "warning":     "#B45309",
-    "warning-bg":  "#FEF3C7",
-    "warning-fg":  "#92400E",
-    # ── Semantic — danger
-    "danger":      "#B91C1C",
-    "danger-bg":   "#FEE2E2",
-    "danger-fg":   "#991B1B",
-    # ── Semantic — info (uses brand blue)
-    "info":        "#0EA5E9",
-    "info-bg":     "#F0F9FF",
-    "info-fg":     "#155E75",
+    # ── Semantic — success (Microsoft success green)
+    "success":     "#107C10",
+    "success-bg":  "#DFF6DD",
+    "success-fg":  "#0B5A0B",
+    # ── Semantic — warning (Fluent yellow; FG kept dark for legibility
+    # over the pale #FFF4CE tint — Microsoft's own recommended pairing)
+    "warning":     "#FFB900",
+    "warning-bg":  "#FFF4CE",
+    "warning-fg":  "#323130",
+    # ── Semantic — danger (Microsoft red)
+    "danger":      "#D13438",
+    "danger-bg":   "#FDE7E9",
+    "danger-fg":   "#A4262C",
+    # ── Semantic — info (re-uses the Fluent action blue)
+    "info":        "#0078D4",
+    "info-bg":     "#DEECF9",
+    "info-fg":     "#004578",
 
-    # ── Tank-status chip palette
-    "draw-bg":      "#DBEAFE",  # blue
-    "draw-fg":      "#1E40AF",
-    "standby-bg":   "#F1F5F9",  # neutral
-    "standby-fg":   "#475569",
-    "receiving-bg": "#DCFCE7",  # green
-    "receiving-fg": "#166534",
+    # ── Tank-status chip palette — re-aligned to Fluent so chip colors
+    # match the rest of the chrome
+    "draw-bg":      "#DEECF9",  # Fluent info tint
+    "draw-fg":      "#0078D4",
+    "standby-bg":   "#F3F2F1",  # Fluent neutral
+    "standby-fg":   "#605E5C",
+    "receiving-bg": "#DFF6DD",  # Fluent success tint
+    "receiving-fg": "#0B5A0B",
 
-    # ── Tank-fill semantic (chart + SVG)
+    # ── Tank-fill semantic (chart + SVG — chart-internal use only,
+    # not part of the Fluent UI chrome, kept for tank-level rendering)
     "fill-critical":  "#F43F5E",   # < 20%
     "fill-low":       "#F59E0B",   # < 50%
     "fill-healthy":   "#0EA5E9",   # ≥ 50%
@@ -120,8 +129,8 @@ def _build_css() -> str:
 
 :root {{
 {var_block}
-    --vmi-font-ui:    'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    --vmi-font-mono:  'JetBrains Mono', Menlo, Consolas, monospace;
+    --vmi-font-ui:    'Segoe UI Variable', 'Segoe UI', 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --vmi-font-mono:  'Cascadia Mono', 'Cascadia Code', Consolas, 'JetBrains Mono', Menlo, monospace;
     --vmi-ease:       cubic-bezier(0.4, 0, 0.2, 1);
 }}
 
@@ -259,10 +268,18 @@ html, body, [class*="css"], .stApp {{
 }}
 
 /* ── Container with border (st.container(border=True)) ─────────────────── */
+/* Uses a deliberately stronger border than `--vmi-border` (the soft
+   `#E2E8F0` line used by tank cards). With the darker `#D5DCE3` page
+   bg, a 1px / `#E2E8F0` outline barely registers around the larger
+   chart cards — the operator can't tell where the chart container
+   ends. 1.5px / `#94A3B8` gives a clearly readable frame around the
+   projection / level-history charts and any other
+   `st.container(border=True)` blocks (LOW-confidence review, applied
+   parse review, etc.). */
 .stApp [data-testid="stVerticalBlockBorderWrapper"] {{
     background: var(--vmi-bg-card);
     border-radius: 12px !important;
-    border: 1px solid var(--vmi-border) !important;
+    border: 1.5px solid #94A3B8 !important;
     padding: 1rem 1.25rem !important;
 }}
 
@@ -371,24 +388,83 @@ html, body, [class*="css"], .stApp {{
     line-height: 1.45;
 }}
 .vmi-banner-success {{
-    background: #F0FDF4;
-    color: #14532D;
-    border-left-color: #22C55E;
+    background: var(--vmi-success-bg);
+    color: var(--vmi-success-fg);
+    border-left-color: var(--vmi-success);
 }}
 .vmi-banner-warning {{
-    background: #FFFBEB;
-    color: #92400E;
-    border-left-color: #F59E0B;
+    background: var(--vmi-warning-bg);
+    color: var(--vmi-warning-fg);
+    border-left-color: var(--vmi-warning);
 }}
 .vmi-banner-danger {{
-    background: #FFF1F2;
-    color: #9F1239;
-    border-left-color: #F43F5E;
+    background: var(--vmi-danger-bg);
+    color: var(--vmi-danger-fg);
+    border-left-color: var(--vmi-danger);
 }}
 .vmi-banner-info {{
-    background: #F0F9FF;
-    color: #155E75;
-    border-left-color: var(--vmi-action);
+    background: var(--vmi-info-bg);
+    color: var(--vmi-info-fg);
+    border-left-color: var(--vmi-info);
+}}
+
+/* ── Section header band — dark navy strip for above-list section
+   headers (Alerts / Scheduled Trucks / Parse Review / Auto-Planner).
+   Apply with:
+       st.markdown('<div class="vmi-section-header">ALERTS (3)</div>',
+                    unsafe_allow_html=True)
+   Defined as part of the Fluent foundation; component wiring happens
+   in follow-on phases. */
+.vmi-section-header {{
+    background: var(--vmi-bg-section);
+    color: var(--vmi-fg-section);
+    font-weight: 600;
+    font-size: 0.78rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 0.4rem 0.75rem;
+    border-radius: 4px;
+    margin: 0.6rem 0 0.4rem 0;
+}}
+
+/* ── Monospaced ID utility — for SAP truck IDs, row IDs, run-hour
+   anchors, anywhere an immutable identifier renders. Phase C wires
+   into the scheduled-trucks dataframe via column_config + a cell
+   selector. */
+.vmi-id {{
+    font-family: var(--vmi-font-mono);
+    font-feature-settings: "tnum" 1;
+    font-weight: 500;
+}}
+
+/* ── Small uppercase section sublabel (e.g. "Tank Levels (lbs)").
+   Migrated from the deleted inline-CSS block in app.py so the single
+   call site at app.py:2006 keeps rendering with the same look. */
+.vmi-label {{
+    font-family: var(--vmi-font-ui);
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--vmi-text-meta);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 0.35rem;
+}}
+
+/* ── Operational-triage dataframe styling — gridlines off, single
+   1px row separator in `--vmi-border`, no zebra. Affects the
+   scheduled-trucks dataframe (app.py:~3368), the run-windows
+   expander (app.py:~2095), and the HIGH-conf parse-review table
+   (app.py:~2521). */
+.stApp [data-testid="stDataFrameContainer"] table {{
+    border-collapse: collapse;
+}}
+.stApp [data-testid="stDataFrameContainer"] tbody tr {{
+    border-bottom: 1px solid var(--vmi-border);
+}}
+.stApp [data-testid="stDataFrameContainer"] thead th,
+.stApp [data-testid="stDataFrameContainer"] tbody td {{
+    border-left: none !important;
+    border-right: none !important;
 }}
 
 /* ── Hide Streamlit chrome we don't need ────────────────────────────────── */
@@ -397,11 +473,19 @@ header[data-testid="stHeader"] {{ background: transparent; }}
 footer {{ visibility: hidden; }}
 
 /* ── Tighten default vertical spacing between blocks ──────────────────── */
-/* Page max-width: 1480px — wider than the design kit's 1280 so the
-   side-by-side projection charts have room to render daily ticks
-   without overlap. Operator complaint: at 1280 the run-windows
-   were too narrow to read. */
-.stApp .block-container {{ padding-top: 1.5rem; max-width: 1480px; }}
+/* Page max-width tuning history:
+     1280 (design-kit default)  — operators complained the side-by-side
+                                  projection charts rendered daily ticks
+                                  too narrowly to read.
+     1480 (first bump)          — fixed the chart ticks, but on wider
+                                  displays (≥ ~2200px) the centered block
+                                  left a large empty strip between the
+                                  sidebar and the main content.
+     2200 (current)             — closes that gap on the operator's wide
+                                  display while keeping a soft ceiling so
+                                  very-wide 4K monitors don't stretch the
+                                  chart lines uncomfortably. */
+.stApp .block-container {{ padding-top: 1.5rem; max-width: 2200px; }}
 .stApp [data-testid="stVerticalBlock"] {{ gap: 0.6rem; }}
 
 /* ── Mobile: avoid overlap with Streamlit Cloud's sticky Fork button + */

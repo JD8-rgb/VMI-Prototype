@@ -510,8 +510,7 @@ def _switch_customer(new_customer_id: str) -> None:
     # the user edits Acme's schedule rows then switches before clicking
     # Apply, those edits must NOT bleed into the new customer's editor.
     # `parse_result` is the cached schedule-parse output. Both reset.
-    for _k in ("_demo_data", "_demo_parsed",
-                "_edited_entries", "parse_result"):
+    for _k in ("_edited_entries", "parse_result"):
         st.session_state.pop(_k, None)
 
 def _reanchor_to_now(state):
@@ -603,18 +602,16 @@ data = st.session_state.data
 
 # ── First-install bootstrap ───────────────────────────────────────────────────
 # A new install lands with empty level_history → 12-day projection chart is
-# blank, which is a confusing first impression. If the operator hasn't seen
-# the guided tour yet AND there's no history, backfill 4 weeks of synthetic
-# past so the chart is meaningful immediately. Idempotent: skipped on every
-# subsequent load because level_history is now populated.
+# blank, which is a confusing first impression. If there's no history,
+# backfill 4 weeks of synthetic past so the chart is meaningful immediately.
+# Idempotent: skipped on every subsequent load because level_history is now
+# populated.
 #
-# Restricted to the live Acme customer: the demo tour and synthetic-history
-# bootstrap are part of Acme's first-run onboarding only. Switching to a
-# non-Acme customer must NOT re-trigger the modal or backfill its curated
-# state with Acme-style synthetic history.
+# Restricted to the live Acme customer: this synthetic-history backfill is
+# part of Acme's first-run setup only. Switching to a non-Acme customer
+# must NOT backfill its curated state with Acme-style synthetic history.
 if (st.session_state.get("current_customer", "acme") == "acme"
-        and not data.get("level_history")
-        and not data.get("first_run_tour_complete", False)):
+        and not data.get("level_history")):
     try:
         from demo_history import generate_demo_history
         generate_demo_history(data, weeks=4)
@@ -1493,479 +1490,6 @@ def _record_sap(data, sap_order):
 # PAGE
 # ═════════════════════════════════════════════════════════════════════════════
 
-st.markdown("""
-<style>
-/* ── Google Font ── */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
-/* ── Base ── */
-html, body, [class*="css"] {
-    font-family: 'Inter', sans-serif;
-}
-
-/* ── App background ── */
-.stApp {
-    background-color: #F7F9FC;
-}
-
-/* ── Main content area ── */
-section.main > div {
-    padding-top: 1.2rem;
-}
-
-/* ── Headings ── */
-h1 { color: #0F1629 !important; font-weight: 700 !important; letter-spacing: -0.5px; }
-h2 { color: #0F1629 !important; font-weight: 600 !important; }
-h3 {
-    color: #1E2A45 !important;
-    font-weight: 600 !important;
-    border-left: 3px solid #00C7A9;
-    padding-left: 0.55rem;
-    margin-top: 0.2rem !important;
-}
-
-/* ── Sidebar ── */
-section[data-testid="stSidebar"] {
-    background-color: #FFFFFF;
-    border-right: 1px solid #E2E8F0;
-}
-
-/* ── Primary buttons → teal ── */
-button[kind="primary"], .stDownloadButton > button[kind="primary"] {
-    background-color: #00C7A9 !important;
-    border: none !important;
-    color: #0F1629 !important;
-    font-weight: 600 !important;
-    font-family: 'Inter', sans-serif !important;
-    border-radius: 6px !important;
-    letter-spacing: 0.01em;
-}
-button[kind="primary"]:hover, .stDownloadButton > button[kind="primary"]:hover {
-    background-color: #00B09A !important;
-    box-shadow: 0 2px 8px rgba(0,199,169,0.35) !important;
-}
-
-/* ── Secondary / default buttons ── */
-button[kind="secondary"] {
-    background-color: #FFFFFF !important;
-    border: 1.5px solid #CBD5E1 !important;
-    color: #1E2A45 !important;
-    font-weight: 500 !important;
-    font-family: 'Inter', sans-serif !important;
-    border-radius: 6px !important;
-}
-button[kind="secondary"]:hover {
-    border-color: #00C7A9 !important;
-    color: #00C7A9 !important;
-}
-
-/* ── Link buttons ── */
-a[data-testid="stLinkButton"] > button {
-    background-color: #FFFFFF !important;
-    border: 1.5px solid #CBD5E1 !important;
-    color: #1E2A45 !important;
-    font-weight: 500 !important;
-    font-family: 'Inter', sans-serif !important;
-    border-radius: 6px !important;
-}
-a[data-testid="stLinkButton"] > button:hover {
-    border-color: #00C7A9 !important;
-    color: #00C7A9 !important;
-}
-
-/* ── Expanders ── */
-details {
-    background-color: #FFFFFF;
-    border: 1px solid #E2E8F0 !important;
-    border-radius: 8px !important;
-    margin-bottom: 0.6rem;
-}
-details > summary {
-    font-weight: 600;
-    color: #1E2A45;
-    padding: 0.6rem 0.8rem;
-}
-
-/* ── Inputs and selects ── */
-input[type="number"], input[type="text"], textarea, .stSelectbox > div {
-    border-radius: 6px !important;
-    font-family: 'Inter', sans-serif !important;
-}
-
-/* ── Dataframes / tables ── */
-.stDataFrame {
-    border-radius: 8px !important;
-    overflow: hidden;
-    border: 1px solid #E2E8F0 !important;
-}
-.stDataFrame thead tr th {
-    background-color: #F1F5F9 !important;
-    color: #0F1629 !important;
-    font-weight: 600 !important;
-    font-size: 0.82rem !important;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-}
-
-/* ── Metrics ── */
-[data-testid="stMetric"] {
-    background-color: #FFFFFF;
-    border: 1px solid #E2E8F0;
-    border-radius: 8px;
-    padding: 0.75rem 1rem;
-}
-[data-testid="stMetric"] label {
-    color: #64748B !important;
-    font-size: 0.78rem !important;
-    font-weight: 600 !important;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-}
-[data-testid="stMetric"] [data-testid="stMetricValue"] {
-    color: #0F1629 !important;
-    font-weight: 700 !important;
-}
-
-/* ── Alert / info boxes ── */
-div[data-testid="stAlert"] {
-    border-radius: 8px !important;
-    font-family: 'Inter', sans-serif !important;
-}
-
-/* ── Success boxes ── */
-div[data-testid="stAlert"][kind="success"] {
-    background-color: #F0FDF4 !important;
-    border-left: 4px solid #22C55E !important;
-    color: #14532D !important;
-}
-
-/* ── Warning boxes ── */
-div[data-testid="stAlert"][kind="warning"] {
-    background-color: #FFFBEB !important;
-    border-left: 4px solid #F59E0B !important;
-    color: #92400E !important;
-}
-
-/* ── Error boxes ── */
-div[data-testid="stAlert"][kind="error"] {
-    background-color: #FFF1F2 !important;
-    border-left: 4px solid #F43F5E !important;
-    color: #9F1239 !important;
-}
-
-/* ── Info boxes ── */
-div[data-testid="stAlert"][kind="info"] {
-    background-color: #F0F9FF !important;
-    border-left: 4px solid #00C7A9 !important;
-    color: #155E75 !important;
-}
-
-/* ── Caption / helper text ── */
-.stCaption, small {
-    color: #64748B !important;
-    font-size: 0.82rem !important;
-}
-
-/* ── Horizontal rule ── */
-hr {
-    border: none;
-    border-top: 1px solid #E2E8F0;
-    margin: 1rem 0;
-}
-
-/* ── Code blocks ── */
-code {
-    background-color: #F1F5F9 !important;
-    color: #0F1629 !important;
-    border-radius: 4px !important;
-    font-size: 0.85em !important;
-    padding: 0.1em 0.35em !important;
-}
-
-/* ── Divider between major sections ── */
-.section-divider {
-    border: none;
-    border-top: 2px solid #E2E8F0;
-    margin: 1.5rem 0 1rem 0;
-}
-
-/* ── Subtle card container ── */
-.vmi-card {
-    background: #FFFFFF;
-    border: 1px solid #E2E8F0;
-    border-radius: 10px;
-    padding: 1rem 1.25rem;
-    margin-bottom: 0.75rem;
-}
-
-/* ── Small uppercase section label (used for inline sub-section headers) ── */
-.vmi-label {
-    font-family: 'Inter', sans-serif;
-    font-size: 0.72rem;
-    font-weight: 600;
-    color: #64748B;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    margin-bottom: 0.35rem;
-    margin-top: 0.1rem;
-}
-
-/* ── Sim time pill ── */
-.vmi-simtime {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    background: #FFFFFF;
-    border: 1px solid #E2E8F0;
-    border-left: 3px solid #00C7A9;
-    border-radius: 6px;
-    padding: 4px 10px;
-    font-family: 'Inter', sans-serif;
-    font-size: 0.85rem;
-    color: #0F1629;
-    margin-bottom: 0.4rem;
-}
-.vmi-simtime .lbl {
-    font-size: 0.66rem;
-    font-weight: 600;
-    color: #64748B;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-}
-.vmi-simtime .val {
-    font-family: 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
-    font-weight: 600;
-    color: #0F1629;
-}
-</style>
-""", unsafe_allow_html=True)
-
-
-# ── First-run guided demo ─────────────────────────────────────────────────────
-# Three-step modal walking a new user through risk → schedule parsed →
-# trucks ordered, using LIVE data on a deep copy so real state isn't
-# mutated unless the user clicks "Apply to my dashboard". Triggered once
-# per install via the `first_run_tour_complete` flag in data.json.
-
-def _demo_advance_clock_to_friday(_ddata):
-    """Bump _ddata['current_run_hour'] to the next Friday 11:00 sim-time
-    WITHOUT running the side-effecting _advance() function (which would
-    poll the inbox, fire reminders, etc.). Pure clock arithmetic."""
-    _now_dt = run_hour_to_dt(_ddata, _ddata["current_run_hour"])
-    days_until = (4 - _now_dt.weekday()) % 7   # 4 = Friday
-    if days_until == 0 and _now_dt.hour >= 11:
-        days_until = 7
-    _target = _now_dt.replace(hour=11, minute=0, second=0, microsecond=0) \
-              + timedelta(days=days_until)
-    _delta_h = (_target - _now_dt).total_seconds() / 3600.0
-    _ddata["current_run_hour"] = float(_ddata["current_run_hour"]) + _delta_h
-
-
-def _demo_render_risk():
-    st.markdown("**Step 1 of 3 — ⚠️ Risk Detected**")
-    st.markdown(
-        "Your tank levels are dropping. The system has already flagged it and "
-        "alerted the larger distribution group by email — scheduler, backup, "
-        "operations, and shipping."
-    )
-    st.divider()
-
-    # Current alerts on the LIVE data (these are real, not simulated)
-    try:
-        _live_alerts = get_all_alerts(st.session_state.data, cfg=st.session_state.cfg)
-    except Exception:
-        _live_alerts = []
-    if _live_alerts:
-        for alert in _live_alerts[:3]:
-            _sev = (alert.get("severity") or "").upper()
-            _txt = alert.get("text") or alert.get("message") or str(alert)
-            st.error(f"**{_sev}** — {_txt}")
-    else:
-        # No active alerts — show current product totals as a fallback
-        _prod_levels = {}
-        for tname, tinfo in st.session_state.data.get("tanks", {}).items():
-            prod = tinfo.get("product", "")
-            _prod_levels.setdefault(prod, 0.0)
-            _prod_levels[prod] += float(tinfo.get("current_level_lbs", 0.0))
-        _cols = st.columns(max(len(_prod_levels), 1))
-        for _c, (prod, lvl) in zip(_cols, _prod_levels.items()):
-            with _c:
-                _delta = lvl - SAFETY_STOCK_LBS
-                st.metric(prod, f"{lvl:,.0f} lbs",
-                           delta=f"{_delta:+,.0f} vs safety stock",
-                           delta_color="inverse")
-
-    st.caption(
-        "The dashboard watches inventory 24/7 and projects forward. When a "
-        "product is on track to dip below safety stock, you see it here "
-        "before it becomes a problem."
-    )
-    st.divider()
-    _b1, _spacer, _b2 = st.columns([2, 4, 3])
-    with _b1:
-        if st.button("Skip — just explore", use_container_width=True,
-                      key="demo_skip_step0"):
-            _demo_finalize(apply=False)
-    with _b2:
-        if st.button("Next: Schedule arrives →", type="primary",
-                      use_container_width=True, key="demo_next_step0"):
-            st.session_state._demo_step = 1
-            st.rerun()
-
-
-def _demo_render_parse():
-    _ddata = st.session_state._demo_data
-    # Bump the demo copy's clock to Friday 11:00 (narrative device only)
-    if not st.session_state.get("_demo_advanced"):
-        try:
-            _demo_advance_clock_to_friday(_ddata)
-        except Exception:
-            pass
-        st.session_state._demo_advanced = True
-
-    # Parse a sample operator email (regex handles HIGH-confidence text)
-    if "_demo_parsed" not in st.session_state:
-        SIM_TEXT = (
-            "Monday 6am-10pm, Tuesday 6am-10pm,\n"
-            "Wednesday 6am-2pm, Thursday off,\n"
-            "Friday 6am-2pm"
-        )
-        try:
-            _result = parse_schedule(SIM_TEXT)
-            if len(_result) == 4:
-                entries, conf, notes, method = _result
-            else:
-                entries, conf, notes = _result
-                method = "regex"
-        except Exception:
-            entries, conf, notes = parse_schedule_text(SIM_TEXT)
-            method = "regex"
-        st.session_state._demo_parsed = (SIM_TEXT, entries, conf, notes, method)
-
-    SIM_TEXT, entries, conf, notes, method = st.session_state._demo_parsed
-
-    st.markdown("**Step 2 of 3 — 📧 Schedule Received & Parsed**")
-    st.markdown(
-        "It's now Friday morning. The system sent the weekly reminder; the "
-        "customer replied with next week's schedule. Here's the email body:"
-    )
-    st.code(SIM_TEXT, language=None)
-    st.success(f"✓ Parsed with **{conf.upper()}** confidence (method: `{method}`)")
-
-    if entries:
-        _DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        _rows = [
-            {"Day": _DAY_NAMES[wd] if 0 <= wd < 7 else str(wd),
-             "Start": f"{int(sh):02d}:00",
-             "End":   f"{int(eh):02d}:00"}
-            for wd, sh, eh in entries
-        ]
-        st.dataframe(_rows, hide_index=True, use_container_width=True)
-
-    st.divider()
-    _b1, _spacer, _b2 = st.columns([2, 4, 3])
-    with _b1:
-        if st.button("← Back", use_container_width=True, key="demo_back_step1"):
-            st.session_state._demo_step = 0
-            st.rerun()
-    with _b2:
-        if st.button("Next: Truck recommendation →", type="primary",
-                      use_container_width=True, key="demo_next_step1"):
-            st.session_state._demo_step = 2
-            st.rerun()
-
-
-def _demo_render_plan():
-    _ddata = st.session_state._demo_data
-
-    if "_demo_planned" not in st.session_state:
-        _, entries, _, _, _ = st.session_state._demo_parsed
-        try:
-            _now_dt = run_hour_to_dt(_ddata, _ddata["current_run_hour"])
-            _ddata, _, _ = apply_schedule_to_data(
-                _ddata, entries, now_dt=_now_dt, mode="replace",
-            )
-            ws, we = get_target_week_bounds(_ddata)
-            wrh = get_run_hours_in_window(_ddata, ws, we)
-            tgt = get_target_for_week(wrh, state=_ddata)
-            _planned = []
-            for prod in _ddata.get("consumption_rates", {}):
-                _planned.extend(plan_for_product(
-                    _ddata, prod, tgt, ws, we, _planned,
-                    cfg=st.session_state.cfg,
-                ))
-            _ddata["scheduled_trucks"] = (
-                list(_ddata.get("scheduled_trucks", [])) + _planned
-            )
-            st.session_state._demo_data = _ddata
-            st.session_state._demo_planned = _planned
-        except Exception as e:
-            st.error(f"Could not run planner on demo data: {e}")
-            st.session_state._demo_planned = []
-
-    planned = st.session_state._demo_planned
-
-    st.markdown("**Step 3 of 3 — 🚛 Trucks Recommended**")
-    if planned:
-        st.markdown(
-            "The planner ran against the parsed schedule and current tank "
-            "levels. Here's what it would order to keep you above safety "
-            "stock. The schedule parsed with HIGH confidence, so these "
-            "trucks would be entered automatically."
-        )
-        for truck in planned:
-            try:
-                _arr_dt = run_hour_to_dt(_ddata, truck.get("arrival_run_hour", 0))
-                _arr_str = _arr_dt.strftime("%a %b %d, %H:%M")
-            except Exception:
-                _arr_str = f"run-hour {truck.get('arrival_run_hour', 0):.1f}"
-            st.info(
-                f"**{truck.get('product', '?')}** — "
-                f"{int(truck.get('quantity_lbs', 0)):,} lbs — "
-                f"arriving **{_arr_str}**"
-            )
-    else:
-        st.success(
-            "Levels are sufficient — no trucks needed for the target week. "
-            "(The system orders only what's required.)"
-        )
-
-    st.caption(
-        "Click **Apply to my dashboard** to commit this parsed schedule and "
-        "the recommended trucks to your real state, or **Skip** to explore "
-        "from your current state."
-    )
-    st.divider()
-    _b1, _b2, _b3 = st.columns([2, 3, 3])
-    with _b1:
-        if st.button("← Back", use_container_width=True, key="demo_back_step2"):
-            st.session_state._demo_step = 1
-            st.rerun()
-    with _b2:
-        if st.button("Skip — just explore",
-                      use_container_width=True, key="demo_skip_step2"):
-            _demo_finalize(apply=False)
-    with _b3:
-        if st.button("✓ Apply to my dashboard", type="primary",
-                      use_container_width=True, key="demo_apply_step2"):
-            _demo_finalize(apply=True)
-
-
-def _demo_finalize(*, apply: bool):
-    """Mark tour complete, optionally swap demo copy in, save, clean up."""
-    if apply and "_demo_data" in st.session_state:
-        st.session_state.data = st.session_state._demo_data
-    st.session_state.data["first_run_tour_complete"] = True
-    try:
-        _save_active_state(st.session_state.data)
-    except Exception as e:
-        import sys
-        print(f"[demo_finalize save] {e}", file=sys.stderr)
-    for k in ("_demo_step", "_demo_data", "_demo_advanced",
-              "_demo_parsed", "_demo_planned"):
-        st.session_state.pop(k, None)
-    st.rerun()
-
 
 @st.dialog("✏️ Edit run windows", width="large")
 def _run_window_editor_dialog():
@@ -2133,24 +1657,6 @@ def _run_window_editor_dialog():
             st.rerun()
 
 
-@st.dialog("🏭 VMI Command Center — Quick Tour", width="large")
-def _demo_tour():
-    if "_demo_step" not in st.session_state:
-        st.session_state._demo_step = 0
-    if "_demo_data" not in st.session_state:
-        st.session_state._demo_data = copy.deepcopy(st.session_state.data)
-    _step = st.session_state._demo_step
-    if _step == 0:
-        _demo_render_risk()
-    elif _step == 1:
-        _demo_render_parse()
-    else:
-        _demo_render_plan()
-
-
-# Trigger the tour on first install. The decorator opens the modal when
-# the function is called; it pauses the rest of the page render until
-# dismissed via Apply/Skip (which set first_run_tour_complete and rerun).
 # Guarded by st.runtime.exists() so `import app` in tests doesn't try to
 # open a dialog without a script context (which raises StreamlitAPIException).
 def _streamlit_runtime_active():
@@ -2160,19 +1666,11 @@ def _streamlit_runtime_active():
     except Exception:
         return False
 
-# Streamlit allows only ONE dialog per script run. The two triggers are
-# mutually exclusive via this elif chain: the demo tour takes precedence
-# (it's onboarding — gates everything else until dismissed); once
-# `first_run_tour_complete` is True, the run-window editor can open.
-if (st.session_state.get("current_customer", "acme") == "acme"
-        and not data.get("first_run_tour_complete", False)
+# Mid-week schedule override dialog. Triggered by the "Edit run windows"
+# button in the Auto-Planner panel; flag clears inside the dialog's
+# Cancel / Apply handlers.
+if (st.session_state.get("_show_run_window_editor")
         and _streamlit_runtime_active()):
-    _demo_tour()
-elif (st.session_state.get("_show_run_window_editor")
-        and _streamlit_runtime_active()):
-    # Mid-week schedule override dialog. Triggered by the "Edit run
-    # windows" button in the Auto-Planner panel; flag clears inside the
-    # dialog's Cancel / Apply handlers.
     _run_window_editor_dialog()
 
 
@@ -2234,7 +1732,7 @@ with st.expander("ℹ️ Workflow guide"):
 **Demo flow**
 
 1. Use **▶ Advance** to roll the sim toward Thursday or Friday. Consumption runs only inside scheduled run windows.
-2. Set realistic mid-week tank levels, then click **Apply Tank Levels**.
+2. Set realistic late-week tank levels, then click **Apply Tank Levels**.
 3. Add next week's schedule:
    - **Email path:** send to `vmiprototype@gmail.com`, then advance ≥1 hour. **High-confidence** schedules auto-apply, auto-plan trucks, AND auto-commit during the next **▶ Advance** (no further clicks). **Low-confidence** schedules wait for operator review.
    - **Manual path:** paste the schedule text, click **Parse** → **✅ Apply Schedule**, then click **🔍 Plan Next Week** → **✅ Commit Trucks**.
@@ -2432,11 +1930,12 @@ _prod_cols = st.columns(max(len(_prod_tanks), 1))
 for _col, (_prod_name, _tank_names) in zip(_prod_cols, _prod_tanks.items()):
     with _col:
         _safe_key = _prod_name.lower().replace(" ", "_").replace("-", "_")
-        st.plotly_chart(
-            _chart(hist, _prod_name, cutoff_run_hour=_projection_cutoff),
-            use_container_width=True,
-            key=f"ch_{_safe_key}",
-        )
+        with st.container(border=True):
+            st.plotly_chart(
+                _chart(hist, _prod_name, cutoff_run_hour=_projection_cutoff),
+                use_container_width=True,
+                key=f"ch_{_safe_key}",
+            )
         _tcols = st.columns(max(len(_tank_names), 1))
         for _tc, _tn in zip(_tcols, _tank_names):
             _tank_info(_tc, _tn, data["tanks"][_tn], _lh, _rh)
@@ -3461,7 +2960,8 @@ if _history:
             tickangle=-30,
         ),
     )
-    st.plotly_chart(_fig_lvl, use_container_width=True)
+    with st.container(border=True):
+        st.plotly_chart(_fig_lvl, use_container_width=True)
 else:
     st.caption("No level history yet. Click *Generate demo history* "
                 "or use *Advance* above to start populating the chart.")
