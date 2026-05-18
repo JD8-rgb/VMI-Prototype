@@ -733,23 +733,23 @@ def _render_sidebar_customer_row(customer_id: str, name: str,
             _switch_customer(customer_id); st.rerun()
     The click→switch wiring in `_switch_customer()` is intact.
     """
-    if active:
-        row_class = "active"
-    elif red > 0:
-        row_class = "red"
-    elif yellow > 0:
-        row_class = "yellow"
-    else:
-        row_class = "green"
-
-    # Compact alert badge — counts at a glance without stacking a
-    # full-text caption under each row. "—" for an all-clear customer.
+    # Severity class — drives the dot color. ALWAYS reflects the
+    # customer's actual alert state, even when active=True. (Operator
+    # feedback: "It's not red, I guess, because we clicked on it, but
+    # just go ahead and make that red in this situation." The active
+    # state is a separate signal — "currently selected" — and gets its
+    # own row treatment below.)
     if red > 0:
-        badge = f"{red}R" + (f"·{yellow}Y" if yellow > 0 else "")
+        severity_class = "red"
     elif yellow > 0:
-        badge = f"{yellow}Y"
+        severity_class = "yellow"
     else:
-        badge = "—"
+        severity_class = "green"
+
+    classes = [severity_class]
+    if active:
+        classes.append("active")
+    row_class = " ".join(classes)
 
     safe_name = (name.replace("&", "&amp;")
                       .replace("<", "&lt;")
@@ -757,7 +757,7 @@ def _render_sidebar_customer_row(customer_id: str, name: str,
     st.sidebar.markdown(
         f'<div class="vmi-customer-row {row_class}">'
         f'<span class="name">{safe_name}</span>'
-        f'<span class="badge">{badge}</span>'
+        f'<span class="dot">●</span>'
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -1260,8 +1260,8 @@ def _tank_info(col, name, info, level_history=(), current_run_hour=0.0):
                 _age_str = f"{_hrs}h+" if _capped else f"{_hrs}h"
         if _age_str != "—":
             _age_html = (
-                f'<span style="font-size:0.68rem;color:var(--vmi-text-secondary);'
-                f'font-weight:500;margin-top:0.15rem;display:inline-block;" '
+                f'<span style="font-size:0.88rem;color:var(--vmi-text-secondary);'
+                f'font-weight:600;margin-top:0.25rem;display:inline-block;" '
                 f'title="Material age in tank (resets when level &lt; 2 000 lbs)">'
                 f'⏱ {_age_str}</span>'
             )
@@ -1352,8 +1352,9 @@ def _tank_info(col, name, info, level_history=(), current_run_hour=0.0):
                 <div style="margin-top:0.35rem;color:var(--vmi-text-secondary);
                             font-size:0.78rem;">
                     <span class="vmi-num" style="color:var(--vmi-text-primary);
-                                                  font-size:1.05rem;
-                                                  font-weight:600;">
+                                                  font-size:1.55rem;
+                                                  font-weight:700;
+                                                  line-height:1.1;">
                         {info['current_level_lbs']:,.0f}
                     </span>
                     <span style="color:var(--vmi-text-secondary);font-size:0.72rem;">

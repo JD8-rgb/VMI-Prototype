@@ -43,16 +43,18 @@ TOKENS = {
     "text-primary":   "#323130",
     "text-headline":  "#323130",
     "text-body":      "#323130",
-    # Secondary / meta intentionally darker than Fluent's neutralSecondary
-    # (#605E5C) because our page bg sits at #D5DCE3 — Fluent's published
-    # secondary text is tuned for a near-white bg. On our darker page,
-    # captions and meta lines (Schedule-Parser format hints, "To:" /
-    # "Sim time:" rows, run-window expander helper text) reverted to
-    # near-illegible. #3B3A39 is Fluent's neutralPrimaryAlt — still
-    # softer than primary #323130 so hierarchy remains, but readable.
-    "text-secondary": "#3B3A39",
-    "text-meta":      "#3B3A39",
-    "text-muted":     "#8A8886",
+    # Secondary / meta deliberately matched to primary on our darker
+    # page bg (#D5DCE3 — operator's explicit choice). Fluent's published
+    # secondary #605E5C is tuned for near-white pages; on our bg it
+    # drops below readable. We tried #3B3A39 (neutralPrimaryAlt) first,
+    # still got "hard to read" feedback from the operator. Flattening
+    # to primary trades visual hierarchy for legibility — captions read
+    # as well as body. Hierarchy still exists via font-size + weight
+    # (captions are smaller / lighter weight than body), just not via
+    # color. Use `text-muted` for genuinely de-emphasized copy.
+    "text-secondary": "#323130",
+    "text-meta":      "#323130",
+    "text-muted":     "#605E5C",
 
     # ── Brand + action — Microsoft Action Blue
     "accent":         "#0078D4",
@@ -67,11 +69,12 @@ TOKENS = {
     "success":     "#107C10",
     "success-bg":  "#DFF6DD",
     "success-fg":  "#0B5A0B",
-    # ── Semantic — warning (Fluent yellow; FG kept dark for legibility
-    # over the pale #FFF4CE tint — Microsoft's own recommended pairing)
-    "warning":     "#FFB900",
-    "warning-bg":  "#FFF4CE",
-    "warning-fg":  "#323130",
+    # ── Semantic — warning (amber; Fluent yellow #FFB900 read too bright
+    # against the rest of the chrome — operator wanted the original
+    # amber back. Restored: amber-700 / amber-100 / amber-800.)
+    "warning":     "#B45309",
+    "warning-bg":  "#FEF3C7",
+    "warning-fg":  "#92400E",
     # ── Semantic — danger (Microsoft red)
     "danger":      "#D13438",
     "danger-bg":   "#FDE7E9",
@@ -605,31 +608,20 @@ html, body, [class*="css"], .stApp {{
 .vmi-customer-row.active .name {{
     color: var(--vmi-action);
 }}
-.vmi-customer-row .badge {{
+/* Severity dot — the only visible severity signal on a customer row.
+   Color-coded ●: red (any red alerts), amber (yellow alerts only),
+   green (no alerts). Independent of the .active state, so the
+   currently-selected customer still shows its true alert color
+   instead of being overridden by the blue accent. */
+.vmi-customer-row .dot {{
     flex: 0 0 auto;
-    font-family: var(--vmi-font-mono);
-    font-feature-settings: "tnum" 1;
-    font-size: 0.72rem;
-    font-weight: 700;
-    color: var(--vmi-text-meta);
-    background: var(--vmi-bg-subtle);
-    border: 1px solid var(--vmi-border);
-    border-radius: 999px;
-    padding: 1px 8px;
-    letter-spacing: 0.02em;
+    font-size: 1rem;
+    line-height: 1;
+    color: var(--vmi-success);
 }}
-/* Severity-tinted badges — solid Fluent red/yellow fills so they read
-   as "the signal" without the row needing any other treatment. */
-.vmi-customer-row.red .badge    {{
-    color: #FFFFFF;
-    background: var(--vmi-danger);
-    border-color: var(--vmi-danger);
-}}
-.vmi-customer-row.yellow .badge {{
-    color: #323130;
-    background: var(--vmi-warning);
-    border-color: var(--vmi-warning);
-}}
+.vmi-customer-row.red    .dot {{ color: var(--vmi-danger); }}
+.vmi-customer-row.yellow .dot {{ color: var(--vmi-warning); }}
+.vmi-customer-row.green  .dot {{ color: var(--vmi-success); }}
 
 /* Sidebar header tightening — matches the new dense roster rows. */
 .vmi-sidebar-title {{
@@ -696,7 +688,7 @@ html, body, [class*="css"], .stApp {{
     color: #FFFFFF;
 }}
 .vmi-email-row .tag.alert     {{ background: var(--vmi-danger);  }}
-.vmi-email-row .tag.reminder  {{ background: var(--vmi-warning); color: #323130; }}
+.vmi-email-row .tag.reminder  {{ background: var(--vmi-warning); color: #FFFFFF; }}
 .vmi-email-row .tag.applied   {{ background: var(--vmi-success); }}
 .vmi-email-row .tag.cs        {{ background: var(--vmi-bg-section); }}
 .vmi-email-row .tag.test      {{ background: var(--vmi-text-secondary); }}
